@@ -3,6 +3,7 @@ import {
   ApiError,
   analyzeVariation,
   cancelJob,
+  claimGuestReview,
   createVariation,
   createGuestSession,
   deleteVariation,
@@ -26,8 +27,9 @@ import {
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
-import { loadGuestSession, saveGuestSession } from "../guest-session";
+import { clearGuestSession, loadGuestSession, saveGuestSession } from "../guest-session";
 import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
+import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -88,9 +90,17 @@ export default function App() {
   const [refreshMessage, setRefreshMessage] = useState("");
   const [accountPromptContext, setAccountPromptContext] = useState<"landing" | "save">("landing");
   const [accountPromptOpen, setAccountPromptOpen] = useState(false);
+  const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>(currentAuthSnapshot);
+  const [authMessage, setAuthMessage] = useState("");
+  const [authBusy, setAuthBusy] = useState<AuthProvider | null>(null);
+  const [authRevision, setAuthRevision] = useState(0);
   const [guestTrial, setGuestTrial] = useState<GuestTrialState>(() => loadGuestTrial());
   const [guestMessage, setGuestMessage] = useState("");
   const autoplayTimer = useRef<number | null>(null);
+  const pendingClaim = useRef<{ guestToken: string; idempotencyKey: string } | null>(null);
+  const pendingAccountContext = useRef<"landing" | "save">("landing");
+  const accountFlowRequested = useRef(false);
+  const claimInFlight = useRef(false);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
   const selectedMove = selectedGame?.analysis?.moves[selectedPly];
@@ -111,6 +121,127 @@ export default function App() {
       // Runtime disclosure is optional; review data remains primary.
     }
   }, []);
+
+  const refreshAccountLibrary = useCallback(async () => {
+    const [listed, jobState, nextProfile, nextDrills, chessCom] = await Promise.all([
+      listGames(),
+      loadJobs(),
+      loadProfile().catch(() => null),
+      loadDrills().catch(() => []),
+      loadChessComProfile().catch(() => null),
+    ]);
+    const loaded = await Promise.all(listed.map((game) => loadGame(game.game.id)));
+    setGames(loaded);
+    setJobs(jobState.jobs);
+    setProfile(nextProfile);
+    setDrills(nextDrills);
+    setChessComConnected(chessCom?.connected ?? false);
+    setSelectedGameId((current) => current && loaded.some((game) => game.game.id === current)
+      ? current
+      : loaded.find((game) => game.analysis_status === "complete")?.game.id ?? loaded[0]?.game.id ?? "");
+    await refreshRuntime();
+  }, [refreshRuntime]);
+
+  const claimPendingReview = useCallback(async (): Promise<boolean> => {
+    const pending = pendingClaim.current;
+    if (!pending || claimInFlight.current || !authSnapshot.session) return false;
+    claimInFlight.current = true;
+    setAuthMessage("Keeping this review with your account…");
+    let claimed = false;
+    try {
+      const receipt = await claimGuestReview(pending.guestToken, pending.idempotencyKey);
+      pendingClaim.current = null;
+      clearAuthIntent();
+      clearGuestSession();
+      setGuestMessage(receipt.already_claimed ? "This review is already in your account." : "Review saved to your account.");
+      setAccountPromptOpen(false);
+      setRoute("recent");
+      claimed = true;
+    } catch (claimError) {
+      const message = claimError instanceof ApiError && claimError.status === 401
+        ? "Your account session expired. Sign in again to save this review."
+        : claimError instanceof ApiError && claimError.status === 404
+          ? "This guest review has expired. It cannot be saved now."
+          : claimError instanceof Error
+            ? claimError.message
+            : "Could not save this review yet.";
+      setAuthMessage(message);
+    } finally {
+      claimInFlight.current = false;
+    }
+    if (claimed) {
+      try {
+        await refreshAccountLibrary();
+      } catch (refreshError) {
+        setError(refreshError instanceof Error ? refreshError.message : "Review saved, but the account library could not refresh yet.");
+      }
+    }
+    return claimed;
+  }, [authSnapshot.session, refreshAccountLibrary]);
+
+  const handleAuthenticatedSession = useCallback(async () => {
+    if (!authSnapshot.session) return;
+    setAuthBusy(null);
+    setAuthMessage("");
+    const claimed = await claimPendingReview();
+    if (!claimed && !pendingClaim.current) {
+      try {
+        await refreshAccountLibrary();
+      } catch (refreshError) {
+        setError(refreshError instanceof Error ? refreshError.message : "Your account library could not refresh yet.");
+      }
+    }
+    if (!pendingClaim.current) {
+      if (accountFlowRequested.current && pendingAccountContext.current === "landing") {
+        setAccountPromptOpen(false);
+        setRoute("home");
+      }
+      if (accountFlowRequested.current) clearAuthIntent();
+      accountFlowRequested.current = false;
+    }
+  }, [authSnapshot.session, claimPendingReview, refreshAccountLibrary]);
+
+  useEffect(() => {
+    const intent = loadAuthIntent();
+    if (intent) {
+      accountFlowRequested.current = true;
+      pendingAccountContext.current = intent.context;
+      setAccountPromptContext(intent.context);
+      setAccountPromptOpen(true);
+      if (intent.context === "save") {
+        const guestSession = loadGuestSession();
+        pendingClaim.current = guestSession && intent.idempotencyKey
+          ? { guestToken: guestSession.token, idempotencyKey: intent.idempotencyKey }
+          : null;
+      }
+    }
+    const redirectMessage = consumeAuthRedirectMessage();
+    if (redirectMessage) setAuthMessage(redirectMessage);
+    const unsubscribe = subscribeAuth((snapshot) => {
+      setAuthSnapshot(snapshot);
+      if (snapshot.event) setAuthRevision((value) => value + 1);
+      if (snapshot.event === "SIGNED_OUT") {
+        accountFlowRequested.current = false;
+        clearAuthIntent();
+        pendingClaim.current = null;
+        setGames([]);
+        setJobs([]);
+        setProfile(null);
+        setDrills([]);
+        setSelectedGameId("");
+        setRoute("landing");
+        setAccountPromptOpen(false);
+        setAuthBusy(null);
+        setAuthMessage(snapshot.message);
+      }
+    });
+    void initializeAuth().then(setAuthSnapshot);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (authSnapshot.session) void handleAuthenticatedSession();
+  }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,7 +321,7 @@ export default function App() {
     };
     connect();
     return () => { window.clearTimeout(reconnect); socket?.close(); };
-  }, [refreshGame, refreshRuntime]);
+  }, [authRevision, refreshGame, refreshRuntime]);
 
   const resetTransient = useCallback((ply = selectedPly) => {
     setSelectedPly(ply);
@@ -486,12 +617,64 @@ export default function App() {
   }, []);
 
   const openAccountPrompt = useCallback((context: "landing" | "save") => {
+    accountFlowRequested.current = true;
+    pendingAccountContext.current = context;
     setAccountPromptContext(context);
     setAccountPromptOpen(true);
+    if (context === "save") {
+      const guestSession = loadGuestSession();
+      pendingClaim.current = guestSession
+        ? { guestToken: guestSession.token, idempotencyKey: createClaimIdempotencyKey() }
+        : null;
+      if (authSnapshot.session) void claimPendingReview();
+    } else {
+      pendingClaim.current = null;
+    }
+  }, [authSnapshot.session, claimPendingReview]);
+
+  const startProviderSignIn = useCallback(async (provider: AuthProvider) => {
+    setAuthBusy(provider);
+    setAuthMessage(`Connecting to ${authProviderLabel(provider)}…`);
+    saveAuthIntent({
+      context: pendingAccountContext.current,
+      idempotencyKey: pendingClaim.current?.idempotencyKey,
+    });
+    const result = await signInWithProvider(provider);
+    setAuthMessage(result.message);
+    if (!result.ok) {
+      clearAuthIntent();
+      setAuthBusy(null);
+    }
   }, []);
 
+  const handleSignOut = useCallback(async () => {
+    setAuthBusy(null);
+    const result = await signOut();
+    setAuthMessage(result.message);
+    if (!result.ok) setError(result.message);
+  }, []);
+
+  const closeAccountPrompt = useCallback(() => {
+    if (!claimInFlight.current) {
+      pendingClaim.current = null;
+      accountFlowRequested.current = false;
+      clearAuthIntent();
+    }
+    setAccountPromptOpen(false);
+  }, []);
+
+  const accountPrompt = accountPromptOpen && <AccountPrompt
+    context={accountPromptContext}
+    auth={authSnapshot}
+    busyProvider={authBusy}
+    message={authMessage}
+    onProvider={(provider) => void startProviderSignIn(provider)}
+    onSignOut={() => void handleSignOut()}
+    onClose={closeAccountPrompt}
+  />;
+
   if (route === "landing") {
-    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("landing")}/>{accountPromptOpen && <AccountPrompt context={accountPromptContext} onClose={() => setAccountPromptOpen(false)}/>}</>;
+    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("landing")}/>{accountPrompt}</>;
   }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };
@@ -606,7 +789,7 @@ export default function App() {
     {importOpen && (
       <ImportModal busy={importBusy} stage={importStage} error={error} onClose={() => !importBusy && setImportOpen(false)} onSubmit={(url, pgn) => void runImport(url, pgn)}/>
     )}
-    {accountPromptOpen && <AccountPrompt context={accountPromptContext} onClose={() => setAccountPromptOpen(false)}/>}
+    {accountPrompt}
   </>;
 }
 
@@ -781,6 +964,12 @@ function needsAttention(classification: string) {
 function classificationClass(value: string) { return value.toLowerCase().replace(/[^a-z]+/g, "-"); }
 function titleCase(value: string) { return value.replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function delay(ms: number) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+
+function createClaimIdempotencyKey() {
+  return typeof crypto.randomUUID === "function"
+    ? `guest-claim-${crypto.randomUUID()}`
+    : `guest-claim-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function dayGreeting(date: Date) {
   const hour = date.getHours();

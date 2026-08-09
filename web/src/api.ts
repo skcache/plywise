@@ -18,6 +18,7 @@ import type {
   VariationAnalysis,
 } from "./types";
 import { apiUrl } from "./config/runtime";
+import { accountAccessToken } from "./auth-session";
 import { loadGuestSession } from "./guest-session";
 
 export class ApiError extends Error {
@@ -36,9 +37,11 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  const guestSession = loadGuestSession();
-  if (guestSession && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${guestSession.token}`);
+  if (!headers.has("Authorization")) {
+    const accountToken = await accountAccessToken();
+    const guestSession = loadGuestSession();
+    if (accountToken) headers.set("Authorization", `Bearer ${accountToken}`);
+    else if (guestSession) headers.set("Authorization", `Bearer ${guestSession.token}`);
   }
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");

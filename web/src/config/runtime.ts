@@ -1,4 +1,5 @@
 import { resolveServiceOrigins, serviceUrl } from "./service-origin";
+import { cachedAccountAccessToken } from "../auth-session";
 import { loadGuestSession } from "../guest-session";
 
 const origins = resolveServiceOrigins(
@@ -19,6 +20,8 @@ export function eventUrl(path: string): string {
 
 /** WebSocket cannot set Authorization headers; offer the guest proof as a subprotocol instead. */
 export function eventProtocols(): string[] {
+  const accountToken = cachedAccountAccessToken();
+  if (accountToken) return ["plywise-auth", accountToken];
   const guestSession = loadGuestSession();
   return guestSession ? ["plywise-auth", guestSession.token] : [];
 }

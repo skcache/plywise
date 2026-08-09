@@ -700,6 +700,25 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .import-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 20px; }
 .import-modal footer small { color: var(--text-faint); }
 .import-modal footer button { min-height: 45px; padding: 0 17px; border: 1px solid var(--line); border-radius: 17px; color: var(--text); background: var(--surface-low); box-shadow: 7px 8px 16px var(--shadow-dark), -3px -3px 9px var(--shadow-light); cursor: pointer; }
+.account-modal { width: min(520px, 100%); padding: 26px; border: 1px solid var(--line-strong); border-radius: 30px; background: var(--surface-high); box-shadow: 24px 30px 80px rgb(0 0 0 / .7); }
+.account-modal > header { display: flex; justify-content: space-between; gap: 24px; }
+.account-modal > header span { color: var(--text-faint); font-size: 10px; }
+.account-modal h2 { margin: 7px 0 8px; font-size: 28px; letter-spacing: -.045em; }
+.account-modal header p { max-width: 390px; margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
+.account-modal header button { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 15px; color: var(--text-soft); background: var(--surface-low); cursor: pointer; }
+.account-modal header svg { width: 18px; }
+.account-providers { display: grid; gap: 9px; margin-top: 24px; }
+.account-providers > button { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 58px; padding: 8px 13px 8px 9px; border: 1px solid var(--line); border-radius: 18px; color: var(--text); background: var(--surface-low); box-shadow: 5px 6px 13px var(--shadow-dark), -2px -2px 7px var(--shadow-light), inset 1px 1px var(--shadow-light); cursor: pointer; text-align: left; }
+.account-providers > button:hover { border-color: var(--line-strong); background: var(--surface-high); }
+.account-provider-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-soft); background: var(--surface-high); font-size: 12px; font-weight: 700; }
+.account-providers > button > span:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
+.account-providers strong { font-size: 12px; font-weight: 650; }
+.account-providers small { color: var(--text-faint); font-size: 9px; }
+.account-provider-arrow { color: var(--text-faint); font-size: 16px; }
+.account-prompt-status { min-height: 18px; margin: 17px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.5; }
+.account-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 19px; padding-top: 18px; border-top: 1px solid var(--line); }
+.account-modal footer small { color: var(--text-faint); font-size: 9px; line-height: 1.4; }
+.account-modal footer button { flex: 0 0 auto; min-height: 42px; padding: 0 15px; border: 1px solid var(--line); border-radius: 15px; color: var(--text); background: var(--surface-low); box-shadow: 6px 7px 14px var(--shadow-dark), -3px -3px 8px var(--shadow-light); cursor: pointer; font-size: 11px; }
 
 @media (max-width: 1270px) {
   .app-frame { grid-template-columns: 104px minmax(0, 1fr); }
@@ -741,6 +760,9 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
   .landing-primary { justify-content: center; }
   .landing-secondary { align-self: flex-start; }
   .landing-footer { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .account-modal { padding: 22px; border-radius: 25px; }
+  .account-modal footer { align-items: flex-start; flex-direction: column; }
+  .account-modal footer button { width: 100%; }
 }
 
 @media (max-height: 800px) {

@@ -3,10 +3,9 @@ import { Icon } from "./Icon";
 
 const previewFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-export function LandingView({ onStart, onSignIn, accountMessage }: {
+export function LandingView({ onStart, onSignIn }: {
   onStart: () => void;
   onSignIn: () => void;
-  accountMessage: string;
 }) {
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
@@ -34,7 +33,6 @@ export function LandingView({ onStart, onSignIn, accountMessage }: {
             <button className="landing-secondary" onClick={onSignIn}>Sign in when you want saved history <span aria-hidden="true">→</span></button>
           </div>
           <p className="landing-note"><Icon name="check" /> One completed game at a time · no subscription · no Chess.com password</p>
-          {accountMessage && <p className="landing-status" role="status">{accountMessage}</p>}
         </div>
 
         <div className="landing-preview" aria-label="Board-first review preview">

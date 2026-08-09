@@ -16,6 +16,7 @@ export function HomeView({
   onRecent,
   onImport,
   onPractice,
+  onSave,
 }: {
   games: StoredGame[];
   jobs: Job[];
@@ -29,6 +30,7 @@ export function HomeView({
   onRecent: () => void;
   onImport: () => void;
   onPractice: (drill: Drill) => void;
+  onSave: () => void;
 }) {
   const review = homeContinueReview(games);
   const focus = homeFocus(profile, drills);
@@ -41,7 +43,7 @@ export function HomeView({
     <h1 className="sr-only">Home</h1>
     <div className="home-guest-strip" role="status">
       <div><span className={`home-guest-dot home-guest-${guestTrial.status}`} aria-hidden="true"/><span><strong>{guestTrialLabel(guestTrial)}</strong><small>{guestTrialRetention(guestTrial)}</small></span></div>
-      {guestMessage ? <p>{guestMessage}</p> : guestTrial.status === "available" ? <button onClick={onImport}>Start with a completed game <span aria-hidden="true">→</span></button> : <small className="home-guest-next">Account saving is coming next.</small>}
+      {guestMessage ? <p>{guestMessage}</p> : guestTrial.status === "available" ? <button onClick={onImport}>Start with a completed game <span aria-hidden="true">→</span></button> : guestTrial.status === "used" ? <button onClick={onSave}>Save this review <span aria-hidden="true">→</span></button> : <small className="home-guest-next">Your review is in progress.</small>}
     </div>
     <div className="home-primary">
       <article className="home-module continue-module">

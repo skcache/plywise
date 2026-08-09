@@ -35,6 +35,7 @@ import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
 import { LandingView } from "./LandingView";
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
+import { AccountPrompt } from "./AccountPrompt";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "line" | "method";
@@ -83,7 +84,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
-  const [landingAccountMessage, setLandingAccountMessage] = useState("");
+  const [accountPromptContext, setAccountPromptContext] = useState<"landing" | "save">("landing");
+  const [accountPromptOpen, setAccountPromptOpen] = useState(false);
   const [guestTrial, setGuestTrial] = useState<GuestTrialState>(() => loadGuestTrial());
   const [guestMessage, setGuestMessage] = useState("");
   const autoplayTimer = useRef<number | null>(null);
@@ -455,7 +457,6 @@ export default function App() {
 
   const setAppRoute = useCallback((next: Route) => {
     setRoute(next);
-    setLandingAccountMessage("");
     setGuestMessage("");
     setMoreOpen(false);
     setOverviewOpen(false);
@@ -463,17 +464,17 @@ export default function App() {
   }, [refreshRuntime]);
 
   const startLandingReview = useCallback(() => {
-    setLandingAccountMessage("");
     setRoute("home");
     setImportOpen(true);
   }, []);
 
-  const explainLandingAccount = useCallback(() => {
-    setLandingAccountMessage("Accounts are coming next. You can still start a free review without one.");
+  const openAccountPrompt = useCallback((context: "landing" | "save") => {
+    setAccountPromptContext(context);
+    setAccountPromptOpen(true);
   }, []);
 
   if (route === "landing") {
-    return <LandingView onStart={startLandingReview} onSignIn={explainLandingAccount} accountMessage={landingAccountMessage}/>;
+    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("landing")}/>{accountPromptOpen && <AccountPrompt context={accountPromptContext} onClose={() => setAccountPromptOpen(false)}/>}</>;
   }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };
@@ -505,6 +506,7 @@ export default function App() {
       onRecent={() => setAppRoute("recent")}
       onImport={() => setImportOpen(true)}
       onPractice={(drill) => openGame(drill.source_game_id, drill.source_ply)}
+      onSave={() => openAccountPrompt("save")}
     />;
   } else if (route === "recent") {
     header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} actions={<SoftButton icon="import" onClick={() => setImportOpen(true)}>Import game</SoftButton>}/>;
@@ -587,6 +589,7 @@ export default function App() {
     {importOpen && (
       <ImportModal busy={importBusy} stage={importStage} error={error} onClose={() => !importBusy && setImportOpen(false)} onSubmit={(url, pgn) => void runImport(url, pgn)}/>
     )}
+    {accountPromptOpen && <AccountPrompt context={accountPromptContext} onClose={() => setAccountPromptOpen(false)}/>}
   </>;
 }
 

@@ -1,6 +1,7 @@
 #include "pct/app/postgres_repository.hpp"
 #include "pct/app/hosted_identity.hpp"
 
+#include "pct/chess/san.hpp"
 #include "pct/common/error.hpp"
 #include "pct/common/json.hpp"
 
@@ -9,10 +10,12 @@
 #include <openssl/sha.h>
 
 #include <array>
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cctype>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -167,6 +170,13 @@ std::string random_account_id() {
     return "acct-" + byte_array_hex(bytes);
 }
 
+std::string random_variation_id() {
+    std::array<unsigned char, 16> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw Error(ErrorCode::IoError, "could not generate a variation identifier");
+    return "variation-" + byte_array_hex(bytes);
+}
+
 std::string value_at(const Result& result, int row, int column) {
     if (PQgetisnull(result.get(), row, column) != 0)
         return {};
@@ -182,6 +192,46 @@ std::int64_t integer_at(const Result& result, int row, int column) {
     if (error != std::errc{} || end != value.data() + value.size())
         throw Error(ErrorCode::Corruption, "PostgreSQL returned an invalid integer");
     return parsed;
+}
+
+std::uint64_t unsigned_integer_at(const Result& result, int row, int column) {
+    const std::string value = value_at(result, row, column);
+    if (value.empty())
+        return 0;
+    std::uint64_t parsed = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size())
+        throw Error(ErrorCode::Corruption, "PostgreSQL returned an invalid unsigned integer");
+    return parsed;
+}
+
+std::optional<chess::Move> parse_uci(chess::Board& board, std::string_view uci) {
+    if (uci.size() != 4 && uci.size() != 5)
+        return std::nullopt;
+    chess::PieceType promotion = chess::PieceType::Queen;
+    if (uci.size() >= 5 && uci[4] == 'n')
+        promotion = chess::PieceType::Knight;
+    if (uci.size() >= 5 && uci[4] == 'b')
+        promotion = chess::PieceType::Bishop;
+    if (uci.size() >= 5 && uci[4] == 'r')
+        promotion = chess::PieceType::Rook;
+    try {
+        return board.find_legal_move(chess::parse_square(uci.substr(0, 2)),
+                                     chess::parse_square(uci.substr(2, 2)), promotion);
+    } catch (const Error&) {
+        return std::nullopt;
+    }
+}
+
+std::uint64_t random_review_attempt_id() {
+    std::array<unsigned char, sizeof(std::uint64_t)> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw Error(ErrorCode::IoError, "could not generate a review attempt identifier");
+    std::uint64_t id = 0;
+    for (const unsigned char byte : bytes)
+        id = (id << 8U) | static_cast<std::uint64_t>(byte);
+    id &= std::numeric_limits<std::uint64_t>::max() >> 1U;
+    return id == 0 ? 1 : id;
 }
 
 void require_owner(PGconn* connection, const OwnerId& owner) {
@@ -291,6 +341,71 @@ std::vector<StoredGame> select_games(PGconn* connection, const OwnerId& owner,
     for (int row = 0; row < PQntuples(result.get()); ++row)
         games.push_back(stored_game_from_row(result, row));
     return games;
+}
+
+std::optional<Variation> load_variation(PGconn* connection, const OwnerId& owner,
+                                        std::string_view variation_id, bool lock_row = false) {
+    require_owner(connection, owner);
+    const std::string owner_kind = owner_kind_name(owner.kind());
+    const std::string owner_id(owner.value());
+    std::string header_statement =
+        "SELECT game_id, root_ply, root_position, root_fen, engine_configuration, "
+        "current_node_id, (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint "
+        "FROM plywise.variations WHERE id = $1 AND owner_kind = $2 AND owner_id = $3";
+    if (lock_row)
+        header_statement += " FOR UPDATE";
+    const Result header = execute(connection, header_statement,
+                                  {std::string(variation_id), owner_kind, owner_id});
+    if (PQntuples(header.get()) == 0)
+        return std::nullopt;
+
+    Variation variation;
+    variation.id = std::string(variation_id);
+    variation.game_id = value_at(header, 0, 0);
+    variation.root_ply = static_cast<std::size_t>(unsigned_integer_at(header, 0, 1));
+    variation.root_position = value_at(header, 0, 2);
+    variation.root_fen = value_at(header, 0, 3);
+    variation.engine_configuration = value_at(header, 0, 4);
+    variation.current_node_id = unsigned_integer_at(header, 0, 5);
+    variation.updated_at_ms = integer_at(header, 0, 6);
+
+    const Result nodes = execute(
+        connection,
+        "SELECT node_id, parent_node_id, COALESCE(uci, ''), COALESCE(san, ''), fen "
+        "FROM plywise.variation_nodes WHERE variation_id = $1 ORDER BY node_id",
+        {std::string(variation_id)});
+    if (PQntuples(nodes.get()) == 0)
+        throw Error(ErrorCode::Corruption, "PostgreSQL variation has no root node");
+
+    for (int row = 0; row < PQntuples(nodes.get()); ++row) {
+        VariationNode node;
+        node.id = unsigned_integer_at(nodes, row, 0);
+        node.parent_id = PQgetisnull(nodes.get(), row, 1) != 0
+                             ? -1
+                             : integer_at(nodes, row, 1);
+        if (node.parent_id < 0 && node.id != 0)
+            throw Error(ErrorCode::Corruption, "PostgreSQL variation has multiple roots");
+        node.uci = value_at(nodes, row, 2);
+        node.san = value_at(nodes, row, 3);
+        node.fen = value_at(nodes, row, 4);
+        static_cast<void>(chess::Board::from_fen(node.fen));
+        variation.nodes.emplace(node.id, std::move(node));
+    }
+    if (!variation.nodes.contains(0) || !variation.nodes.contains(variation.current_node_id))
+        throw Error(ErrorCode::Corruption, "PostgreSQL variation cursor is invalid");
+    static_cast<void>(chess::Board::from_fen(variation.root_fen));
+    for (const auto& [node_id, node] : variation.nodes) {
+        if (node.parent_id < 0)
+            continue;
+        const auto parent = variation.nodes.find(static_cast<std::uint64_t>(node.parent_id));
+        if (parent == variation.nodes.end())
+            throw Error(ErrorCode::Corruption, "PostgreSQL variation parent is missing");
+        parent->second.children.push_back(node_id);
+    }
+    if (variation.nodes.rbegin()->first == std::numeric_limits<std::uint64_t>::max())
+        throw Error(ErrorCode::Corruption, "PostgreSQL variation has too many nodes");
+    variation.next_node_id = variation.nodes.rbegin()->first + 1;
+    return variation;
 }
 
 std::string owner_scoped_key(const OwnerId& owner, std::string_view value) {
@@ -776,41 +891,258 @@ ChessComSyncState PostgresRepository::chesscom_sync_state() const {
     unsupported("Chess.com sync state");
 }
 
-Variation PostgresRepository::create_variation(std::string_view, std::size_t, std::string) {
-    unsupported("variations");
+Variation PostgresRepository::create_variation(std::string_view game_id, std::size_t root_ply,
+                                               std::string root_position) {
+    if (root_position != "before" && root_position != "after")
+        throw Error(ErrorCode::InvalidArgument,
+                    "variation root position must be before or after");
+    if (root_ply > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw Error(ErrorCode::InvalidArgument, "variation root ply is too large");
+
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const auto games = select_games(impl_->connection, owner_, game_id);
+    if (games.empty())
+        throw Error(ErrorCode::NotFound, "game does not exist");
+    const auto& plies = games.front().imported.game.plies;
+    if (root_ply >= plies.size())
+        throw Error(ErrorCode::InvalidArgument, "variation root ply is outside the game");
+    const std::string root_fen = root_position == "before" ? plies[root_ply].fen_before
+                                                            : plies[root_ply].fen_after;
+    const std::string variation_id = random_variation_id();
+    const std::string owner_kind = owner_kind_name(owner_.kind());
+    const std::string owner_id(owner_.value());
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.variations "
+        "(id, game_id, owner_kind, owner_id, root_ply, root_position, root_fen, "
+        "engine_configuration, current_node_id) VALUES "
+        "($1, $2, $3, $4, $5, $6, $7, 'current-default', 0)",
+        {variation_id, std::string(game_id), owner_kind, owner_id, std::to_string(root_ply),
+         root_position, root_fen}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.variation_nodes "
+        "(variation_id, node_id, parent_node_id, uci, san, fen) "
+        "VALUES ($1, 0, NULL, NULL, NULL, $2)",
+        {variation_id, root_fen}));
+    transaction.commit();
+
+    const auto created = load_variation(impl_->connection, owner_, variation_id);
+    if (!created)
+        throw Error(ErrorCode::Corruption, "created variation could not be loaded");
+    return *created;
 }
 
-Variation PostgresRepository::extend_variation(std::string_view, std::uint64_t, std::string_view) {
-    unsupported("variations");
+Variation PostgresRepository::extend_variation(std::string_view variation_id,
+                                               std::uint64_t node_id,
+                                               std::string_view move_uci) {
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const auto current = load_variation(impl_->connection, owner_, variation_id, true);
+    if (!current)
+        throw Error(ErrorCode::NotFound, "variation does not exist");
+    const auto parent = current->nodes.find(node_id);
+    if (parent == current->nodes.end())
+        throw Error(ErrorCode::NotFound, "variation node does not exist");
+
+    chess::Board board = chess::Board::from_fen(parent->second.fen);
+    const auto move = parse_uci(board, move_uci);
+    if (!move)
+        throw Error(ErrorCode::IllegalMove, "move is not legal in the variation position");
+    const std::string canonical_uci = chess::uci(*move);
+    std::uint64_t child_id = 0;
+    for (const std::uint64_t candidate_id : parent->second.children) {
+        const auto candidate = current->nodes.find(candidate_id);
+        if (candidate != current->nodes.end() && candidate->second.uci == canonical_uci) {
+            child_id = candidate_id;
+            break;
+        }
+    }
+    if (child_id == 0) {
+        if (current->next_node_id == std::numeric_limits<std::uint64_t>::max())
+            throw Error(ErrorCode::InvalidArgument, "variation has reached its node limit");
+        child_id = current->next_node_id;
+        const std::string san = chess::to_san(board, *move);
+        board.make_move(*move);
+        static_cast<void>(execute(
+            impl_->connection,
+            "INSERT INTO plywise.variation_nodes "
+            "(variation_id, node_id, parent_node_id, uci, san, fen) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            {std::string(variation_id), std::to_string(child_id), std::to_string(node_id),
+             canonical_uci, san, board.to_fen()}));
+    }
+    static_cast<void>(execute(
+        impl_->connection,
+        "UPDATE plywise.variations SET current_node_id = $1, updated_at = now() "
+        "WHERE id = $2 AND owner_kind = $3 AND owner_id = $4",
+        {std::to_string(child_id), std::string(variation_id), owner_kind_name(owner_.kind()),
+         std::string(owner_.value())}));
+    transaction.commit();
+
+    const auto updated = load_variation(impl_->connection, owner_, variation_id);
+    if (!updated)
+        throw Error(ErrorCode::Corruption, "updated variation could not be loaded");
+    return *updated;
 }
 
-Variation PostgresRepository::set_variation_cursor(std::string_view, std::uint64_t) {
-    unsupported("variations");
+Variation PostgresRepository::set_variation_cursor(std::string_view variation_id,
+                                                   std::uint64_t node_id) {
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const auto current = load_variation(impl_->connection, owner_, variation_id, true);
+    if (!current)
+        throw Error(ErrorCode::NotFound, "variation does not exist");
+    if (!current->nodes.contains(node_id))
+        throw Error(ErrorCode::NotFound, "variation node does not exist");
+    static_cast<void>(execute(
+        impl_->connection,
+        "UPDATE plywise.variations SET current_node_id = $1, updated_at = now() "
+        "WHERE id = $2 AND owner_kind = $3 AND owner_id = $4",
+        {std::to_string(node_id), std::string(variation_id), owner_kind_name(owner_.kind()),
+         std::string(owner_.value())}));
+    transaction.commit();
+
+    const auto updated = load_variation(impl_->connection, owner_, variation_id);
+    if (!updated)
+        throw Error(ErrorCode::Corruption, "updated variation could not be loaded");
+    return *updated;
 }
 
-Variation PostgresRepository::reset_variation(std::string_view) {
-    unsupported("variations");
+Variation PostgresRepository::reset_variation(std::string_view variation_id) {
+    return set_variation_cursor(variation_id, 0);
 }
 
-std::optional<Variation> PostgresRepository::variation(std::string_view) const {
-    unsupported("variations");
+std::optional<Variation> PostgresRepository::variation(std::string_view variation_id) const {
+    std::lock_guard lock(mutex_);
+    return load_variation(impl_->connection, owner_, variation_id);
 }
 
-std::vector<Variation> PostgresRepository::variations(std::string_view) const {
-    unsupported("variations");
+std::vector<Variation> PostgresRepository::variations(std::string_view game_id) const {
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result ids = execute(
+        impl_->connection,
+        "SELECT id FROM plywise.variations WHERE game_id = $1 AND owner_kind = $2 "
+        "AND owner_id = $3 ORDER BY updated_at DESC, id",
+        {std::string(game_id), owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    std::vector<std::string> variation_ids;
+    variation_ids.reserve(static_cast<std::size_t>(PQntuples(ids.get())));
+    for (int row = 0; row < PQntuples(ids.get()); ++row)
+        variation_ids.push_back(value_at(ids, row, 0));
+
+    std::vector<Variation> result;
+    result.reserve(variation_ids.size());
+    for (const auto& id : variation_ids) {
+        const auto loaded = load_variation(impl_->connection, owner_, id);
+        if (loaded)
+            result.push_back(*loaded);
+    }
+    return result;
 }
 
-bool PostgresRepository::delete_variation(std::string_view) {
-    unsupported("variations");
+bool PostgresRepository::delete_variation(std::string_view variation_id) {
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const Result deleted = execute(
+        impl_->connection,
+        "DELETE FROM plywise.variations WHERE id = $1 AND owner_kind = $2 AND owner_id = $3 "
+        "RETURNING id",
+        {std::string(variation_id), owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    transaction.commit();
+    return PQntuples(deleted.get()) == 1;
 }
 
-ReviewAttempt PostgresRepository::record_review_attempt(std::string_view, std::size_t,
-                                                         std::string_view) {
-    unsupported("review attempts");
+ReviewAttempt PostgresRepository::record_review_attempt(std::string_view game_id,
+                                                        std::size_t ply,
+                                                        std::string_view uci) {
+    if (ply > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw Error(ErrorCode::InvalidArgument, "review ply is too large");
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const auto games = select_games(impl_->connection, owner_, game_id);
+    if (games.empty())
+        throw Error(ErrorCode::NotFound, "game does not exist");
+    const auto& stored = games.front();
+    if (!stored.analysis || ply >= stored.analysis->moves.size() ||
+        ply >= stored.imported.game.plies.size())
+        throw Error(ErrorCode::InvalidArgument, "review attempt requires an analyzed move");
+    chess::Board board = chess::Board::from_fen(stored.imported.game.plies[ply].fen_before);
+    const auto move = parse_uci(board, uci);
+    if (!move)
+        throw Error(ErrorCode::IllegalMove, "move is not legal in the retry position");
+    const std::string canonical = chess::uci(*move);
+    const auto& assessment = stored.analysis->moves[ply];
+    const bool accepted = canonical == assessment.best_uci ||
+                          std::find(assessment.acceptable_alternatives.begin(),
+                                    assessment.acceptable_alternatives.end(), canonical) !=
+                              assessment.acceptable_alternatives.end();
+
+    const Result head = execute(
+        impl_->connection,
+        "SELECT run_id FROM plywise.analysis_heads WHERE game_id = $1 AND owner_kind = $2 "
+        "AND owner_id = $3 AND compatibility_key = 'review-v1'",
+        {std::string(game_id), owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    if (PQntuples(head.get()) != 1)
+        throw Error(ErrorCode::Corruption, "completed review has no analysis head");
+    const std::string run_id = value_at(head, 0, 0);
+    ReviewAttempt attempt;
+    attempt.game_id = std::string(game_id);
+    attempt.ply = ply;
+    attempt.uci = canonical;
+    attempt.accepted = accepted;
+    attempt.attempted_at_ms = now_ms();
+    for (int retry = 0; retry < 4; ++retry) {
+        attempt.id = random_review_attempt_id();
+        const Result inserted = execute(
+            impl_->connection,
+            "INSERT INTO plywise.review_attempts "
+            "(id, game_id, run_id, owner_kind, owner_id, ply, uci, accepted, attempted_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, "
+            "to_timestamp($9::double precision / 1000)) "
+            "ON CONFLICT (id) DO NOTHING RETURNING id",
+            {std::to_string(attempt.id), std::string(game_id), run_id,
+             owner_kind_name(owner_.kind()), std::string(owner_.value()),
+             std::to_string(ply), canonical, accepted ? "true" : "false",
+             std::to_string(attempt.attempted_at_ms)});
+        if (PQntuples(inserted.get()) == 1) {
+            transaction.commit();
+            return attempt;
+        }
+    }
+    throw Error(ErrorCode::IoError, "could not allocate a review attempt identifier");
 }
 
-std::vector<ReviewAttempt> PostgresRepository::review_attempts(std::string_view) const {
-    unsupported("review attempts");
+std::vector<ReviewAttempt> PostgresRepository::review_attempts(std::string_view game_id) const {
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT CASE WHEN id ~ '^[0-9]+$' AND id::numeric <= 9223372036854775807 "
+        "THEN id::bigint ELSE ((('x' || substr(md5(id), 1, 15))::bit(60))::bigint + 1) END, "
+        "ply, uci, accepted, (EXTRACT(EPOCH FROM attempted_at) * 1000)::bigint "
+        "FROM plywise.review_attempts WHERE game_id = $1 AND owner_kind = $2 AND owner_id = $3 "
+        "ORDER BY attempted_at, id",
+        {std::string(game_id), owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    std::vector<ReviewAttempt> attempts;
+    attempts.reserve(static_cast<std::size_t>(PQntuples(result.get())));
+    for (int row = 0; row < PQntuples(result.get()); ++row) {
+        ReviewAttempt attempt;
+        attempt.id = unsigned_integer_at(result, row, 0);
+        attempt.game_id = std::string(game_id);
+        attempt.ply = static_cast<std::size_t>(unsigned_integer_at(result, row, 1));
+        attempt.uci = value_at(result, row, 2);
+        attempt.accepted = value_at(result, row, 3) == "t";
+        attempt.attempted_at_ms = integer_at(result, row, 4);
+        attempts.push_back(std::move(attempt));
+    }
+    return attempts;
 }
 
 struct HostedIdentityStore::Impl {
@@ -1128,8 +1460,10 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
     static_cast<void>(execute(
         impl_->connection,
         "INSERT INTO plywise.variations "
-        "(id, game_id, owner_kind, owner_id, root_ply, root_fen, engine_configuration, created_at, updated_at) "
-        "SELECT 'claim-var-' || md5($2 || ':' || id), game_id, 'account', $2, root_ply, root_fen, engine_configuration, created_at, updated_at "
+        "(id, game_id, owner_kind, owner_id, root_ply, root_position, root_fen, "
+        "engine_configuration, current_node_id, created_at, updated_at) "
+        "SELECT 'claim-var-' || md5($2 || ':' || id), game_id, 'account', $2, root_ply, "
+        "root_position, root_fen, engine_configuration, current_node_id, created_at, updated_at "
         "FROM plywise.variations WHERE owner_kind = 'guest' AND owner_id = $1 "
         "ON CONFLICT DO NOTHING",
         {guest_id, account_id}));
@@ -1149,7 +1483,8 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
         impl_->connection,
         "INSERT INTO plywise.review_attempts "
         "(id, game_id, run_id, owner_kind, owner_id, ply, uci, accepted, attempted_at) "
-        "SELECT 'claim-attempt-' || md5($2 || ':' || a.id), a.game_id, 'claim-' || md5($2 || ':' || a.run_id), 'account', $2, a.ply, a.uci, a.accepted, a.attempted_at "
+        "SELECT (((('x' || substr(md5($2 || ':' || a.id), 1, 15))::bit(60))::bigint + 1)::text), "
+        "a.game_id, 'claim-' || md5($2 || ':' || a.run_id), 'account', $2, a.ply, a.uci, a.accepted, a.attempted_at "
         "FROM plywise.review_attempts a WHERE a.owner_kind = 'guest' AND a.owner_id = $1 "
         "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || a.run_id) "
         "AND r.game_id = a.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "

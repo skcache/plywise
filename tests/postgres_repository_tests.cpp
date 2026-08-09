@@ -4,6 +4,7 @@
 #include "pct/app/postgres_repository.hpp"
 #include "pct/import/import_service.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -97,9 +98,23 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     analysis::GameAnalysis review;
     review.game_id = imported.game.identity;
     review.opening = "Guest Opening";
+    analysis::MoveAssessment move;
+    move.ply = 0;
+    move.fen_before = imported.game.plies[0].fen_before;
+    move.fen_after = imported.game.plies[0].fen_after;
+    move.played_uci = "d2d4";
+    move.best_uci = "d2d4";
+    move.evaluation_before = 0;
+    move.evaluation_after = 0;
+    review.moves.push_back(move);
     app::PostgresRepository guest(connection, app::OwnerId::guest("guest_identity"));
     CHECK(guest.add(imported) == app::AddResult::Added);
     guest.save_analysis(review);
+    const auto guest_variation = guest.create_variation(imported.game.identity, 0, "before");
+    const auto guest_branch = guest.extend_variation(guest_variation.id, 0, "e2e4");
+    CHECK_EQ(guest_branch.current_node_id, 1ULL);
+    const auto guest_attempt = guest.record_review_attempt(imported.game.identity, 0, "d2d4");
+    CHECK(guest_attempt.accepted);
 
     const auto receipt = identity.claim_guest("guest_identity", created.id, "claim-identity-1");
     CHECK_EQ(receipt.guest_id, "guest_identity");
@@ -114,6 +129,13 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     CHECK(stored.has_value());
     CHECK(stored->analysis.has_value());
     CHECK_EQ(stored->analysis->opening, "Guest Opening");
+    const auto claimed_variations = account.variations(imported.game.identity);
+    CHECK_EQ(claimed_variations.size(), 1ULL);
+    CHECK_EQ(claimed_variations.front().root_position, "before");
+    CHECK_EQ(claimed_variations.front().current_node_id, 1ULL);
+    const auto claimed_attempts = account.review_attempts(imported.game.identity);
+    CHECK_EQ(claimed_attempts.size(), 1ULL);
+    CHECK(claimed_attempts.front().accepted);
 
     const auto retry = identity.claim_guest("guest_identity", created.id, "claim-identity-1");
     CHECK_EQ(retry.transferred_games, receipt.transferred_games);
@@ -122,6 +144,87 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     CHECK(already.already_claimed);
     CHECK_EQ(already.transferred_games, 0ULL);
     CHECK_THROWS(identity.claim_guest("guest_identity", "account_test_b", "claim-other-1"));
+}
+
+TEST_CASE("PostgreSQL repository persists legal variations and review attempts") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    import::ImportService importer;
+    const auto imported = importer.from_pgn(
+        "[White \"Variation\"]\n[Black \"Review\"]\n[Result \"1-0\"]\n\n"
+        "1. d4 d5 2. c4 e6 1-0");
+    app::PostgresRepository repository(connection, app::OwnerId::account("account_test_a"));
+    CHECK(repository.add(imported) == app::AddResult::Added);
+
+    analysis::GameAnalysis review;
+    review.game_id = imported.game.identity;
+    analysis::MoveAssessment move;
+    move.ply = 0;
+    move.move_number = 1;
+    move.side = "white";
+    move.san = "d4";
+    move.played_san = "d4";
+    move.played_uci = "d2d4";
+    move.fen_before = imported.game.plies[0].fen_before;
+    move.fen_after = imported.game.plies[0].fen_after;
+    move.best_uci = "d2d4";
+    move.best_san = "d4";
+    move.evaluation_before = 0;
+    move.evaluation_after = 0;
+    move.evaluation_after_best = 0;
+    move.acceptable_alternatives = {"c2c4"};
+    move.classification_state = analysis::ClassificationState::Final;
+    review.moves.push_back(move);
+    repository.save_analysis(review);
+
+    const auto created = repository.create_variation(imported.game.identity, 0, "before");
+    CHECK_EQ(created.root_position, "before");
+    CHECK_EQ(created.root_fen, imported.game.plies[0].fen_before);
+    CHECK_EQ(created.current_node_id, 0ULL);
+    CHECK_EQ(created.nodes.size(), 1ULL);
+
+    const auto extended = repository.extend_variation(created.id, 0, "e2e4");
+    CHECK_EQ(extended.nodes.size(), 2ULL);
+    CHECK_EQ(extended.current_node_id, 1ULL);
+    CHECK_EQ(extended.nodes.at(1).uci, "e2e4");
+    CHECK_EQ(extended.nodes.at(0).children.size(), 1ULL);
+
+    const auto repeated = repository.extend_variation(created.id, 0, "e2e4");
+    CHECK_EQ(repeated.nodes.size(), 2ULL);
+    CHECK_EQ(repeated.current_node_id, 1ULL);
+    const auto reset = repository.reset_variation(created.id);
+    CHECK_EQ(reset.current_node_id, 0ULL);
+    const auto moved = repository.set_variation_cursor(created.id, 1);
+    CHECK_EQ(moved.current_node_id, 1ULL);
+
+    const auto accepted = repository.record_review_attempt(imported.game.identity, 0, "d2d4");
+    CHECK(accepted.accepted);
+    const auto rejected = repository.record_review_attempt(imported.game.identity, 0, "g1f3");
+    CHECK(!rejected.accepted);
+    CHECK(accepted.id != rejected.id);
+
+    app::PostgresRepository reopened(connection, app::OwnerId::account("account_test_a"));
+    const auto restored = reopened.variation(created.id);
+    CHECK(restored.has_value());
+    CHECK_EQ(restored->root_position, "before");
+    CHECK_EQ(restored->current_node_id, 1ULL);
+    CHECK_EQ(restored->nodes.size(), 2ULL);
+    const auto attempts = reopened.review_attempts(imported.game.identity);
+    CHECK_EQ(attempts.size(), 2ULL);
+    CHECK(std::any_of(attempts.begin(), attempts.end(),
+                      [](const auto& attempt) { return attempt.accepted; }));
+    CHECK(std::any_of(attempts.begin(), attempts.end(),
+                      [](const auto& attempt) { return !attempt.accepted; }));
+
+    app::PostgresRepository other(connection, app::OwnerId::account("account_test_b"));
+    CHECK(!other.variation(created.id).has_value());
+    CHECK(other.variations(imported.game.identity).empty());
+    CHECK_THROWS(other.extend_variation(created.id, 0, "e2e4"));
+    CHECK(!other.delete_variation(created.id));
+    CHECK(reopened.delete_variation(created.id));
+    CHECK(!reopened.variation(created.id).has_value());
 }
 
 #endif

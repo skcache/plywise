@@ -218,8 +218,10 @@ struct OidcTokenVerifier::Impl {
 
     std::optional<Jwk> key_for(std::string_view kid) const {
         const auto now = std::chrono::steady_clock::now();
+        bool had_loaded_keys = false;
         {
             std::lock_guard lock(mutex);
+            had_loaded_keys = keys_loaded;
             const auto found = keys.find(std::string(kid));
             const bool cache_fresh = keys_loaded && now - keys_loaded_at <= key_cache_ttl;
             if (cache_fresh && found != keys.end())
@@ -246,6 +248,8 @@ struct OidcTokenVerifier::Impl {
         keys = std::move(*loaded);
         keys_loaded = true;
         keys_loaded_at = std::chrono::steady_clock::now();
+        if (!had_loaded_keys)
+            last_refresh_attempt = {};
         const auto found = keys.find(std::string(kid));
         return found == keys.end() ? std::nullopt : std::optional<Jwk>(found->second);
     }

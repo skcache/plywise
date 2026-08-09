@@ -1,13 +1,17 @@
 #include "pct/app/postgres_repository.hpp"
+#include "pct/app/hosted_identity.hpp"
 
 #include "pct/common/error.hpp"
 #include "pct/common/json.hpp"
 
 #include <libpq-fe.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 
 #include <array>
 #include <charconv>
+#include <chrono>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -121,6 +125,48 @@ std::string sha256_bytea(std::string_view value) {
     return "\\x" + sha256_hex(value);
 }
 
+std::string bytea_parameter(const std::array<unsigned char, 32>& value) {
+    std::ostringstream encoded;
+    encoded << "\\x" << std::hex << std::setfill('0');
+    for (const unsigned char byte : value)
+        encoded << std::setw(2) << static_cast<unsigned>(byte);
+    return encoded.str();
+}
+
+std::string byte_array_hex(const std::array<unsigned char, 16>& value) {
+    std::ostringstream encoded;
+    encoded << std::hex << std::setfill('0');
+    for (const unsigned char byte : value)
+        encoded << std::setw(2) << static_cast<unsigned>(byte);
+    return encoded.str();
+}
+
+std::int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+void validate_identity_text(std::string_view label, std::string_view value, std::size_t maximum) {
+    if (value.empty() || value.size() > maximum)
+        throw Error(ErrorCode::InvalidArgument,
+                    std::string(label) + " must be between 1 and " + std::to_string(maximum) +
+                        " characters");
+    for (const char character : value) {
+        const unsigned char byte = static_cast<unsigned char>(character);
+        if (byte == 0 || std::iscntrl(byte) != 0)
+            throw Error(ErrorCode::InvalidArgument,
+                        std::string(label) + " contains a control character");
+    }
+}
+
+std::string random_account_id() {
+    std::array<unsigned char, 16> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw Error(ErrorCode::IoError, "could not generate an account identifier");
+    return "acct-" + byte_array_hex(bytes);
+}
+
 std::string value_at(const Result& result, int row, int column) {
     if (PQgetisnull(result.get(), row, column) != 0)
         return {};
@@ -142,7 +188,9 @@ void require_owner(PGconn* connection, const OwnerId& owner) {
     const Result result = execute(
         connection,
         "SELECT 1 FROM plywise.owners WHERE owner_kind = $1 AND owner_id = $2 "
-        "AND (owner_kind = 'account' OR expires_at > now())",
+        "AND (owner_kind = 'account' OR (expires_at > now() AND NOT EXISTS ("
+        "SELECT 1 FROM plywise.guest_sessions WHERE owner_kind = 'guest' "
+        "AND id = owner_id AND claimed_at IS NOT NULL)))",
         {owner_kind_name(owner.kind()), std::string(owner.value())});
     if (PQntuples(result.get()) != 1)
         throw Error(ErrorCode::NotFound, "repository owner does not exist");
@@ -763,6 +811,415 @@ ReviewAttempt PostgresRepository::record_review_attempt(std::string_view, std::s
 
 std::vector<ReviewAttempt> PostgresRepository::review_attempts(std::string_view) const {
     unsupported("review attempts");
+}
+
+struct HostedIdentityStore::Impl {
+    explicit Impl(const std::string& connection_string) {
+        connection = PQconnectdb(connection_string.c_str());
+        if (connection == nullptr || PQstatus(connection) != CONNECTION_OK) {
+            if (connection != nullptr)
+                PQfinish(connection);
+            connection = nullptr;
+            throw Error(ErrorCode::IoError, "failed to connect to PostgreSQL");
+        }
+        static_cast<void>(execute(connection, "SET search_path TO plywise, public"));
+    }
+
+    ~Impl() {
+        if (connection != nullptr)
+            PQfinish(connection);
+    }
+
+    PGconn* connection{nullptr};
+    std::mutex mutex;
+};
+
+HostedIdentityStore::HostedIdentityStore(std::string connection_string)
+    : impl_(std::make_unique<Impl>(connection_string)) {}
+
+HostedIdentityStore::~HostedIdentityStore() = default;
+
+HostedAccount HostedIdentityStore::ensure_account(std::string auth_provider,
+                                                  std::string auth_subject) {
+    validate_identity_text("authentication provider", auth_provider, 128);
+    validate_identity_text("authentication subject", auth_subject, 512);
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const Result existing = execute(
+        impl_->connection,
+        "SELECT id FROM plywise.accounts WHERE auth_provider = $1 AND auth_subject = $2 FOR UPDATE",
+        {auth_provider, auth_subject});
+    if (PQntuples(existing.get()) == 1) {
+        const std::string id = value_at(existing, 0, 0);
+        transaction.commit();
+        return HostedAccount{id};
+    }
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const std::string id = random_account_id();
+        const Result owner = execute(
+            impl_->connection,
+            "INSERT INTO plywise.owners (owner_kind, owner_id) VALUES ('account', $1) "
+            "ON CONFLICT DO NOTHING RETURNING owner_id",
+            {id});
+        if (PQntuples(owner.get()) == 0)
+            continue;
+        const Result inserted = execute(
+            impl_->connection,
+            "INSERT INTO plywise.accounts (id, auth_provider, auth_subject) VALUES ($1, $2, $3) "
+            "ON CONFLICT (auth_provider, auth_subject) DO NOTHING RETURNING id",
+            {id, auth_provider, auth_subject});
+        if (PQntuples(inserted.get()) == 1) {
+            transaction.commit();
+            return HostedAccount{id};
+        }
+
+        const Result raced = execute(
+            impl_->connection,
+            "SELECT id FROM plywise.accounts WHERE auth_provider = $1 AND auth_subject = $2",
+            {auth_provider, auth_subject});
+        if (PQntuples(raced.get()) == 1) {
+            const std::string raced_id = value_at(raced, 0, 0);
+            transaction.commit();
+            return HostedAccount{raced_id};
+        }
+    }
+    throw Error(ErrorCode::IoError, "could not create a hosted account");
+}
+
+GuestSession HostedIdentityStore::create_guest_session(
+    std::string guest_id, const std::array<unsigned char, 32>& token_hash,
+    std::int64_t expires_at_ms) {
+    validate_identity_text("guest id", guest_id, 256);
+    const std::int64_t current = now_ms();
+    constexpr std::int64_t max_guest_lifetime_ms = 30LL * 24 * 60 * 60 * 1000;
+    if (expires_at_ms <= current || expires_at_ms > current + max_guest_lifetime_ms)
+        throw Error(ErrorCode::InvalidArgument, "guest session expiry is outside the allowed window");
+
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const std::string token = bytea_parameter(token_hash);
+    const Result existing = execute(
+        impl_->connection,
+        "SELECT encode(token_hash, 'hex'), "
+        "(EXTRACT(EPOCH FROM expires_at) * 1000)::bigint, "
+        "COALESCE(claimed_by_account_id, '') "
+        "FROM plywise.guest_sessions WHERE id = $1 FOR UPDATE",
+        {guest_id});
+    if (PQntuples(existing.get()) == 1) {
+        if (value_at(existing, 0, 0) != token.substr(2) ||
+            !value_at(existing, 0, 2).empty() || integer_at(existing, 0, 1) <= current)
+            throw Error(ErrorCode::InvalidArgument, "guest session id is already in use");
+        const GuestSession session{guest_id, integer_at(existing, 0, 1)};
+        transaction.commit();
+        return session;
+    }
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.owners (owner_kind, owner_id, expires_at) "
+        "VALUES ('guest', $1, to_timestamp($2::double precision / 1000)) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, std::to_string(expires_at_ms)}));
+    const Result inserted = execute(
+        impl_->connection,
+        "INSERT INTO plywise.guest_sessions (id, token_hash, expires_at) "
+        "VALUES ($1, $2::bytea, to_timestamp($3::double precision / 1000)) "
+        "ON CONFLICT (id) DO NOTHING RETURNING id",
+        {guest_id, token, std::to_string(expires_at_ms)});
+    if (PQntuples(inserted.get()) == 0) {
+        const Result token_conflict = execute(
+            impl_->connection,
+            "SELECT id FROM plywise.guest_sessions WHERE token_hash = $1::bytea",
+            {token});
+        if (PQntuples(token_conflict.get()) != 1)
+            throw Error(ErrorCode::InvalidArgument, "guest session could not be created");
+        throw Error(ErrorCode::InvalidArgument, "guest token is already in use");
+    }
+    transaction.commit();
+    return GuestSession{guest_id, expires_at_ms};
+}
+
+std::optional<OwnerId> HostedIdentityStore::owner_for_guest_token(
+    const std::array<unsigned char, 32>& token_hash) const {
+    std::lock_guard lock(impl_->mutex);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT id FROM plywise.guest_sessions WHERE token_hash = $1::bytea "
+        "AND expires_at > now() AND claimed_at IS NULL",
+        {bytea_parameter(token_hash)});
+    if (PQntuples(result.get()) == 0)
+        return std::nullopt;
+    return OwnerId::guest(value_at(result, 0, 0));
+}
+
+GuestClaimReceipt claim_receipt_from_json(const json::Value& value) {
+    return GuestClaimReceipt{value.at("guest_id").as_string(),
+                             value.at("account_id").as_string(),
+                             static_cast<std::size_t>(value.at("transferred_games").as_number()),
+                             value.at("already_claimed").as_bool()};
+}
+
+GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
+                                                   std::string account_id,
+                                                   std::string idempotency_key) {
+    validate_identity_text("guest id", guest_id, 256);
+    validate_identity_text("account id", account_id, 256);
+    validate_identity_text("guest claim idempotency key", idempotency_key, 256);
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const Result account = execute(
+        impl_->connection,
+        "SELECT 1 FROM plywise.accounts WHERE id = $1 FOR UPDATE",
+        {account_id});
+    if (PQntuples(account.get()) != 1)
+        throw Error(ErrorCode::NotFound, "account does not exist");
+
+    const std::string request_hash = sha256_bytea(guest_id + ":" + account_id);
+    const Result prior = execute(
+        impl_->connection,
+        "SELECT encode(request_hash, 'hex'), response_json::text FROM plywise.idempotency_records "
+        "WHERE owner_kind = 'account' AND owner_id = $1 AND operation = 'guest_claim' "
+        "AND idempotency_key = $2 AND expires_at > now() FOR UPDATE",
+        {account_id, idempotency_key});
+    if (PQntuples(prior.get()) == 1) {
+        if (value_at(prior, 0, 0) != request_hash.substr(2))
+            throw Error(ErrorCode::InvalidArgument, "guest claim idempotency key was reused");
+        const GuestClaimReceipt receipt = claim_receipt_from_json(json::parse(value_at(prior, 0, 1)));
+        transaction.commit();
+        return receipt;
+    }
+
+    const auto persist_receipt = [&](const GuestClaimReceipt& receipt) {
+        const std::string response = json::dump(json::Value::Object{
+            {"guest_id", receipt.guest_id},
+            {"account_id", receipt.account_id},
+            {"transferred_games", receipt.transferred_games},
+            {"already_claimed", receipt.already_claimed},
+        });
+        static_cast<void>(execute(
+            impl_->connection,
+            "INSERT INTO plywise.idempotency_records "
+            "(owner_kind, owner_id, operation, idempotency_key, request_hash, resource_kind, "
+            "resource_id, response_json, expires_at) VALUES "
+            "('account', $1, 'guest_claim', $2, $3::bytea, 'guest_claim', $4, $5::jsonb, "
+            "now() + interval '30 days') ON CONFLICT DO NOTHING",
+            {account_id, idempotency_key, request_hash, guest_id, response}));
+    };
+
+    const Result session = execute(
+        impl_->connection,
+        "SELECT COALESCE(claimed_by_account_id, ''), (expires_at > now()) "
+        "FROM plywise.guest_sessions WHERE id = $1 AND owner_kind = 'guest' FOR UPDATE",
+        {guest_id});
+    if (PQntuples(session.get()) != 1)
+        throw Error(ErrorCode::NotFound, "guest session does not exist");
+    const std::string claimed_by = value_at(session, 0, 0);
+    if (!claimed_by.empty()) {
+        if (claimed_by != account_id)
+            throw Error(ErrorCode::NotFound, "guest session does not exist");
+        const GuestClaimReceipt receipt{guest_id, account_id, 0, true};
+        persist_receipt(receipt);
+        transaction.commit();
+        return receipt;
+    }
+    if (value_at(session, 0, 1) != "t")
+        throw Error(ErrorCode::NotFound, "guest session does not exist");
+
+    const Result games = execute(
+        impl_->connection,
+        "INSERT INTO plywise.game_owners "
+        "(game_id, owner_kind, owner_id, source_kind, source_key, provenance_json) "
+        "SELECT game_id, 'account', $2, source_kind, source_key, provenance_json "
+        "FROM plywise.game_owners WHERE owner_kind = 'guest' AND owner_id = $1 "
+        "ON CONFLICT DO NOTHING RETURNING game_id",
+        {guest_id, account_id});
+    const std::size_t transferred_games = static_cast<std::size_t>(PQntuples(games.get()));
+
+    const GuestClaimReceipt receipt{guest_id, account_id, transferred_games, false};
+    persist_receipt(receipt);
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.analysis_runs "
+        "(id, game_id, owner_kind, owner_id, idempotency_key, source, engine_build, engine_hash, "
+        "profile_version, classifier_version, compatibility_key, status, created_at, completed_at, "
+        "supersedes_id) "
+        "SELECT 'claim-' || md5($2 || ':' || id), game_id, 'account', $2, idempotency_key, source, engine_build, engine_hash, "
+        "profile_version, classifier_version, compatibility_key, status, created_at, completed_at, "
+        "CASE WHEN supersedes_id IS NULL THEN NULL ELSE 'claim-' || md5($2 || ':' || supersedes_id) END "
+        "FROM plywise.analysis_runs "
+        "WHERE owner_kind = 'guest' AND owner_id = $1 ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.analysis_positions "
+        "(run_id, game_id, owner_kind, owner_id, ply, sequence, canonical_fen_hash, depth, nodes, "
+        "time_ms, observation_json, validated_at) "
+        "SELECT 'claim-' || md5($2 || ':' || p.run_id), p.game_id, 'account', $2, p.ply, p.sequence, p.canonical_fen_hash, "
+        "p.depth, p.nodes, p.time_ms, p.observation_json, p.validated_at "
+        "FROM plywise.analysis_positions p WHERE p.owner_kind = 'guest' AND p.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || p.run_id) "
+        "AND r.game_id = p.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.move_assessments "
+        "(run_id, game_id, owner_kind, owner_id, ply, assessment_json) "
+        "SELECT 'claim-' || md5($2 || ':' || p.run_id), p.game_id, 'account', $2, p.ply, p.assessment_json "
+        "FROM plywise.move_assessments p WHERE p.owner_kind = 'guest' AND p.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || p.run_id) "
+        "AND r.game_id = p.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.reviews (run_id, game_id, owner_kind, owner_id, review_json, created_at) "
+        "SELECT 'claim-' || md5($2 || ':' || p.run_id), p.game_id, 'account', $2, p.review_json, p.created_at "
+        "FROM plywise.reviews p WHERE p.owner_kind = 'guest' AND p.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || p.run_id) "
+        "AND r.game_id = p.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.analysis_heads "
+        "(game_id, owner_kind, owner_id, compatibility_key, run_id, revision, updated_at) "
+        "SELECT h.game_id, 'account', $2, h.compatibility_key, 'claim-' || md5($2 || ':' || h.run_id), h.revision, h.updated_at "
+        "FROM plywise.analysis_heads h WHERE h.owner_kind = 'guest' AND h.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || h.run_id) "
+        "AND r.game_id = h.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.analysis_jobs "
+        "(id, run_id, game_id, owner_kind, owner_id, idempotency_key, priority, status, attempt, "
+        "lease_owner, lease_expires_at, cancel_requested_at, created_at, updated_at) "
+        "SELECT 'claim-job-' || md5($2 || ':' || j.id), 'claim-' || md5($2 || ':' || j.run_id), j.game_id, 'account', $2, j.idempotency_key, j.priority, j.status, "
+        "j.attempt, j.lease_owner, j.lease_expires_at, j.cancel_requested_at, j.created_at, j.updated_at "
+        "FROM plywise.analysis_jobs j WHERE j.owner_kind = 'guest' AND j.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || j.run_id) "
+        "AND r.game_id = j.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.job_events "
+        "(job_id, run_id, owner_kind, owner_id, sequence, stage, completed_units, total_units, created_at) "
+        "SELECT 'claim-job-' || md5($2 || ':' || e.job_id), 'claim-' || md5($2 || ':' || e.run_id), 'account', $2, e.sequence, e.stage, e.completed_units, "
+        "e.total_units, e.created_at FROM plywise.job_events e "
+        "WHERE e.owner_kind = 'guest' AND e.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_jobs j WHERE j.id = 'claim-job-' || md5($2 || ':' || e.job_id) "
+        "AND j.run_id = 'claim-' || md5($2 || ':' || e.run_id) AND j.owner_kind = 'account' AND j.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.chess_profiles "
+        "(owner_kind, owner_id, provider, username, settings_json, sync_cursor, "
+        "last_successful_sync_at, last_error) "
+        "SELECT 'account', $2, provider, username, settings_json, sync_cursor, "
+        "last_successful_sync_at, last_error FROM plywise.chess_profiles "
+        "WHERE owner_kind = 'guest' AND owner_id = $1 ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.variations "
+        "(id, game_id, owner_kind, owner_id, root_ply, root_fen, engine_configuration, created_at, updated_at) "
+        "SELECT 'claim-var-' || md5($2 || ':' || id), game_id, 'account', $2, root_ply, root_fen, engine_configuration, created_at, updated_at "
+        "FROM plywise.variations WHERE owner_kind = 'guest' AND owner_id = $1 "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.variation_nodes "
+        "(variation_id, node_id, parent_node_id, uci, san, fen) "
+        "SELECT 'claim-var-' || md5($2 || ':' || n.variation_id), n.node_id, n.parent_node_id, n.uci, n.san, n.fen "
+        "FROM plywise.variation_nodes n JOIN plywise.variations guest_variation "
+        "ON guest_variation.id = n.variation_id AND guest_variation.owner_kind = 'guest' "
+        "AND guest_variation.owner_id = $1 "
+        "WHERE EXISTS (SELECT 1 FROM plywise.variations account_variation "
+        "WHERE account_variation.id = 'claim-var-' || md5($2 || ':' || n.variation_id) AND account_variation.owner_kind = 'account' "
+        "AND account_variation.owner_id = $2) ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.review_attempts "
+        "(id, game_id, run_id, owner_kind, owner_id, ply, uci, accepted, attempted_at) "
+        "SELECT 'claim-attempt-' || md5($2 || ':' || a.id), a.game_id, 'claim-' || md5($2 || ':' || a.run_id), 'account', $2, a.ply, a.uci, a.accepted, a.attempted_at "
+        "FROM plywise.review_attempts a WHERE a.owner_kind = 'guest' AND a.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || a.run_id) "
+        "AND r.game_id = a.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.intelligence_evidence "
+        "(id, owner_kind, owner_id, run_id, game_id, ply, evidence_kind, model_version, evidence_json, created_at) "
+        "SELECT 'claim-evidence-' || md5($2 || ':' || e.id), 'account', $2, 'claim-' || md5($2 || ':' || e.run_id), e.game_id, e.ply, e.evidence_kind, e.model_version, "
+        "e.evidence_json, e.created_at FROM plywise.intelligence_evidence e "
+        "WHERE e.owner_kind = 'guest' AND e.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.analysis_runs r WHERE r.id = 'claim-' || md5($2 || ':' || e.run_id) "
+        "AND r.game_id = e.game_id AND r.owner_kind = 'account' AND r.owner_id = $2) "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.practice_items "
+        "(id, owner_kind, owner_id, evidence_id, state, due_at, schedule_version, created_at, updated_at) "
+        "SELECT 'claim-practice-' || md5($2 || ':' || p.id), 'account', $2, 'claim-evidence-' || md5($2 || ':' || p.evidence_id), p.state, p.due_at, p.schedule_version, "
+        "p.created_at, p.updated_at FROM plywise.practice_items p "
+        "WHERE p.owner_kind = 'guest' AND p.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.intelligence_evidence e WHERE e.id = 'claim-evidence-' || md5($2 || ':' || p.evidence_id) "
+        "AND e.owner_kind = 'account' AND e.owner_id = $2) ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.practice_outcomes "
+        "(id, practice_item_id, owner_kind, owner_id, result, response_time_ms, hint_level, attempted_at) "
+        "SELECT 'claim-outcome-' || md5($2 || ':' || o.id), 'claim-practice-' || md5($2 || ':' || o.practice_item_id), 'account', $2, o.result, o.response_time_ms, o.hint_level, o.attempted_at "
+        "FROM plywise.practice_outcomes o WHERE o.owner_kind = 'guest' AND o.owner_id = $1 "
+        "AND EXISTS (SELECT 1 FROM plywise.practice_items p WHERE p.id = 'claim-practice-' || md5($2 || ':' || o.practice_item_id) "
+        "AND p.owner_kind = 'account' AND p.owner_id = $2) ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.user_settings "
+        "(owner_kind, owner_id, settings_version, settings_json, updated_at) "
+        "SELECT 'account', $2, settings_version, settings_json, updated_at "
+        "FROM plywise.user_settings WHERE owner_kind = 'guest' AND owner_id = $1 "
+        "ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.idempotency_records "
+        "(owner_kind, owner_id, operation, idempotency_key, request_hash, resource_kind, resource_id, "
+        "response_json, created_at, expires_at) "
+        "SELECT 'account', $2, operation, idempotency_key, request_hash, resource_kind, resource_id, "
+        "response_json, created_at, expires_at FROM plywise.idempotency_records "
+        "WHERE owner_kind = 'guest' AND owner_id = $1 ON CONFLICT DO NOTHING",
+        {guest_id, account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.outbox_events "
+        "(owner_kind, owner_id, aggregate_kind, aggregate_id, event_kind, payload_json, created_at, published_at) "
+        "SELECT 'account', $2, aggregate_kind, "
+        "CASE WHEN aggregate_kind = 'analysis' THEN 'claim-' || md5($2 || ':' || aggregate_id) ELSE aggregate_id END, "
+        "event_kind, payload_json, created_at, published_at "
+        "FROM plywise.outbox_events WHERE owner_kind = 'guest' AND owner_id = $1",
+        {guest_id, account_id}));
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "UPDATE plywise.guest_sessions SET claimed_by_owner_kind = 'account', "
+        "claimed_by_account_id = $2, claimed_at = now() WHERE id = $1",
+        {guest_id, account_id}));
+    transaction.commit();
+    return receipt;
 }
 
 } // namespace pct::app

@@ -276,6 +276,28 @@ TEST_CASE("API stages only owner-scoped, versioned browser observations") {
         })});
     CHECK_EQ(started.status, 201);
 
+    const auto aggressive = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-analysis", {},
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", "run-api-aggressive"},
+            {"gameId", game_id},
+            {"profile", "aggressive"},
+            {"engine", engine},
+        })});
+    CHECK_EQ(aggressive.status, 201);
+    const auto unsupported = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-analysis", {},
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", "run-api-unsupported"},
+            {"gameId", game_id},
+            {"profile", "experimental"},
+            {"engine", engine},
+        })});
+    CHECK_EQ(unsupported.status, 400);
+    CHECK_EQ(json::parse(unsupported.body).at("code").as_string(), "invalid_argument");
+
     const auto stored = fixture.repository.get(game_id);
     CHECK(stored.has_value());
     const std::string fen = stored->imported.game.plies.front().fen_before;

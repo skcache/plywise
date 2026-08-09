@@ -545,13 +545,21 @@ std::optional<Request> read_request(int fd) {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         const std::size_t colon = line.find(':');
-        if (colon == std::string::npos)
-            continue;
+        if (colon == std::string::npos || colon == 0)
+            throw Error(ErrorCode::InvalidArgument, "invalid HTTP header");
         std::string key = lowercase(line.substr(0, colon));
+        if (std::any_of(key.begin(), key.end(), [](unsigned char character) {
+                return std::isspace(character) != 0 || character < 0x21U;
+            }))
+            throw Error(ErrorCode::InvalidArgument, "invalid HTTP header name");
         std::size_t start = colon + 1;
-        while (start < line.size() && line[start] == ' ')
+        while (start < line.size() && (line[start] == ' ' || line[start] == '\t'))
             ++start;
-        request.headers.insert_or_assign(std::move(key), line.substr(start));
+        if (key == "transfer-encoding")
+            throw Error(ErrorCode::InvalidArgument, "transfer-encoding is unsupported");
+        if (key == "content-length" && request.headers.contains(key))
+            throw Error(ErrorCode::InvalidArgument, "duplicate content-length header");
+        request.headers.emplace(std::move(key), line.substr(start));
     }
     std::size_t content_length = 0;
     if (const auto found = request.headers.find("content-length"); found != request.headers.end()) {

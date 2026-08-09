@@ -29,6 +29,7 @@ constexpr std::size_t max_key_count = 32;
 constexpr std::size_t max_kid_size = 256;
 constexpr std::size_t max_subject_size = 512;
 constexpr std::chrono::minutes key_cache_ttl{10};
+constexpr std::chrono::seconds key_refresh_cooldown{30};
 
 using Bytes = std::vector<unsigned char>;
 
@@ -216,17 +217,22 @@ struct OidcTokenVerifier::Impl {
     }
 
     std::optional<Jwk> key_for(std::string_view kid) const {
-        const auto needs_refresh = [&] {
-            return !keys_loaded ||
-                   std::chrono::steady_clock::now() - keys_loaded_at > key_cache_ttl;
-        };
+        const auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard lock(mutex);
-            if (!needs_refresh()) {
-                const auto found = keys.find(std::string(kid));
+            const auto found = keys.find(std::string(kid));
+            const bool cache_fresh = keys_loaded && now - keys_loaded_at <= key_cache_ttl;
+            if (cache_fresh && found != keys.end())
+                return found->second;
+            // A key miss must not turn an untrusted kid into an outbound request on every
+            // bearer attempt. One refresh attempt per cooldown is enough for normal key rotation
+            // while bounding random-kid amplification and failed-provider retries.
+            if (now - last_refresh_attempt < key_refresh_cooldown) {
                 if (found != keys.end())
                     return found->second;
+                return std::nullopt;
             }
+            last_refresh_attempt = now;
         }
         std::optional<JwkSet> loaded;
         try {
@@ -248,6 +254,7 @@ struct OidcTokenVerifier::Impl {
     mutable std::mutex mutex;
     mutable bool keys_loaded{false};
     mutable std::chrono::steady_clock::time_point keys_loaded_at{};
+    mutable std::chrono::steady_clock::time_point last_refresh_attempt{};
     mutable JwkSet keys;
 };
 

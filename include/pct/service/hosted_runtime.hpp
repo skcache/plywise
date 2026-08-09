@@ -17,9 +17,9 @@ struct HostedRuntimeOptions {
     std::string oidc_jwks_url;
 };
 
-// Owns the hosted identity store, verified OIDC boundary, and owner-scoped PostgreSQL resources.
-// The runtime never exposes a database connection or token to React; it returns the callbacks
-// needed by Api::AuthConfig and keeps all owner resources alive for the process lifetime.
+// Owns the hosted identity store, verified OIDC boundary, and bounded owner-scoped PostgreSQL
+// resources. The runtime never exposes a database connection or token to React; it returns the
+// callbacks needed by Api::AuthConfig and pins a scope only while it is active or in flight.
 class HostedRuntime final {
   public:
     HostedRuntime(HostedRuntimeOptions options, analysis::Analyzer& analyzer,

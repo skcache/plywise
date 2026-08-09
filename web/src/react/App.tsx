@@ -995,7 +995,39 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
 function ImportModal({ busy, stage, error, onClose, onSubmit }: { busy: boolean; stage: string; error: string; onClose: () => void; onSubmit: (url: string, pgn: string) => void }) {
   const [url, setUrl] = useState("");
   const [pgn, setPgn] = useState("");
-  return <div className="modal-backdrop" role="presentation"><form className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p>Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose} disabled={busy}><Icon name="close"/></button></header><label htmlFor="chesscom-url"><span>Chess.com game link</span><input id="chesscom-url" name="url" autoComplete="url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label htmlFor="game-pgn"><span>PGN</span><textarea id="game-pgn" name="pgn" value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'}/></label>{error && <p id="import-error" className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button type="submit" disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
+  const dialogRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ));
+    const first = focusable()[0];
+    first?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (!busy) onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (controls.length === 0) return;
+      const current = document.activeElement;
+      const index = controls.indexOf(current as HTMLElement);
+      const next = event.shiftKey
+        ? controls[(index <= 0 ? controls.length : index) - 1]
+        : controls[(index + 1) % controls.length];
+      if (!dialog.contains(current) || index < 0 || next) {
+        event.preventDefault();
+        (next ?? controls[0]).focus();
+      }
+    };
+    dialog.addEventListener("keydown", onKeyDown);
+    return () => dialog.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  return <div className="modal-backdrop" role="presentation"><form ref={dialogRef} className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" aria-describedby="import-description" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p id="import-description">Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose} disabled={busy}><Icon name="close"/></button></header><label htmlFor="chesscom-url"><span>Chess.com game link</span><input id="chesscom-url" name="url" autoComplete="url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label htmlFor="game-pgn"><span>PGN</span><textarea id="game-pgn" name="pgn" value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'} aria-describedby={error ? "import-error" : undefined}/></label>{error && <p id="import-error" className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button type="submit" disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
 }
 
 function PlayerIdentityPrompt({ prompt, busy, error, onClose, onDecision }: {

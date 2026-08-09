@@ -159,6 +159,13 @@ TEST_CASE("OIDC verifier accepts a valid RS256 token and resolves its account") 
     CHECK_EQ(loads, 1ULL);
     CHECK(verifier.verify("not-a-jwt").has_value() == false);
     CHECK_EQ(loads, 1ULL);
+
+    // An unknown key id is untrusted input. It may trigger one rotation refresh, but repeated
+    // misses must stay inside the cooldown instead of causing one JWKS request per token.
+    const std::string unknown_key = sign_token(key.pkey.get(), "unknown-key", now + 300);
+    CHECK(!verifier.verify(unknown_key).has_value());
+    CHECK(!verifier.verify(unknown_key).has_value());
+    CHECK_EQ(loads, 2ULL);
 }
 
 TEST_CASE("OIDC verifier rejects expired, forged, and wrongly issued tokens") {

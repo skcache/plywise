@@ -86,6 +86,10 @@ struct BrowserObservationBundle {
     std::vector<BrowserEngineObservation> observations;
 };
 
+// Profiles are part of the browser/C++ trust contract. Callers at every persistence boundary
+// should reject unknown values before they reach a database constraint or a review assembler.
+void validate_browser_observation_profile(std::string_view profile);
+
 // Stable JSON used by hosted staging. This is a transport representation only; observations
 // remain untrusted until validate_browser_observation and assemble_browser_review run.
 [[nodiscard]] json::Value browser_observation_to_json(const BrowserEngineObservation& observation);

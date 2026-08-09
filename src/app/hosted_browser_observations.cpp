@@ -180,6 +180,7 @@ void HostedBrowserObservationStore::begin(
     const OwnerId& owner, const analysis::BrowserObservationRunContext& context) {
     if (context.game_id.empty() || context.analysis_run_id.empty() || context.profile.empty())
         throw Error(ErrorCode::InvalidArgument, "browser staging run context is invalid");
+    analysis::validate_browser_observation_profile(context.profile);
     std::lock_guard lock(impl_->mutex);
     Transaction transaction(impl_->connection);
     require_owner(impl_->connection, owner);

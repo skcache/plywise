@@ -158,6 +158,10 @@ void require_json_object_keys(const json::Value& value,
 
 } // namespace
 
+void validate_browser_observation_profile(std::string_view profile) {
+    static_cast<void>(profile_limits(profile));
+}
+
 json::Value browser_observation_to_json(const BrowserEngineObservation& observation) {
     json::Value::Array lines;
     lines.reserve(observation.lines.size());

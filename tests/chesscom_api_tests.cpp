@@ -238,6 +238,28 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
         close(rejected_http_host);
     }
 
+    const int duplicate_content_length = port == 0 ? -1 : connect_loopback(port);
+    std::string duplicate_content_length_response;
+    if (duplicate_content_length >= 0) {
+        const std::string request =
+            "GET /api/health HTTP/1.1\r\nHost: localhost\r\n"
+            "Content-Length: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        static_cast<void>(send(duplicate_content_length, request.data(), request.size(), 0));
+        duplicate_content_length_response = receive_available(duplicate_content_length);
+        close(duplicate_content_length);
+    }
+
+    const int transfer_encoding = port == 0 ? -1 : connect_loopback(port);
+    std::string transfer_encoding_response;
+    if (transfer_encoding >= 0) {
+        const std::string request =
+            "GET /api/health HTTP/1.1\r\nHost: localhost\r\n"
+            "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        static_cast<void>(send(transfer_encoding, request.data(), request.size(), 0));
+        transfer_encoding_response = receive_available(transfer_encoding);
+        close(transfer_encoding);
+    }
+
     const int accepted_http = port == 0 ? -1 : connect_loopback(port);
     std::string accepted_http_response;
     if (accepted_http >= 0) {
@@ -297,6 +319,10 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
     CHECK(rejected_http_origin_response.starts_with("HTTP/1.1 403 Forbidden"));
     CHECK(rejected_http_host >= 0);
     CHECK(rejected_http_host_response.starts_with("HTTP/1.1 403 Forbidden"));
+    CHECK(duplicate_content_length >= 0);
+    CHECK(duplicate_content_length_response.starts_with("HTTP/1.1 400 Bad Request"));
+    CHECK(transfer_encoding >= 0);
+    CHECK(transfer_encoding_response.starts_with("HTTP/1.1 400 Bad Request"));
     CHECK(accepted_http >= 0);
     CHECK(accepted_http_response.starts_with("HTTP/1.1 200 OK"));
     CHECK(accepted_preflight >= 0);

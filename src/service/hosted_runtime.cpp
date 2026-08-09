@@ -31,6 +31,7 @@ namespace {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
 
 constexpr std::size_t max_jwks_bytes = 512U * 1024U;
+constexpr std::size_t max_owner_resources = 128;
 constexpr std::int64_t guest_lifetime_ms = 24LL * 60 * 60 * 1000;
 
 template <std::size_t Size>
@@ -299,6 +300,8 @@ struct HostedRuntime::Impl {
             return ApiScope{owner_resources->repository.get(), owner_resources->jobs.get(),
                             owner_resources};
         }
+        if (resources.size() >= max_owner_resources)
+            throw Error(ErrorCode::QuotaExceeded, "hosted owner resource capacity is full");
 
         auto created = std::make_shared<OwnerResources>();
         created->repository =

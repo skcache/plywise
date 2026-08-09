@@ -141,6 +141,7 @@ if(BUILD_TESTING)
         tests/corpus_tests.cpp
         tests/phase2_e2e_tests.cpp
         tests/phase3_e2e_tests.cpp
+        tests/hosted_vertical_slice_tests.cpp
     )
     if(OpenSSL_FOUND AND PCT_ENABLE_OIDC_AUTH)
         target_sources(pct-tests PRIVATE tests/oidc_token_verifier_tests.cpp)

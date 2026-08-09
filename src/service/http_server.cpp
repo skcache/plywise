@@ -762,6 +762,12 @@ Response Api::handle(const Request& request) {
             request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "session"};
         const bool guest_claim_route =
             request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "claim"};
+        const bool account_export_route =
+            request.method == "POST" &&
+            parts == std::vector<std::string>{"api", "account", "export"};
+        const bool account_delete_route =
+            request.method == "POST" &&
+            parts == std::vector<std::string>{"api", "account", "delete"};
         const bool public_route = guest_session_route ||
                                   (request.method == "GET" &&
                                    (parts == std::vector<std::string>{"api", "health"} ||
@@ -838,7 +844,83 @@ Response Api::handle(const Request& request) {
                                           {"guest_id", result.guest_id},
                                           {"account_id", result.account_id},
                                           {"transferred_games", result.transferred_games},
-                                          {"already_claimed", result.already_claimed},
+                                      {"already_claimed", result.already_claimed},
+                                      });
+        }
+
+        if (account_export_route || account_delete_route) {
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Account)
+                return auth_response(403, "account authentication is required", "account_required");
+
+            const json::Value body = request.body.empty()
+                                         ? json::Value::Object{}
+                                         : json::parse(request.body);
+            require_object_keys(body, {}, {"idempotency_key", "confirm"}, "account request");
+            std::string idempotency_key = body.get("idempotency_key", "").as_string();
+            if (idempotency_key.empty()) {
+                if (const auto found = request.headers.find("idempotency-key");
+                    found != request.headers.end())
+                    idempotency_key = found->second;
+            }
+            if (idempotency_key.empty())
+                throw Error(ErrorCode::InvalidArgument,
+                            "account request requires an idempotency key");
+            static_cast<void>(bounded_text(json::Value(idempotency_key), 256,
+                                           "account idempotency key"));
+
+            if (account_export_route) {
+                if (!auth_.export_account)
+                    return auth_response(503, "account export is not configured",
+                                         "account_export_unavailable");
+                const AccountExportResult result =
+                    auth_.export_account(*authenticated_owner, idempotency_key);
+                return json_response(200, json::Value::Object{
+                                              {"request_id", result.request_id},
+                                              {"status", "completed"},
+                                              {"completed_at_ms",
+                                               static_cast<double>(result.completed_at_ms)},
+                                              {"data", std::move(result.data)},
+                                          });
+            }
+
+            if (!body.get("confirm", false).as_bool())
+                throw Error(ErrorCode::InvalidArgument,
+                            "account deletion requires confirm=true");
+            if (!auth_.verify_fresh)
+                return auth_response(503, "fresh authorization is not configured",
+                                     "fresh_authorization_unavailable");
+            const auto reauth = request.headers.find("x-plywise-reauth-token");
+            if (reauth == request.headers.end() || reauth->second.empty())
+                return auth_response(401, "fresh authorization is required",
+                                     "fresh_authorization_required");
+            std::optional<app::OwnerId> fresh_owner;
+            try {
+                fresh_owner = auth_.verify_fresh(reauth->second);
+            } catch (...) {
+                fresh_owner = std::nullopt;
+            }
+            if (!fresh_owner || *fresh_owner != *authenticated_owner)
+                return auth_response(401, "fresh authorization is invalid",
+                                     "fresh_authorization_invalid");
+            if (!auth_.delete_account)
+                return auth_response(503, "account deletion is not configured",
+                                     "account_deletion_unavailable");
+            const AccountDeletionResult result =
+                auth_.delete_account(*authenticated_owner, idempotency_key);
+            return json_response(200, json::Value::Object{
+                                          {"request_id", result.request_id},
+                                          {"status", "completed"},
+                                          {"receipt_token", result.receipt_token.empty()
+                                                                 ? json::Value{}
+                                                                 : json::Value(result.receipt_token)},
+                                          {"deleted_at_ms",
+                                           static_cast<double>(result.completed_at_ms)},
+                                          {"backup_retention_until_ms",
+                                           static_cast<double>(result.backup_retention_until_ms)},
+                                          {"backup_retention_days", 30},
+                                          {"backup_retention_notice",
+                                           "Encrypted backups may retain deleted data until the "
+                                           "retention deadline."},
                                       });
         }
 

@@ -159,7 +159,7 @@ restored_migrations="$(
   PGDATABASE="$restore_database" psql -X --tuples-only --no-align \
     --command "SELECT count(*) FROM plywise.schema_migrations"
 )"
-if [[ "$restored_runs" != "2" || "$restored_migrations" != "2" ]]; then
+if [[ "$restored_runs" != "2" || "$restored_migrations" != "3" ]]; then
   echo "Restored database did not preserve the qualified schema and data" >&2
   exit 1
 fi

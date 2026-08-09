@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include "pct/common/json.hpp"
 
 namespace pct::app {
 
@@ -32,6 +33,19 @@ struct GuestClaimReceipt {
     bool already_claimed{false};
 };
 
+struct AccountExport {
+    std::string request_id;
+    json::Value data;
+    std::int64_t completed_at_ms{0};
+};
+
+struct AccountDeletionReceipt {
+    std::string request_id;
+    std::string receipt_token;
+    std::int64_t completed_at_ms{0};
+    std::int64_t backup_retention_until_ms{0};
+};
+
 // Persistence for verified account subjects and opaque guest proofs. The caller owns token
 // generation and verification; this class stores only a token hash and performs the atomic
 // guest-to-account transfer.
@@ -53,6 +67,10 @@ class HostedIdentityStore final {
     [[nodiscard]] GuestClaimReceipt claim_guest(std::string guest_id,
                                                 std::string account_id,
                                                 std::string idempotency_key);
+    [[nodiscard]] AccountExport export_account(std::string account_id,
+                                               std::string idempotency_key);
+    [[nodiscard]] AccountDeletionReceipt delete_account(std::string account_id,
+                                                        std::string idempotency_key);
 
   private:
     struct Impl;

@@ -33,6 +33,9 @@ class HostedRuntime final {
     [[nodiscard]] AuthConfig::ScopeResolver scope_resolver() const;
     [[nodiscard]] AuthConfig::GuestSessionCreator guest_session_creator() const;
     [[nodiscard]] AuthConfig::GuestClaimHandler guest_claim_handler() const;
+    [[nodiscard]] AuthConfig::FreshTokenVerifier fresh_token_verifier() const;
+    [[nodiscard]] AuthConfig::AccountExportHandler account_export_handler() const;
+    [[nodiscard]] AuthConfig::AccountDeletionHandler account_deletion_handler() const;
 
   private:
     struct Impl;

@@ -239,6 +239,45 @@ struct HostedRuntime::Impl {
         return ApiScope{inserted->second.repository.get(), inserted->second.jobs.get()};
     }
 
+    AccountExportResult export_account(const app::OwnerId& owner,
+                                       std::string_view idempotency_key) const {
+        if (owner.kind() != app::OwnerKind::Account)
+            throw Error(ErrorCode::InvalidArgument, "account export requires an account owner");
+        const auto result = identity->export_account(std::string(owner.value()),
+                                                      std::string(idempotency_key));
+        return AccountExportResult{result.request_id, std::move(result.data),
+                                   result.completed_at_ms};
+    }
+
+    AccountDeletionResult delete_account(const app::OwnerId& owner,
+                                         std::string_view idempotency_key) {
+        if (owner.kind() != app::OwnerKind::Account)
+            throw Error(ErrorCode::InvalidArgument, "account deletion requires an account owner");
+
+        const std::string key = "account:" + std::string(owner.value());
+        std::optional<OwnerResources> retired;
+        {
+            std::lock_guard lock(resources_mutex);
+            const auto found = resources.find(key);
+            if (found != resources.end()) {
+                for (const auto& job : found->second.jobs->list()) {
+                    if (job.status == app::JobStatus::Queued ||
+                        job.status == app::JobStatus::Running)
+                        static_cast<void>(found->second.jobs->cancel(job.id));
+                }
+                retired.emplace(std::move(found->second));
+                resources.erase(found);
+            }
+        }
+        // Joining the owner workers before the database cascade prevents a cancelled task from
+        // racing a deletion and writing a late review back into a removed account.
+        retired.reset();
+        const auto result = identity->delete_account(std::string(owner.value()),
+                                                      std::string(idempotency_key));
+        return AccountDeletionResult{result.request_id, result.receipt_token,
+                                     result.completed_at_ms, result.backup_retention_until_ms};
+    }
+
     HostedRuntimeOptions options;
     analysis::Analyzer& analyzer;
     app::JobManagerOptions job_options;
@@ -298,6 +337,39 @@ AuthConfig::GuestClaimHandler HostedRuntime::guest_claim_handler() const {
     return [runtime](std::string_view token, const app::OwnerId& account,
                      std::string_view idempotency_key) {
         return runtime->claim_guest(token, account, idempotency_key);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::FreshTokenVerifier HostedRuntime::fresh_token_verifier() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    const OidcTokenVerifier* verifier = impl_->verifier.get();
+    return [verifier](std::string_view token) {
+        return verifier->verify_fresh(token, std::chrono::minutes(5));
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::AccountExportHandler HostedRuntime::account_export_handler() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner, std::string_view idempotency_key) {
+        return runtime->export_account(owner, idempotency_key);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::AccountDeletionHandler HostedRuntime::account_deletion_handler() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner, std::string_view idempotency_key) {
+        return runtime->delete_account(owner, idempotency_key);
     };
 #else
     return {};

@@ -136,7 +136,8 @@ std::string bytea_parameter(const std::array<unsigned char, 32>& value) {
     return encoded.str();
 }
 
-std::string byte_array_hex(const std::array<unsigned char, 16>& value) {
+template <std::size_t Size>
+std::string byte_array_hex(const std::array<unsigned char, Size>& value) {
     std::ostringstream encoded;
     encoded << std::hex << std::setfill('0');
     for (const unsigned char byte : value)
@@ -175,6 +176,20 @@ std::string random_variation_id() {
     if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
         throw Error(ErrorCode::IoError, "could not generate a variation identifier");
     return "variation-" + byte_array_hex(bytes);
+}
+
+std::string random_prefixed_id(std::string_view prefix) {
+    std::array<unsigned char, 16> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw Error(ErrorCode::IoError, "could not generate a hosted data request identifier");
+    return std::string(prefix) + byte_array_hex(bytes);
+}
+
+std::string random_receipt_token() {
+    std::array<unsigned char, 32> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw Error(ErrorCode::IoError, "could not generate an account deletion receipt");
+    return "dr-" + byte_array_hex(bytes);
 }
 
 std::string value_at(const Result& result, int row, int column) {
@@ -1187,6 +1202,53 @@ HostedAccount HostedIdentityStore::ensure_account(std::string auth_provider,
         return HostedAccount{id};
     }
 
+    // Expired receipts no longer need to be trackable and must not block a fresh account shell.
+    static_cast<void>(execute(impl_->connection,
+                              "DELETE FROM plywise.account_deletion_receipts "
+                              "WHERE expires_at <= now()"));
+    // A deleted account may sign in again. Reuse its opaque owner id while a deletion receipt is
+    // retained so replaying the same delete key can return the original receipt instead of
+    // creating a second identity. Only a hash of the provider subject is kept in the receipt table.
+    const std::string subject_hash = sha256_bytea(auth_subject);
+    const Result tombstone = execute(
+        impl_->connection,
+        "SELECT account_id FROM plywise.account_deletion_receipts "
+        "WHERE auth_provider = $1 AND auth_subject_hash = $2::bytea "
+        "AND expires_at > now() ORDER BY completed_at DESC LIMIT 1",
+        {auth_provider, subject_hash});
+    if (PQntuples(tombstone.get()) == 1) {
+        const std::string id = value_at(tombstone, 0, 0);
+        if (id.empty())
+            throw Error(ErrorCode::Corruption, "account deletion receipt has no account id");
+        const Result owner = execute(
+            impl_->connection,
+            "INSERT INTO plywise.owners (owner_kind, owner_id) VALUES ('account', $1) "
+            "ON CONFLICT DO NOTHING RETURNING owner_id",
+            {id});
+        if (PQntuples(owner.get()) == 1) {
+            const Result inserted = execute(
+                impl_->connection,
+                "INSERT INTO plywise.accounts (id, auth_provider, auth_subject) "
+                "VALUES ($1, $2, $3) ON CONFLICT (auth_provider, auth_subject) DO NOTHING "
+                "RETURNING id",
+                {id, auth_provider, auth_subject});
+            if (PQntuples(inserted.get()) == 1) {
+                transaction.commit();
+                return HostedAccount{id};
+            }
+        }
+        const Result raced = execute(
+            impl_->connection,
+            "SELECT id FROM plywise.accounts WHERE auth_provider = $1 AND auth_subject = $2",
+            {auth_provider, auth_subject});
+        if (PQntuples(raced.get()) == 1) {
+            const std::string raced_id = value_at(raced, 0, 0);
+            transaction.commit();
+            return HostedAccount{raced_id};
+        }
+        throw Error(ErrorCode::Corruption, "account deletion tombstone could not be restored");
+    }
+
     for (int attempt = 0; attempt < 3; ++attempt) {
         const std::string id = random_account_id();
         const Result owner = execute(
@@ -1555,6 +1617,268 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
         {guest_id, account_id}));
     transaction.commit();
     return receipt;
+}
+
+AccountExport HostedIdentityStore::export_account(std::string account_id,
+                                                  std::string idempotency_key) {
+    validate_identity_text("account id", account_id, 256);
+    validate_identity_text("account export idempotency key", idempotency_key, 256);
+    constexpr std::size_t max_export_bytes = 64U * 1024U * 1024U;
+
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const Result account = execute(
+        impl_->connection,
+        "SELECT 1 FROM plywise.accounts WHERE id = $1 FOR UPDATE",
+        {account_id});
+    if (PQntuples(account.get()) != 1)
+        throw Error(ErrorCode::NotFound, "account does not exist");
+
+    std::string request_id;
+    const Result prior = execute(
+        impl_->connection,
+        "SELECT id, status, COALESCE(receipt_json::text, '') "
+        "FROM plywise.account_data_requests "
+        "WHERE owner_kind = 'account' AND owner_id = $1 AND request_kind = 'export' "
+        "AND idempotency_key = $2 FOR UPDATE",
+        {account_id, idempotency_key});
+    if (PQntuples(prior.get()) == 1) {
+        request_id = value_at(prior, 0, 0);
+        if (value_at(prior, 0, 1) == "completed" && !value_at(prior, 0, 2).empty()) {
+            const json::Value receipt = json::parse(value_at(prior, 0, 2));
+            return AccountExport{receipt.at("request_id").as_string(), receipt.at("data"),
+                                 static_cast<std::int64_t>(receipt.at("completed_at_ms")
+                                                                .as_number())};
+        }
+        static_cast<void>(execute(
+            impl_->connection,
+            "UPDATE plywise.account_data_requests SET status = 'running', receipt_json = NULL, "
+            "completed_at = NULL WHERE id = $1",
+            {request_id}));
+    } else {
+        request_id = random_prefixed_id("export-");
+        static_cast<void>(execute(
+            impl_->connection,
+            "INSERT INTO plywise.account_data_requests "
+            "(id, owner_kind, owner_id, request_kind, idempotency_key, status) "
+            "VALUES ($1, 'account', $2, 'export', $3, 'running')",
+            {request_id, account_id, idempotency_key}));
+    }
+
+    const Result encoded = execute(
+        impl_->connection,
+        R"sql(
+SELECT jsonb_build_object(
+    'export_version', 1,
+    'account', (SELECT jsonb_build_object(
+        'id', id,
+        'auth_provider', auth_provider,
+        'auth_subject', auth_subject,
+        'email', email,
+        'created_at', created_at,
+        'deletion_requested_at', deletion_requested_at
+    ) FROM plywise.accounts WHERE id = $1),
+    'games', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', g.id,
+        'normalized_pgn', g.normalized_pgn,
+        'metadata', g.metadata_json,
+        'imported_at', go.imported_at,
+        'source_kind', go.source_kind,
+        'source_key', go.source_key,
+        'provenance', go.provenance_json
+    ) ORDER BY go.imported_at DESC, g.id)
+        FROM plywise.game_owners go JOIN plywise.games g ON g.id = go.game_id
+        WHERE go.owner_kind = 'account' AND go.owner_id = $1), '[]'::jsonb),
+    'analysis_runs', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'game_id', game_id, 'idempotency_key', idempotency_key,
+        'source', source, 'engine_build', engine_build,
+        'engine_hash', CASE WHEN engine_hash IS NULL THEN NULL ELSE encode(engine_hash, 'hex') END,
+        'profile_version', profile_version, 'classifier_version', classifier_version,
+        'compatibility_key', compatibility_key, 'status', status,
+        'created_at', created_at, 'completed_at', completed_at, 'supersedes_id', supersedes_id
+    ) ORDER BY created_at, id)
+        FROM plywise.analysis_runs WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'analysis_positions', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'run_id', run_id, 'game_id', game_id, 'ply', ply, 'sequence', sequence,
+        'canonical_fen_hash', encode(canonical_fen_hash, 'hex'), 'depth', depth,
+        'nodes', nodes, 'time_ms', time_ms, 'observation', observation_json,
+        'validated_at', validated_at
+    ) ORDER BY run_id, ply, sequence)
+        FROM plywise.analysis_positions WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'move_assessments', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'run_id', run_id, 'game_id', game_id, 'ply', ply, 'assessment', assessment_json
+    ) ORDER BY run_id, ply)
+        FROM plywise.move_assessments WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'reviews', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'run_id', run_id, 'game_id', game_id, 'review', review_json, 'created_at', created_at
+    ) ORDER BY created_at, run_id)
+        FROM plywise.reviews WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'analysis_jobs', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'run_id', run_id, 'game_id', game_id, 'idempotency_key', idempotency_key,
+        'priority', priority, 'status', status, 'attempt', attempt,
+        'cancel_requested_at', cancel_requested_at, 'created_at', created_at, 'updated_at', updated_at
+    ) ORDER BY created_at, id)
+        FROM plywise.analysis_jobs WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'job_events', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'job_id', job_id, 'run_id', run_id, 'sequence', sequence, 'stage', stage,
+        'completed_units', completed_units, 'total_units', total_units, 'created_at', created_at
+    ) ORDER BY job_id, sequence)
+        FROM plywise.job_events WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'chess_profiles', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'provider', provider, 'username', username, 'settings', settings_json,
+        'sync_cursor', sync_cursor, 'last_successful_sync_at', last_successful_sync_at,
+        'last_error', last_error
+    ) ORDER BY provider)
+        FROM plywise.chess_profiles WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'variations', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'game_id', game_id, 'root_ply', root_ply, 'root_position', root_position,
+        'root_fen', root_fen, 'engine_configuration', engine_configuration,
+        'current_node_id', current_node_id, 'created_at', created_at, 'updated_at', updated_at
+    ) ORDER BY created_at, id)
+        FROM plywise.variations WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'variation_nodes', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'variation_id', n.variation_id, 'node_id', n.node_id, 'parent_node_id', n.parent_node_id,
+        'uci', n.uci, 'san', n.san, 'fen', n.fen
+    ) ORDER BY n.variation_id, n.node_id)
+        FROM plywise.variation_nodes n JOIN plywise.variations v ON v.id = n.variation_id
+        WHERE v.owner_kind = 'account' AND v.owner_id = $1), '[]'::jsonb),
+    'review_attempts', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'game_id', game_id, 'run_id', run_id, 'ply', ply, 'uci', uci,
+        'accepted', accepted, 'attempted_at', attempted_at
+    ) ORDER BY attempted_at, id)
+        FROM plywise.review_attempts WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'intelligence_evidence', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'run_id', run_id, 'game_id', game_id, 'ply', ply,
+        'evidence_kind', evidence_kind, 'model_version', model_version,
+        'evidence', evidence_json, 'created_at', created_at
+    ) ORDER BY created_at, id)
+        FROM plywise.intelligence_evidence WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'practice_items', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'evidence_id', evidence_id, 'state', state, 'due_at', due_at,
+        'schedule_version', schedule_version, 'created_at', created_at, 'updated_at', updated_at
+    ) ORDER BY created_at, id)
+        FROM plywise.practice_items WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'practice_outcomes', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'id', id, 'practice_item_id', practice_item_id, 'result', result,
+        'response_time_ms', response_time_ms, 'hint_level', hint_level, 'attempted_at', attempted_at
+    ) ORDER BY attempted_at, id)
+        FROM plywise.practice_outcomes WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb),
+    'settings', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'settings_version', settings_version, 'settings', settings_json, 'updated_at', updated_at
+    ) ORDER BY updated_at DESC)
+        FROM plywise.user_settings WHERE owner_kind = 'account' AND owner_id = $1), '[]'::jsonb)
+)::text
+)sql",
+        {account_id});
+    const std::string encoded_export = value_at(encoded, 0, 0);
+    if (encoded_export.empty() || encoded_export.size() > max_export_bytes)
+        throw Error(ErrorCode::IoError, "account export exceeds the storage safety limit");
+    const json::Value data = json::parse(encoded_export);
+    const std::int64_t completed_at_ms = now_ms();
+    const json::Value receipt = json::Value::Object{
+        {"request_id", request_id},
+        {"completed_at_ms", static_cast<double>(completed_at_ms)},
+        {"data", data},
+    };
+    static_cast<void>(execute(
+        impl_->connection,
+        "UPDATE plywise.account_data_requests SET status = 'completed', receipt_json = $2::jsonb, "
+        "completed_at = to_timestamp($3::double precision / 1000) WHERE id = $1",
+        {request_id, json::dump(receipt), std::to_string(completed_at_ms)}));
+    transaction.commit();
+    return AccountExport{std::move(request_id), data, completed_at_ms};
+}
+
+AccountDeletionReceipt HostedIdentityStore::delete_account(std::string account_id,
+                                                           std::string idempotency_key) {
+    validate_identity_text("account id", account_id, 256);
+    validate_identity_text("account deletion idempotency key", idempotency_key, 256);
+    constexpr std::int64_t backup_retention_ms = 30LL * 24 * 60 * 60 * 1000;
+
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const Result account = execute(
+        impl_->connection,
+        "SELECT auth_provider, auth_subject FROM plywise.accounts WHERE id = $1 FOR UPDATE",
+        {account_id});
+    if (PQntuples(account.get()) != 1)
+        throw Error(ErrorCode::NotFound, "account does not exist");
+
+    const std::string auth_provider = value_at(account, 0, 0);
+    const std::string auth_subject = value_at(account, 0, 1);
+    const Result prior_receipt = execute(
+        impl_->connection,
+        "SELECT request_id, (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint, "
+        "(EXTRACT(EPOCH FROM expires_at) * 1000)::bigint "
+        "FROM plywise.account_deletion_receipts WHERE account_id = $1 "
+        "AND idempotency_key = $2 FOR UPDATE",
+        {account_id, idempotency_key});
+    if (PQntuples(prior_receipt.get()) == 1) {
+        transaction.commit();
+        // The raw receipt token is deliberately never stored, so a replay receives an empty
+        // token while retaining the original trackable request and retention deadline.
+        return AccountDeletionReceipt{value_at(prior_receipt, 0, 0), {},
+                                      integer_at(prior_receipt, 0, 1),
+                                      integer_at(prior_receipt, 0, 2)};
+    }
+
+    const Result prior = execute(
+        impl_->connection,
+        "SELECT status FROM plywise.account_data_requests "
+        "WHERE owner_kind = 'account' AND owner_id = $1 AND request_kind = 'delete' "
+        "AND idempotency_key = $2 FOR UPDATE",
+        {account_id, idempotency_key});
+    if (PQntuples(prior.get()) == 1 && value_at(prior, 0, 0) == "completed")
+        throw Error(ErrorCode::NotFound, "account has already been deleted");
+
+    const std::string request_id = random_prefixed_id("delete-");
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.account_data_requests "
+        "(id, owner_kind, owner_id, request_kind, idempotency_key, status) "
+        "VALUES ($1, 'account', $2, 'delete', $3, 'running') "
+        "ON CONFLICT (owner_kind, owner_id, request_kind, idempotency_key) DO UPDATE "
+        "SET status = 'running', receipt_json = NULL, completed_at = NULL",
+        {request_id, account_id, idempotency_key}));
+
+    // Claimed guest proofs point back to accounts without ON DELETE CASCADE. Remove the proof
+    // before the account cascade so the account cannot retain a usable guest session.
+    static_cast<void>(execute(
+        impl_->connection,
+        "DELETE FROM plywise.guest_sessions "
+        "WHERE claimed_by_owner_kind = 'account' AND claimed_by_account_id = $1",
+        {account_id}));
+    static_cast<void>(execute(impl_->connection,
+                              "DELETE FROM plywise.accounts WHERE id = $1", {account_id}));
+    // The account row references its owner (the owner does not reference the account), so the
+    // owner cascade is explicit. This removes every account-scoped projection and revokes the
+    // owner before the transaction becomes visible.
+    static_cast<void>(execute(
+        impl_->connection,
+        "DELETE FROM plywise.owners WHERE owner_kind = 'account' AND owner_id = $1",
+        {account_id}));
+    static_cast<void>(execute(
+        impl_->connection,
+        "DELETE FROM plywise.games g "
+        "WHERE NOT EXISTS (SELECT 1 FROM plywise.game_owners go WHERE go.game_id = g.id)"));
+
+    const std::int64_t completed_at_ms = now_ms();
+    const std::int64_t retention_until_ms = completed_at_ms + backup_retention_ms;
+    const std::string receipt_token = random_receipt_token();
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.account_deletion_receipts "
+        "(request_id, receipt_token_hash, status, completed_at, expires_at, account_id, "
+        "auth_provider, auth_subject_hash, idempotency_key) "
+        "VALUES ($1, $2::bytea, 'completed', "
+        "to_timestamp($3::double precision / 1000), "
+        "to_timestamp($4::double precision / 1000), $5, $6, $7::bytea, $8)",
+        {request_id, sha256_bytea(receipt_token), std::to_string(completed_at_ms),
+         std::to_string(retention_until_ms), account_id, auth_provider,
+         sha256_bytea(auth_subject), idempotency_key}));
+    transaction.commit();
+    return AccountDeletionReceipt{request_id, receipt_token, completed_at_ms,
+                                  retention_until_ms};
 }
 
 } // namespace pct::app

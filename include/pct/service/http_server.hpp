@@ -61,12 +61,30 @@ struct GuestClaimResult {
     bool already_claimed{false};
 };
 
+struct AccountExportResult {
+    std::string request_id;
+    json::Value data;
+    std::int64_t completed_at_ms{0};
+};
+
+struct AccountDeletionResult {
+    std::string request_id;
+    std::string receipt_token;
+    std::int64_t completed_at_ms{0};
+    std::int64_t backup_retention_until_ms{0};
+};
+
 struct AuthConfig {
     using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
     using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
     using GuestSessionCreator = std::function<std::optional<GuestSessionCredential>()>;
     using GuestClaimHandler = std::function<GuestClaimResult(
         std::string_view token, const app::OwnerId& account, std::string_view idempotency_key)>;
+    using FreshTokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
+    using AccountExportHandler = std::function<AccountExportResult(
+        const app::OwnerId& account, std::string_view idempotency_key)>;
+    using AccountDeletionHandler = std::function<AccountDeletionResult(
+        const app::OwnerId& account, std::string_view idempotency_key)>;
 
     // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
     bool required{false};
@@ -78,6 +96,9 @@ struct AuthConfig {
     // runtime. The API only validates the request shape and serializes typed results.
     GuestSessionCreator create_guest_session;
     GuestClaimHandler claim_guest;
+    FreshTokenVerifier verify_fresh;
+    AccountExportHandler export_account;
+    AccountDeletionHandler delete_account;
 };
 
 class Api {

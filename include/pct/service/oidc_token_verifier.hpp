@@ -3,6 +3,7 @@
 #include "pct/app/repository.hpp"
 
 #include <cstdint>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -38,6 +39,10 @@ class OidcTokenVerifier final {
     OidcTokenVerifier& operator=(const OidcTokenVerifier&) = delete;
 
     [[nodiscard]] std::optional<app::OwnerId> verify(std::string_view token) const;
+    // Reauthentication is intentionally separate from ordinary bearer verification. Providers
+    // must include a signed auth_time claim, and callers choose the short freshness window.
+    [[nodiscard]] std::optional<app::OwnerId>
+    verify_fresh(std::string_view token, std::chrono::seconds max_age) const;
 
   private:
     struct Impl;

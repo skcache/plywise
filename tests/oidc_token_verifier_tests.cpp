@@ -96,18 +96,22 @@ SigningKey make_signing_key(std::string_view kid) {
 
 std::string sign_token(EVP_PKEY* pkey, std::string_view kid, double expiration,
                        std::string_view issuer = "https://issuer.example",
-                       std::string_view audience = "plywise-web") {
+                       std::string_view audience = "plywise-web",
+                       std::optional<double> auth_time = std::nullopt) {
     const std::string header = json::dump(json::Value::Object{
         {"alg", "RS256"},
         {"kid", std::string(kid)},
         {"typ", "JWT"},
     });
-    const std::string payload = json::dump(json::Value::Object{
+    json::Value payload_value = json::Value::Object{
         {"aud", std::string(audience)},
         {"exp", expiration},
         {"iss", std::string(issuer)},
         {"sub", "subject-123"},
-    });
+    };
+    if (auth_time)
+        payload_value.as_object().emplace("auth_time", *auth_time);
+    const std::string payload = json::dump(payload_value);
     const std::string signed_data = encode_base64url(Bytes(header.begin(), header.end())) + "." +
                                     encode_base64url(Bytes(payload.begin(), payload.end()));
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),
@@ -181,6 +185,39 @@ TEST_CASE("OIDC verifier rejects expired, forged, and wrongly issued tokens") {
     std::string forged = sign_token(key.pkey.get(), "key-1", now + 300);
     forged.back() = forged.back() == 'A' ? 'B' : 'A';
     CHECK(!verifier.verify(forged).has_value());
+}
+
+TEST_CASE("OIDC fresh verification requires a recent signed auth_time claim") {
+    const SigningKey key = make_signing_key("key-1");
+    const double now = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    service::OidcTokenVerifier verifier(service::OidcTokenVerifierOptions{
+        "https://issuer.example",
+        "plywise-web",
+        "test",
+        0,
+        [&] { return std::optional<std::string>(key.jwks); },
+        [](std::string_view, std::string_view) {
+            return std::optional<app::OwnerId>(app::OwnerId::account("acct-test"));
+        },
+    });
+
+    const auto fresh = verifier.verify_fresh(
+        sign_token(key.pkey.get(), "key-1", now + 300, "https://issuer.example", "plywise-web",
+                   now - 60),
+        std::chrono::minutes(5));
+    CHECK(fresh.has_value());
+    CHECK(!verifier
+               .verify_fresh(sign_token(key.pkey.get(), "key-1", now + 300),
+                             std::chrono::minutes(5))
+               .has_value());
+    CHECK(!verifier
+               .verify_fresh(sign_token(key.pkey.get(), "key-1", now + 300,
+                                        "https://issuer.example", "plywise-web", now - 600),
+                             std::chrono::minutes(5))
+               .has_value());
 }
 
 #endif

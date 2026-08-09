@@ -329,4 +329,39 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
     }
 }
 
+std::optional<app::OwnerId> OidcTokenVerifier::verify_fresh(
+    std::string_view token, std::chrono::seconds max_age) const {
+    if (max_age <= std::chrono::seconds::zero() || max_age > std::chrono::minutes(15))
+        return std::nullopt;
+    const auto owner = verify(token);
+    if (!owner)
+        return std::nullopt;
+
+    std::string_view remaining = token;
+    static_cast<void>(next_segment(remaining));
+    const std::string_view encoded_payload = next_segment(remaining);
+    const auto payload_bytes = decode_base64url(encoded_payload);
+    if (!payload_bytes)
+        return std::nullopt;
+    try {
+        const json::Value payload = json::parse(
+            std::string_view(reinterpret_cast<const char*>(payload_bytes->data()),
+                             payload_bytes->size()));
+        const json::Value auth_time = payload.get("auth_time", json::Value{});
+        if (!auth_time.is_number() || !finite_integer(auth_time.as_number()))
+            return std::nullopt;
+        const double now = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        const double skew = static_cast<double>(impl_->options.clock_skew_seconds);
+        const double timestamp = auth_time.as_number();
+        if (timestamp > now + skew || timestamp < now - static_cast<double>(max_age.count()) - skew)
+            return std::nullopt;
+        return owner;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 } // namespace pct::service

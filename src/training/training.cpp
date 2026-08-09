@@ -1,5 +1,7 @@
 #include "pct/training/training.hpp"
 
+#include "pct/common/error.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -313,6 +315,67 @@ json::Value to_json(const Drill& drill, std::int64_t now_ms, std::size_t categor
                                            {"priority", scheduled.priority}}}};
 }
 
+std::string_view name(PlayerIdentityDecision decision) {
+    switch (decision) {
+    case PlayerIdentityDecision::Confirmed: return "confirmed";
+    case PlayerIdentityDecision::Declined: return "declined";
+    case PlayerIdentityDecision::Uncertain: return "uncertain";
+    }
+    return "uncertain";
+}
+
+PlayerIdentityDecision player_identity_decision(std::string_view value) {
+    if (value == "confirmed")
+        return PlayerIdentityDecision::Confirmed;
+    if (value == "declined")
+        return PlayerIdentityDecision::Declined;
+    if (value == "uncertain")
+        return PlayerIdentityDecision::Uncertain;
+    throw Error(ErrorCode::InvalidArgument, "player identity decision is invalid");
+}
+
+void validate_player_identity(const PlayerIdentity& identity) {
+    if (identity.contract_version != player_identity_contract_version)
+        throw Error(ErrorCode::InvalidArgument, "player identity contract version is unsupported");
+    if (identity.game_id.empty() || identity.game_id.size() > 256)
+        throw Error(ErrorCode::InvalidArgument, "player identity game id is invalid");
+    if (identity.player_name.size() > 128)
+        throw Error(ErrorCode::InvalidArgument, "player identity name is too long");
+    if (identity.source.empty() || identity.source.size() > 32)
+        throw Error(ErrorCode::InvalidArgument, "player identity source is invalid");
+    if (identity.source != "pgn" && identity.source != "public_page" &&
+        identity.source != "public_api" && identity.source != "profile_archive" &&
+        identity.source != "manual")
+        throw Error(ErrorCode::InvalidArgument, "player identity source is invalid");
+    if (identity.decided_at_ms < 0)
+        throw Error(ErrorCode::InvalidArgument, "player identity decision time is invalid");
+    if (identity.decision == PlayerIdentityDecision::Confirmed && identity.player_name.empty())
+        throw Error(ErrorCode::InvalidArgument, "confirmed player identity requires a name");
+}
+
+PlayerIdentity player_identity_from_json(const json::Value& value) {
+    PlayerIdentity identity;
+    identity.contract_version = value.get("contract_version", "").as_string();
+    identity.game_id = value.at("game_id").as_string();
+    identity.player_name = value.get("player_name", "").as_string();
+    identity.source = value.at("source").as_string();
+    identity.decision = player_identity_decision(value.at("decision").as_string());
+    identity.decided_at_ms = static_cast<std::int64_t>(value.get("decided_at_ms", 0).as_number());
+    validate_player_identity(identity);
+    return identity;
+}
+
+json::Value to_json(const PlayerIdentity& identity) {
+    return json::Value::Object{
+        {"contract_version", identity.contract_version},
+        {"game_id", identity.game_id},
+        {"player_name", identity.player_name},
+        {"source", identity.source},
+        {"decision", std::string(name(identity.decision))},
+        {"decided_at_ms", static_cast<double>(identity.decided_at_ms)},
+    };
+}
+
 json::Value to_json(const Profile& profile) {
     json::Value::Array weaknesses;
     for (const auto& weakness : profile.weaknesses) {
@@ -356,6 +419,8 @@ json::Value to_json(const Profile& profile) {
     return json::Value::Object{
         {"projection_version", std::string(profile_version)},
         {"player_name", profile.player_name}, {"latest_rating", profile.latest_rating},
+        {"player_identity", profile.player_identity ? to_json(*profile.player_identity)
+                                                     : json::Value{}},
         {"rating_observations", profile.rating_observations},
         {"games_imported", profile.games_imported},
         {"games_analyzed", profile.games_analyzed},

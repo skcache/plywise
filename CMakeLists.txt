@@ -13,6 +13,8 @@ option(PCT_ENABLE_SANITIZERS "Enable address and undefined behavior sanitizers" 
 option(PCT_ENABLE_THREAD_SANITIZER "Enable the thread data-race sanitizer" OFF)
 option(PCT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(PCT_BUILD_BENCHMARKS "Build reproducible microbenchmarks" ON)
+option(PCT_ENABLE_POSTGRES_ADAPTER "Build the hosted PostgreSQL repository adapter when libpq is available" ON)
+option(PCT_ENABLE_OIDC_AUTH "Build the hosted OIDC token verifier when OpenSSL is available" ON)
 
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)
@@ -37,15 +39,42 @@ add_library(pct_core
     src/engine/stockfish.cpp
     src/engine/pool.cpp
     src/analysis/analyzer.cpp
+    src/analysis/browser_observation.cpp
     src/analysis/opening_book.cpp
     src/training/training.cpp
     src/training/tactical_corpus.cpp
     src/storage/event_log.cpp
     src/service/http_server.cpp
+    src/service/hosted_runtime.cpp
 )
 
 target_include_directories(pct_core PUBLIC include)
 target_link_libraries(pct_core PUBLIC Threads::Threads CURL::libcurl)
+
+if(PCT_ENABLE_OIDC_AUTH)
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        target_sources(pct_core PRIVATE src/service/oidc_token_verifier.cpp)
+        target_link_libraries(pct_core PUBLIC OpenSSL::Crypto)
+        target_compile_definitions(pct_core PUBLIC PCT_HAS_OIDC=1)
+    else()
+        message(STATUS "OpenSSL was not found; hosted OIDC token verification is disabled")
+    endif()
+endif()
+
+if(PCT_ENABLE_POSTGRES_ADAPTER)
+    find_package(PostgreSQL QUIET)
+    if(PostgreSQL_FOUND)
+        target_sources(pct_core PRIVATE
+            src/app/postgres_repository.cpp
+            src/app/hosted_browser_observations.cpp)
+        target_include_directories(pct_core PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+        target_link_libraries(pct_core PUBLIC ${PostgreSQL_LIBRARIES} OpenSSL::Crypto)
+        target_compile_definitions(pct_core PUBLIC PCT_HAS_POSTGRES=1)
+    else()
+        message(STATUS "libpq was not found; hosted PostgreSQL adapter is disabled")
+    endif()
+endif()
 target_compile_definitions(
     pct_core PRIVATE
         PCT_RESOURCE_CATALOG_PATH="${CMAKE_CURRENT_BINARY_DIR}/resources/catalog.json"
@@ -100,6 +129,7 @@ if(BUILD_TESTING)
         tests/engine_tests.cpp
         tests/pool_tests.cpp
         tests/analysis_tests.cpp
+        tests/browser_observation_tests.cpp
         tests/storage_tests.cpp
         tests/json_tests.cpp
         tests/repository_tests.cpp
@@ -113,7 +143,15 @@ if(BUILD_TESTING)
         tests/corpus_tests.cpp
         tests/phase2_e2e_tests.cpp
         tests/phase3_e2e_tests.cpp
+        tests/hosted_vertical_slice_tests.cpp
+        tests/account_data_controls_tests.cpp
     )
+    if(OpenSSL_FOUND AND PCT_ENABLE_OIDC_AUTH)
+        target_sources(pct-tests PRIVATE tests/oidc_token_verifier_tests.cpp)
+    endif()
+    if(PostgreSQL_FOUND AND PCT_ENABLE_POSTGRES_ADAPTER)
+        target_sources(pct-tests PRIVATE tests/postgres_repository_tests.cpp)
+    endif()
     target_link_libraries(pct-tests PRIVATE pct_core)
     add_executable(pct-fake-stockfish tests/fake_stockfish.cpp)
     add_executable(pct-crash-stockfish tests/crash_stockfish.cpp)

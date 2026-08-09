@@ -6,6 +6,7 @@ import {
   createVariation,
   deleteVariation,
   extendVariation,
+  finalizeBrowserAnalysis,
   importGameObservable,
   loadChessComProfile,
   loadChessComSync,
@@ -19,30 +20,40 @@ import {
   loadProfile,
   loadRuntimeSettings,
   resetVariation,
+  savePlayerIdentity,
   setVariationCursor,
   startChessComSync,
+  startBrowserAnalysis,
   startAnalysis,
+  submitBrowserObservation,
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
+import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
+import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
+import { runBrowserReview, type BrowserReviewProgress } from "../browser-review";
+import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
-import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
-import { eventUrl } from "../config/runtime";
+import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
+import { eventProtocols, eventUrl } from "../config/runtime";
 import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
+import { LandingView } from "./LandingView";
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
+import { AccountPrompt } from "./AccountPrompt";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "line" | "method";
+type IdentityPromptState = { gameId: string; names: string[]; source: PlayerIdentity["source"] };
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const routes = new Set<Route>(["home", "recent", "analysis", "explore", "progress", "settings"]);
+const routes = new Set<Route>(["landing", "home", "recent", "analysis", "explore", "progress", "settings"]);
 
 function routeFromHash(): Route {
   const candidate = window.location.hash.replace(/^#\/?/, "") as Route;
-  return routes.has(candidate) ? candidate : "home";
+  return candidate && routes.has(candidate) ? candidate : "landing";
 }
 
 export default function App() {
@@ -75,13 +86,28 @@ export default function App() {
   const [selectedExploreId, setSelectedExploreId] = useState("");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("pct-theme") as Theme | null) ?? "system");
   const [engineLinesDefault, setEngineLinesDefault] = useState(() => localStorage.getItem("pct-engine-lines-default") === "true");
+  const [browserProfile, setBrowserProfile] = useState<BrowserEngineProfile>(() => normalizeBrowserEngineProfile(localStorage.getItem("pct-browser-engine-profile")));
   const [importOpen, setImportOpen] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importStage, setImportStage] = useState("");
+  const [identityPrompt, setIdentityPrompt] = useState<IdentityPromptState | null>(null);
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityError, setIdentityError] = useState("");
   const [error, setError] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
+  const [accountPromptOpen, setAccountPromptOpen] = useState(false);
+  const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>(currentAuthSnapshot);
+  const [authMessage, setAuthMessage] = useState("");
+  const [authBusy, setAuthBusy] = useState<AuthProvider | null>(null);
+  const [authRevision, setAuthRevision] = useState(0);
+  const [browserAnalysisProgress, setBrowserAnalysisProgress] = useState<BrowserReviewProgress | null>(null);
+  const [serviceError, setServiceError] = useState("");
   const autoplayTimer = useRef<number | null>(null);
+  const browserEngineRef = useRef<ReturnType<typeof createBrowserEngine> | null>(null);
+  const browserAnalysisAbort = useRef<AbortController | null>(null);
+  const pendingAccountContext = useRef<"landing">("landing");
+  const accountFlowRequested = useRef(false);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
   const selectedMove = selectedGame?.analysis?.moves[selectedPly];
@@ -103,34 +129,90 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [listed, jobState, nextProfile, nextDrills, chessCom] = await Promise.all([
-          listGames(),
-          loadJobs(),
-          loadProfile().catch(() => null),
-          loadDrills().catch(() => []),
-          loadChessComProfile().catch(() => null),
-        ]);
-        const loaded = await Promise.all(listed.map((game) => loadGame(game.game.id)));
-        if (cancelled) return;
-        setGames(loaded);
-        setJobs(jobState.jobs);
-        setProfile(nextProfile);
-        setDrills(nextDrills);
-        setChessComConnected(chessCom?.connected ?? false);
-        const initialGame = loaded.find((game) => game.analysis_status === "complete") ?? loaded[0];
-        setSelectedGameId((current) => current || initialGame?.game.id || "");
-        setSelectedPly(initialGame ? reviewLandingPly(initialGame) : 0);
-        await refreshRuntime();
-      } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Local service is unavailable.");
-      }
-    })();
-    return () => { cancelled = true; };
+  const refreshAccountLibrary = useCallback(async () => {
+    const [listed, jobState, nextProfile, nextDrills, chessCom] = await Promise.all([
+      listGames(),
+      loadJobs(),
+      loadProfile().catch(() => null),
+      loadDrills().catch(() => []),
+      loadChessComProfile().catch(() => null),
+    ]);
+    const loaded = await Promise.all(listed.map((game) => loadGame(game.game.id)));
+    setGames(loaded);
+    setJobs(jobState.jobs);
+    setProfile(nextProfile);
+    setDrills(nextDrills);
+    setChessComConnected(chessCom?.connected ?? false);
+    setSelectedGameId((current) => current && loaded.some((game) => game.game.id === current)
+      ? current
+      : loaded.find((game) => game.analysis_status === "complete")?.game.id ?? loaded[0]?.game.id ?? "");
+    await refreshRuntime();
+    setServiceError("");
   }, [refreshRuntime]);
+
+  const handleAuthenticatedSession = useCallback(async () => {
+    if (!authSnapshot.session) return;
+    setAuthBusy(null);
+    setAuthMessage("");
+    try {
+      await refreshAccountLibrary();
+    } catch (refreshError) {
+      setServiceError(refreshError instanceof Error ? refreshError.message : "Plywise could not reach the account service.");
+    }
+    if (accountFlowRequested.current) {
+      setAccountPromptOpen(false);
+      setRoute("home");
+      setImportOpen(true);
+      clearAuthIntent();
+      accountFlowRequested.current = false;
+    }
+  }, [authSnapshot.session, refreshAccountLibrary]);
+
+  useEffect(() => {
+    const intent = loadAuthIntent();
+    if (intent) {
+      accountFlowRequested.current = true;
+      setAccountPromptOpen(true);
+    }
+    const redirectMessage = consumeAuthRedirectMessage();
+    if (redirectMessage) setAuthMessage(redirectMessage);
+    const unsubscribe = subscribeAuth((snapshot) => {
+      setAuthSnapshot(snapshot);
+      if (snapshot.event) setAuthRevision((value) => value + 1);
+      if (snapshot.event === "SIGNED_OUT") {
+        accountFlowRequested.current = false;
+        clearAuthIntent();
+        setGames([]);
+        setJobs([]);
+        setProfile(null);
+        setDrills([]);
+        setIdentityPrompt(null);
+        setIdentityError("");
+        setSelectedGameId("");
+        setRoute("landing");
+        setImportOpen(false);
+        setAccountPromptOpen(false);
+        setAuthBusy(null);
+        setServiceError("");
+        setAuthMessage(snapshot.message);
+      }
+    });
+    void initializeAuth().then(setAuthSnapshot);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => () => {
+    browserAnalysisAbort.current?.abort();
+    browserEngineRef.current?.dispose();
+  }, []);
+
+  useEffect(() => {
+    if (authSnapshot.session) void handleAuthenticatedSession();
+    else {
+      setRoute("landing");
+      setImportOpen(false);
+    }
+  }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -138,7 +220,11 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const expected = `#/${route}`;
+    localStorage.setItem("pct-browser-engine-profile", browserProfile);
+  }, [browserProfile]);
+
+  useEffect(() => {
+    const expected = route === "landing" ? "#/" : `#/${route}`;
     if (window.location.hash !== expected) window.history.replaceState(null, "", expected);
   }, [route]);
 
@@ -149,10 +235,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!authSnapshot.session) return;
     let reconnect = 0;
     let socket: WebSocket | null = null;
     const connect = () => {
-      socket = new WebSocket(eventUrl("/ws"));
+      socket = new WebSocket(eventUrl("/ws"), eventProtocols());
       socket.addEventListener("message", (event) => {
         const message = JSON.parse(String(event.data)) as ProgressSocketMessage;
         if (message.type === "jobs_snapshot") setJobs(message.jobs);
@@ -166,7 +253,7 @@ export default function App() {
     };
     connect();
     return () => { window.clearTimeout(reconnect); socket?.close(); };
-  }, [refreshGame, refreshRuntime]);
+  }, [authSnapshot.session?.access_token, authRevision, refreshGame, refreshRuntime]);
 
   const resetTransient = useCallback((ply = selectedPly) => {
     setSelectedPly(ply);
@@ -196,22 +283,86 @@ export default function App() {
     setRoute("analysis");
   }, [games]);
 
+  const startServerFallback = useCallback(async (gameId: string) => {
+    const job = await startAnalysis(gameId);
+    setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+    return "Browser analysis is unavailable here, so the hosted fallback is running.";
+  }, []);
+
   const analyzeGame = useCallback(async (gameId: string) => {
     const game = games.find((item) => item.game.id === gameId);
-    if (!game) return;
+    if (!game || !authSnapshot.session) return;
     openGame(gameId, 0);
     if (game.analysis_status === "complete") return;
+
+    const abortController = new AbortController();
+    const engine = createBrowserEngine();
+    browserAnalysisAbort.current = abortController;
+    browserEngineRef.current = engine;
+    setBrowserAnalysisProgress({
+      gameId,
+      profile: browserProfile,
+      stage: "starting",
+      complete: 0,
+      total: Math.max(1, game.game.plies.length * 2),
+      ply: 0,
+      position: "before",
+      message: `Starting ${engineProfileLabel(browserProfile)} browser analysis`,
+    });
     try {
-      const job = await startAnalysis(gameId);
-      setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+      await runBrowserReview(game, {
+        profile: browserProfile,
+        engine,
+        api: {
+          start: startBrowserAnalysis,
+          submit: submitBrowserObservation,
+          finalize: finalizeBrowserAnalysis,
+        },
+        signal: abortController.signal,
+        onProgress: setBrowserAnalysisProgress,
+      });
       setError("");
+      try {
+        await refreshGame(gameId);
+      } catch (refreshError) {
+        setError(refreshError instanceof Error ? refreshError.message : "Review is ready, but the game could not refresh yet.");
+      }
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : "Could not start analysis.");
+      const fallback = isBrowserFallback(analysisError);
+      let message = analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
+        ? "Browser analysis cancelled. Nothing was changed."
+        : analysisError instanceof ApiError &&
+          analysisError.code === "invalid_argument" &&
+          analysisError.message.toLowerCase().includes("completed game")
+          ? "Only completed games can be analyzed. Import a finished game to continue."
+          : fallback
+          ? "Browser analysis is unavailable here."
+            : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
+      let fallbackStarted = false;
+      if (fallback) {
+        try {
+          message = await startServerFallback(gameId);
+          fallbackStarted = true;
+        } catch (fallbackError) {
+          message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
+        }
+      }
+      if (!fallbackStarted) setError(message);
+    } finally {
+      browserAnalysisAbort.current = null;
+      browserEngineRef.current?.dispose();
+      browserEngineRef.current = null;
+      setBrowserAnalysisProgress(null);
     }
-  }, [games, openGame]);
+  }, [authSnapshot.session, browserProfile, games, openGame, refreshGame, startServerFallback]);
+
+  const cancelBrowserAnalysis = useCallback(() => {
+    browserAnalysisAbort.current?.abort();
+    void browserEngineRef.current?.cancel();
+  }, []);
 
   const refreshGames = useCallback(async () => {
-    if (refreshBusy) return;
+    if (refreshBusy || !authSnapshot.session) return;
     setRefreshBusy(true);
     setRefreshMessage("Checking your Chess.com archive…");
     try {
@@ -246,7 +397,7 @@ export default function App() {
     } finally {
       setRefreshBusy(false);
     }
-  }, [games.length, refreshBusy]);
+  }, [authSnapshot.session, games.length, refreshBusy]);
 
   const navigate = useCallback((action: "first" | "previous" | "next" | "last") => {
     const last = Math.max(0, (selectedGame?.game.plies.length ?? 1) - 1);
@@ -408,6 +559,12 @@ export default function App() {
   }, [leaveVariation, navigate, resetTransient, route, selectedMove, startVariation, togglePlayback, variation]);
 
   const runImport = useCallback(async (url: string, pgn: string) => {
+    if (!authSnapshot.session) {
+      setImportOpen(false);
+      setAccountPromptOpen(true);
+      accountFlowRequested.current = true;
+      return;
+    }
     if (!url.trim() && !pgn.trim()) { setError("Paste a Chess.com game URL or PGN."); return; }
     setImportBusy(true);
     setImportStage("Reading game");
@@ -415,6 +572,7 @@ export default function App() {
     try {
       const result = await importGameObservable(url.trim() ? { url: url.trim() } : { pgn: pgn.trim() });
       let gameId = result.status === "resolving" ? "" : result.game_id;
+      let identitySource: IdentityPromptState["source"] = url.trim() ? "public_page" : "pgn";
       if (result.status === "resolving") {
         setImportStage("Finding public archive");
         let resolution = result.resolution;
@@ -424,6 +582,7 @@ export default function App() {
         }
         if (resolution.status !== "resolved" || !resolution.imported_game_id) throw new Error(resolution.error || "Chess.com import could not be resolved.");
         gameId = resolution.imported_game_id;
+        identitySource = resolution.source === "profile_archive" || resolution.source === "local_archive" ? "profile_archive" : "public_page";
       }
       setImportStage("Reconstructing positions");
       const game = await refreshGame(gameId);
@@ -431,20 +590,109 @@ export default function App() {
       setSelectedPly(0);
       setImportOpen(false);
       setRoute("recent");
+      const names = [game.game.tags.White, game.game.tags.Black]
+        .map((name) => name?.trim() ?? "")
+        .filter((name) => name && name !== "?" && !["unknown", "anonymous"].includes(name.toLowerCase()))
+        .filter((name, index, values) => values.indexOf(name) === index);
+      setIdentityError("");
+      setIdentityPrompt({ gameId: game.game.id, names, source: identitySource });
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "Import failed.");
     } finally {
       setImportBusy(false);
       setImportStage("");
     }
-  }, [refreshGame]);
+  }, [authSnapshot.session, refreshGame]);
+
+  const decideImportedIdentity = useCallback(async (decision: PlayerIdentity["decision"], playerName: string) => {
+    if (!identityPrompt) return;
+    setIdentityBusy(true);
+    setIdentityError("");
+    try {
+      await savePlayerIdentity({
+        game_id: identityPrompt.gameId,
+        player_name: playerName,
+        source: identityPrompt.source,
+        decision,
+      });
+      const nextProfile = await loadProfile().catch(() => null);
+      if (nextProfile) setProfile(nextProfile);
+      setIdentityPrompt(null);
+    } catch (identityFailure) {
+      setIdentityError(identityFailure instanceof Error ? identityFailure.message : "Could not save that identity decision.");
+    } finally {
+      setIdentityBusy(false);
+    }
+  }, [identityPrompt]);
+
+  const openAccountPrompt = useCallback(() => {
+    accountFlowRequested.current = true;
+    setAccountPromptOpen(true);
+    setAuthMessage("");
+  }, []);
 
   const setAppRoute = useCallback((next: Route) => {
+    if (!authSnapshot.session) {
+      openAccountPrompt();
+      return;
+    }
     setRoute(next);
     setMoreOpen(false);
     setOverviewOpen(false);
     if (next === "settings") void refreshRuntime();
-  }, [refreshRuntime]);
+  }, [authSnapshot.session, openAccountPrompt, refreshRuntime]);
+
+  const startLandingReview = useCallback(() => {
+    openAccountPrompt();
+  }, [openAccountPrompt]);
+
+  const startProviderSignIn = useCallback(async (provider: AuthProvider) => {
+    setAuthBusy(provider);
+    setAuthMessage(`Connecting to ${authProviderLabel(provider)}…`);
+    saveAuthIntent({
+      context: pendingAccountContext.current,
+    });
+    const result = await signInWithProvider(provider);
+    setAuthMessage(result.message);
+    if (!result.ok) {
+      clearAuthIntent();
+      setAuthBusy(null);
+    }
+  }, []);
+
+  const handleSignOut = useCallback(async () => {
+    setAuthBusy(null);
+    const result = await signOut();
+    setAuthMessage(result.message);
+    if (!result.ok) setError(result.message);
+  }, []);
+
+  const closeAccountPrompt = useCallback(() => {
+    accountFlowRequested.current = false;
+    clearAuthIntent();
+    setAccountPromptOpen(false);
+  }, []);
+
+  const accountPrompt = accountPromptOpen && <AccountPrompt
+    auth={authSnapshot}
+    busyProvider={authBusy}
+    message={authMessage}
+    onProvider={(provider) => void startProviderSignIn(provider)}
+    onSignOut={() => void handleSignOut()}
+    onClose={closeAccountPrompt}
+  />;
+
+  if (!authSnapshot.session) {
+    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
+  }
+
+  if (serviceError) {
+    return <><ServiceUnavailableView message={serviceError} onRetry={() => { setServiceError(""); void handleAuthenticatedSession(); }} onSignOut={() => void handleSignOut()}/>{accountPrompt}</>;
+  }
+
+  if (route === "landing") {
+    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
+  }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };
   let view: ReactNode;
@@ -492,8 +740,9 @@ export default function App() {
     const tags = selectedGame?.game.tags ?? {};
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
+    const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
     header = <TopBar title={gameName} detail={opening} meta={selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
-      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>{selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
+      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? `${activeBrowserProgress.complete}/${activeBrowserProgress.total}` : selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => setOverviewOpen((value) => !value)}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
         <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
@@ -519,6 +768,7 @@ export default function App() {
       runtimeSettings={runtimeSettings}
       diagnostics={diagnostics}
       error={error}
+      browserProgress={activeBrowserProgress}
       onSelectPly={resetTransient}
       onNavigate={navigate}
       onTogglePlayback={togglePlayback}
@@ -536,6 +786,7 @@ export default function App() {
       onCloseOverview={() => setOverviewOpen(false)}
       onInspectorTab={setInspectorTab}
       onCancelJob={() => selectedJob && void cancelJob(selectedJob.id).then((job) => setJobs((current) => [...current.filter((item) => item.id !== job.id), job]))}
+      onCancelBrowserAnalysis={cancelBrowserAnalysis}
     />;
   } else if (route === "explore") {
     const entries = buildExploreEntries(games);
@@ -547,7 +798,7 @@ export default function App() {
     view = <ProgressView games={games} profile={profile} onOpen={openGame}/>;
   } else {
     header = <TopBar title="Settings" detail="Local preferences"/>;
-    view = <SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={(value) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); }} runtime={runtimeSettings} diagnostics={diagnostics}/>;
+    view = <SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={(value) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); }} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/>;
   }
 
   return <>
@@ -555,6 +806,16 @@ export default function App() {
     {importOpen && (
       <ImportModal busy={importBusy} stage={importStage} error={error} onClose={() => !importBusy && setImportOpen(false)} onSubmit={(url, pgn) => void runImport(url, pgn)}/>
     )}
+    {identityPrompt && (
+      <PlayerIdentityPrompt
+        prompt={identityPrompt}
+        busy={identityBusy}
+        error={identityError}
+        onClose={() => !identityBusy && setIdentityPrompt(null)}
+        onDecision={(decision, playerName) => void decideImportedIdentity(decision, playerName)}
+      />
+    )}
+    {accountPrompt}
   </>;
 }
 
@@ -601,10 +862,10 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
 type AnalysisProps = {
   games: StoredGame[]; profile: Profile | null; selectedGame: StoredGame | null; selectedPly: number; selectedMove?: MoveAssessment; jobs: Job[]; selectedJob: Job | null;
   orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; tryMessage: string; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
-  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string;
+  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string; browserProgress: BrowserReviewProgress | null;
   onSelectPly: (ply: number) => void; onNavigate: (action: "first" | "previous" | "next" | "last") => void; onTogglePlayback: () => void; onFlip: () => void; onSquare: (square: string) => void;
   onRetry: () => void; onRetrySubmit: (uci: string) => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
-  onToggleMoves: () => void; onCloseOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onCancelJob: () => void;
+  onToggleMoves: () => void; onCloseOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void;
 };
 
 function AnalysisView(props: AnalysisProps) {
@@ -615,7 +876,7 @@ function AnalysisView(props: AnalysisProps) {
   const fen = reviewMode === "variation" ? currentVariationNode?.fen ?? variation?.root_fen ?? initialFen : reviewMode === "try_move" || reviewMode === "revealed_move" ? move?.fen_before ?? ply?.fen_before ?? initialFen : ply?.fen_after ?? initialFen;
   const activeUci = reviewMode === "variation" ? currentVariationNode?.uci ?? "" : props.highlightedUci || ply?.uci || "";
   return <div className="analysis-layout">
-    {props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
+    {props.browserProgress ? <div className="analysis-progress"><span>{props.browserProgress.message}</span><progress aria-label="Browser analysis progress" max={props.browserProgress.total} value={props.browserProgress.complete}/><strong>{props.browserProgress.complete}/{props.browserProgress.total}</strong><button onClick={props.onCancelBrowserAnalysis}>Cancel</button></div> : props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
       <EvaluationBar value={move?.evaluation_after}/>
       <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={reviewMode === "try_move" || reviewMode === "variation"} showArrow={reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
@@ -676,7 +937,7 @@ function OverviewDrawer(props: AnalysisProps) {
   return <aside className="overview-drawer"><header><div><span>Game Overview</span><strong>Evidence behind this review</strong></div><button aria-label="Close overview" onClick={props.onCloseOverview}><Icon name="close"/></button></header><nav>{(["summary", "line", "method"] as InspectorTab[]).map((tab) => <button key={tab} className={props.inspectorTab === tab ? "active" : ""} onClick={() => props.onInspectorTab(tab)}>{titleCase(tab)}</button>)}</nav><div className="drawer-body">
     {props.inspectorTab === "summary" && <><div className="summary-hero"><strong>{analysis?.accuracy.toFixed(1) ?? "—"}</strong><span>review accuracy</span></div><dl className="evidence-list"><div><dt>Opening</dt><dd>{[analysis?.eco, analysis?.opening].filter(Boolean).join(" · ") || "Unclassified"}</dd></div><div><dt>Book depth</dt><dd>{analysis?.book_ply ?? 0} plies</dd></div><div><dt>Selected evaluation</dt><dd>{formatEval(move?.evaluation_after)}</dd></div><div><dt>Classification</dt><dd>{move?.classification || "Pending"}</dd></div></dl></>}
     {props.inspectorTab === "line" && <><div className="engine-line"><span>Principal variation</span><strong>{move?.best_san || move?.best_uci || "—"}</strong><code>{move?.principal_variation.join(" ") || "No line available"}</code></div><dl className="evidence-list"><div><dt>Depth</dt><dd>{move?.depth || "—"}</dd></div><div><dt>Nodes</dt><dd>{move?.nodes?.toLocaleString() || "—"}</dd></div><div><dt>Workers</dt><dd>{props.diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Deep target</dt><dd>{props.runtimeSettings?.deep_depth ?? "—"}</dd></div></dl></>}
-    {props.inspectorTab === "method" && <div className="method-copy"><h3>Local, reproducible evidence</h3><p>C++ reconstructs each position, Stockfish evaluates candidates, and the versioned classification model assigns the displayed label. This panel exposes recorded evidence, not hidden reasoning.</p><dl className="evidence-list"><div><dt>Engine</dt><dd>{move?.engine_version || "Stockfish local"}</dd></div><div><dt>Classifier</dt><dd>{move?.classification_model_version || "Tutor model"}</dd></div></dl></div>}
+    {props.inspectorTab === "method" && <div className="method-copy"><h3>Local, reproducible evidence</h3><p>C++ reconstructs each position, Stockfish evaluates candidates, and the versioned classification model assigns the displayed label. This panel exposes recorded evidence, not hidden reasoning.</p><dl className="evidence-list"><div><dt>Requested profile</dt><dd>{engineProfileLabel(analysis?.requested_engine_profile)}</dd></div><div><dt>Actual profile</dt><dd>{engineProfileLabel(analysis?.actual_engine_profile)}</dd></div><div><dt>Engine</dt><dd>{analysis?.engine_name || move?.engine_version || "Stockfish local"}</dd></div><div><dt>Source</dt><dd>{engineSourceLabel(analysis?.engine_source)}</dd></div><div><dt>Engine build</dt><dd>{move?.engine_version || "Not recorded"}</dd></div><div><dt>Classifier</dt><dd>{move?.classification_model_version || "Tutor model"}</dd></div></dl></div>}
   </div></aside>;
 }
 
@@ -700,14 +961,113 @@ function ProgressView({ games, profile, onOpen }: { games: StoredGame[]; profile
   return <section className="soft-surface progress-surface"><header className="progress-heading"><div><span>Rating profile</span><strong>{latest?.rating ?? profile?.latest_rating ?? "—"}</strong><small>{delta === null ? "More dated games needed for a 30-day change" : `${delta >= 0 ? "+" : ""}${delta} over the latest 30-day window`}</small></div><div className="rating-chart">{ratings.length > 1 ? <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-label="Rating history"><path d="M0 42H100"/><polyline points={line}/>{ratings.map((point, index) => <circle key={point.gameId} cx={index / (ratings.length - 1) * 100} cy={42 - (point.rating - min) / range * 32} r="1.3"/>)}</svg> : <p>Import dated games with rating tags to build this history.</p>}</div></header><div className="progress-grid"><section className="profile-block"><span>Review evidence</span><div className="metric-row"><div><strong>{profile?.games_analyzed ?? games.filter((game) => game.analysis).length}</strong><small>analyzed games</small></div><div><strong>{profile?.total_positions ?? games.flatMap((game) => game.analysis?.moves ?? []).length}</strong><small>classified positions</small></div><div><strong>{profile ? Math.round(profile.drill_accuracy * 100) : "—"}%</strong><small>retry accuracy</small></div></div></section><section className="profile-block weaknesses"><span>Recurring weaknesses</span>{profile?.weaknesses.slice(0, 4).map((item) => <div key={item.category}><strong>{item.category}</strong><small>{item.occurrences} occurrences · {item.average_loss_cp.toFixed(0)} average CP loss</small><em>{Math.round(item.recurrence_rate * 100)}%</em></div>) ?? <p>Analyze multiple games to reveal repeated evidence.</p>}</section><section className="profile-block learning-positions"><span>Positions worth revisiting</span>{arc.slice(0, 5).map((item) => <button key={item.gameId} onClick={() => onOpen(item.gameId, item.largestSwingPly)}><div><strong>{item.title}</strong><small>{item.opening}</small></div><em>{(item.largestSwing * 100).toFixed(1)}% swing</em></button>)}</section></div></section>;
 }
 
-function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, runtime, diagnostics }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null }) {
-  return <section className="soft-surface settings-surface"><header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header><div className="settings-list"><section><div><h2>Appearance</h2><p>Follow macOS or keep a deliberate light or dark workspace.</p></div><div className="segmented-control" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="theme" value={item} checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div></section><section><div><h2>Engine evidence</h2><p>Choose whether the technical line is the first tab when opening Overview.</p></div><label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label></section><section><div><h2>Analysis runtime</h2><p>Read-only facts reported by the local C++ service.</p></div><dl className="runtime-grid"><div><dt>Shallow depth</dt><dd>{runtime?.shallow_depth ?? "—"}</dd></div><div><dt>Deep depth</dt><dd>{runtime?.deep_depth ?? "—"}</dd></div><div><dt>Engine workers</dt><dd>{diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Queue capacity</dt><dd>{diagnostics?.job_queue_capacity ?? "—"}</dd></div></dl></section><section><div><h2>Coaching style</h2><p>A selectable style will appear when C++ exposes a persisted coaching-provider contract.</p></div><span className="unavailable-setting">Unavailable in this build</span></section></div></section>;
+function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, runtime, diagnostics }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null }) {
+  return <section className="soft-surface settings-surface">
+    <header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header>
+    <div className="settings-list">
+      <section>
+        <div><h2>Appearance</h2><p>Follow macOS or keep a deliberate light or dark workspace.</p></div>
+        <div className="segmented-control" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="theme" value={item} checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div>
+      </section>
+      <section>
+        <div><h2>Engine evidence</h2><p>Choose whether the technical line is the first tab when opening Overview.</p></div>
+        <label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label>
+      </section>
+      <section>
+        <div><h2>Browser engine</h2><p>Pick the pass that fits the moment. Quick is a fast read, Balanced goes deeper, and Aggressive spends up to a minute on each position.</p><small className="settings-inline-note">Saved on this device for now. Completed reviews keep the requested and actual profile plus engine source for later reference.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
+        <fieldset className="engine-profile-options">
+          <legend className="sr-only">Browser analysis profile</legend>
+          {browserEngineProfiles().map((profile) => <label key={profile.id} className={`engine-profile-option ${browserProfile === profile.id ? "active" : ""}`}>
+            <input type="radio" name="browser-engine-profile" value={profile.id} checked={browserProfile === profile.id} onChange={() => onBrowserProfile(profile.id)}/>
+            <span><strong>{profile.label}{profile.id === "quick" && <em>Default</em>}</strong><small>{profile.description}</small><small>Depth {profile.depth} · up to {Math.round(profile.maxAnalysisMs / 1000)} seconds</small></span>
+          </label>)}
+        </fieldset>
+      </section>
+      <section>
+        <div><h2>Analysis runtime</h2><p>Read-only facts reported by the local C++ service.</p></div>
+        <dl className="runtime-grid"><div><dt>Shallow depth</dt><dd>{runtime?.shallow_depth ?? "—"}</dd></div><div><dt>Deep depth</dt><dd>{runtime?.deep_depth ?? "—"}</dd></div><div><dt>Engine workers</dt><dd>{diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Queue capacity</dt><dd>{diagnostics?.job_queue_capacity ?? "—"}</dd></div></dl>
+      </section>
+      <section><div><h2>Coaching style</h2><p>A selectable style will appear when C++ exposes a persisted coaching-provider contract.</p></div><span className="unavailable-setting">Unavailable in this build</span></section>
+    </div>
+  </section>;
 }
 
 function ImportModal({ busy, stage, error, onClose, onSubmit }: { busy: boolean; stage: string; error: string; onClose: () => void; onSubmit: (url: string, pgn: string) => void }) {
   const [url, setUrl] = useState("");
   const [pgn, setPgn] = useState("");
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p>Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose}><Icon name="close"/></button></header><label><span>Chess.com game link</span><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label><span>PGN</span><textarea value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'}/></label>{error && <p className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
+  const dialogRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ));
+    const first = focusable()[0];
+    first?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (!busy) onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (controls.length === 0) return;
+      const current = document.activeElement;
+      const index = controls.indexOf(current as HTMLElement);
+      const next = event.shiftKey
+        ? controls[(index <= 0 ? controls.length : index) - 1]
+        : controls[(index + 1) % controls.length];
+      if (!dialog.contains(current) || index < 0 || next) {
+        event.preventDefault();
+        (next ?? controls[0]).focus();
+      }
+    };
+    dialog.addEventListener("keydown", onKeyDown);
+    return () => dialog.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  return <div className="modal-backdrop" role="presentation"><form ref={dialogRef} className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" aria-describedby="import-description" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p id="import-description">Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose} disabled={busy}><Icon name="close"/></button></header><label htmlFor="chesscom-url"><span>Chess.com game link</span><input id="chesscom-url" name="url" autoComplete="url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label htmlFor="game-pgn"><span>PGN</span><textarea id="game-pgn" name="pgn" value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'} aria-describedby={error ? "import-error" : undefined}/></label>{error && <p id="import-error" className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button type="submit" disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
+}
+
+function PlayerIdentityPrompt({ prompt, busy, error, onClose, onDecision }: {
+  prompt: IdentityPromptState;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onDecision: (decision: PlayerIdentity["decision"], playerName: string) => void;
+}) {
+  const [selectedName, setSelectedName] = useState(prompt.names[0] ?? "");
+  const sourceLabel = prompt.source === "profile_archive" ? "public profile archive" : prompt.source === "public_page" ? "public game page" : "pasted PGN";
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="identity-modal" role="dialog" aria-modal="true" aria-labelledby="identity-title">
+      <header><div><span>Keep your profile accurate</span><h2 id="identity-title">Is this you?</h2><p>We found a player name in this {sourceLabel}. Your review is already saved either way.</p></div><button type="button" aria-label="Close identity prompt" onClick={onClose} disabled={busy}><Icon name="close"/></button></header>
+      {prompt.names.length === 0 ? <div className="identity-empty"><strong>No player name was included.</strong><p>You can still analyze this game. Use a tagged PGN or connect a public profile later if you want progress to include it.</p><button type="button" onClick={onClose}>Continue</button></div> : <>
+        <fieldset className="identity-names"><legend>Detected player</legend>{prompt.names.map((name) => <label key={name}><input type="radio" name="imported-player" value={name} checked={selectedName === name} onChange={() => setSelectedName(name)}/><span>{name}</span></label>)}</fieldset>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <footer><button type="button" onClick={() => onDecision("uncertain", selectedName)} disabled={busy}>I’m not sure</button><button type="button" onClick={() => onDecision("declined", selectedName)} disabled={busy}>Not me</button><button type="button" className="identity-confirm" onClick={() => onDecision("confirmed", selectedName)} disabled={busy}>{busy ? "Saving…" : "Yes, this is me"}</button></footer>
+      </>}
+    </section>
+  </div>;
+}
+
+function ServiceUnavailableView({ message, onRetry, onSignOut }: {
+  message: string;
+  onRetry: () => void;
+  onSignOut: () => void;
+}) {
+  return <main className="service-unavailable" aria-labelledby="service-unavailable-title">
+    <section className="service-unavailable-panel">
+      <span className="service-unavailable-kicker">Plywise service</span>
+      <h1 id="service-unavailable-title">Your account is signed in, but the chess service is not reachable.</h1>
+      <p>{message}</p>
+      <div className="service-unavailable-actions">
+        <button className="landing-primary" type="button" onClick={onRetry}>Try again</button>
+        <button className="landing-secondary" type="button" onClick={onSignOut}>Sign out</button>
+      </div>
+      <small>For local development, start the C++ service on port 8787. For a hosted build, check the public API origin.</small>
+    </section>
+  </main>;
 }
 
 function gameDate(tags: Record<string, string>) {
@@ -728,7 +1088,23 @@ function needsAttention(classification: string) {
 
 function classificationClass(value: string) { return value.toLowerCase().replace(/[^a-z]+/g, "-"); }
 function titleCase(value: string) { return value.replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function engineProfileLabel(value?: string) {
+  if (value === "quick") return "Quick";
+  if (value === "balanced") return "Balanced";
+  if (value === "native") return "Native C++";
+  return value ? titleCase(value) : "Not recorded";
+}
+function engineSourceLabel(value?: string) {
+  if (value === "browser") return "Browser Stockfish";
+  if (value === "cpp") return "C++ service";
+  return value ? titleCase(value) : "Not recorded";
+}
 function delay(ms: number) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+
+function isBrowserFallback(error: unknown): boolean {
+  return (error instanceof BrowserEngineError && ["unavailable", "timeout", "failed"].includes(error.code)) ||
+    (error instanceof ApiError && [404, 503].includes(error.status));
+}
 
 function dayGreeting(date: Date) {
   const hour = date.getHours();

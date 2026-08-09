@@ -122,6 +122,13 @@ struct GameAnalysis {
     double black_accuracy{0.0};
     std::size_t accuracy_sample_size{0};
     std::string accuracy_version{std::string(::pct::analysis::accuracy_model_version)};
+    // These fields describe the compute evidence for the saved review. They remain optional so
+    // older local snapshots can still be read without inventing provenance.
+    std::string requested_engine_profile;
+    std::string actual_engine_profile;
+    std::string engine_name;
+    std::string engine_source;
+    std::string engine_hash;
 };
 
 struct OpeningMatch {
@@ -218,5 +225,16 @@ class Analyzer {
 classify_mistake_category(const chess::Game& game, std::size_t ply,
                           const engine::AnalysisResult& best_before,
                           const engine::AnalysisResult& best_after);
+
+// Assemble a review from already validated position evaluations. This is shared by the browser
+// observation path and the server analyzer so both execution sources use the same C++ classifiers,
+// opening source, tactical tags, explanations, and accuracy contract.
+[[nodiscard]] GameAnalysis assemble_observation_review(
+    const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
+    const std::vector<engine::AnalysisResult>& after_results,
+    ClassificationState state = ClassificationState::Final, AnalyzerOptions options = {},
+    std::string_view engine_version = {}, std::string_view actual_engine_profile = {},
+    std::string_view requested_engine_profile = {}, std::string_view engine_name = {},
+    std::string_view engine_source = {}, std::string_view engine_hash = {});
 
 } // namespace pct::analysis

@@ -530,6 +530,95 @@ std::string explanation_for(std::string_view category, const chess::Game& game, 
                   "the safer candidate moves.";
 }
 
+GameAnalysis assemble_observation_review_impl(
+    const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
+    const std::vector<engine::AnalysisResult>& after_results, ClassificationState state,
+    const AnalyzerOptions& options, std::string_view engine_version,
+    std::string_view actual_engine_profile, std::string_view requested_engine_profile,
+    std::string_view engine_name, std::string_view engine_source, std::string_view engine_hash) {
+    if (game.plies.empty())
+        throw Error(ErrorCode::InvalidArgument, "cannot assemble an empty game review");
+    if (before_results.size() != game.plies.size() || after_results.size() != game.plies.size())
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observations do not cover every canonical position");
+
+    GameAnalysis analysis;
+    analysis.game_id = game.identity;
+    const OpeningMatch opening = recognize_opening(game);
+    analysis.eco = opening.eco;
+    analysis.opening = opening.name;
+    analysis.book_ply = opening.book_ply;
+    analysis.departure_ply = opening.departure_ply;
+    analysis.opening_book_version = opening.book_version;
+    analysis.actual_engine_profile = std::string(actual_engine_profile);
+    analysis.requested_engine_profile = std::string(requested_engine_profile);
+    analysis.engine_name = std::string(engine_name);
+    analysis.engine_source = std::string(engine_source);
+    analysis.engine_hash = std::string(engine_hash);
+    analysis.moves.reserve(game.plies.size());
+
+    for (std::size_t index = 0; index < game.plies.size(); ++index) {
+        MoveAssessment assessment;
+        populate_engine_contract(assessment, game, index, before_results[index], after_results[index],
+                                 state, opening);
+        if (!engine_version.empty()) {
+            assessment.engine_version = std::string(engine_version);
+            assessment.classification_reasons.push_back(
+                "validated browser observation assembled by the C++ review pipeline");
+        }
+        analysis.moves.push_back(std::move(assessment));
+    }
+
+    // Browser execution cannot perform a second native deep pass, so its validated evidence still
+    // gets the same deterministic mistake categories and explanations before persistence. The
+    // browser worker remains untrusted; this function is reached only after C++ observation checks.
+    if (state == ClassificationState::Final) {
+        for (std::size_t index = 0; index < analysis.moves.size(); ++index) {
+            const auto quality = analysis.moves[index].quality;
+            const bool review_error = quality == MoveQuality::Inaccuracy ||
+                                      quality == MoveQuality::Mistake ||
+                                      quality == MoveQuality::Miss || quality == MoveQuality::Blunder;
+            if (!review_error)
+                continue;
+            const std::string category =
+                classify_mistake_category(game, index, before_results[index], after_results[index]);
+            std::vector<std::string> better_moves;
+            for (const auto& line : before_results[index].lines)
+                if (!line.moves.empty())
+                    better_moves.push_back(line.moves.front());
+            const std::string punishment = after_results[index].best_move;
+            auto& move = analysis.moves[index];
+            analysis.mistakes.push_back(Mistake{
+                0,
+                index,
+                game.plies[index].san,
+                game.plies[index].fen_before,
+                move.evaluation_before,
+                move.evaluation_after,
+                move.loss,
+                move.phase,
+                category,
+                explanation_for(category, game, index, punishment),
+                punishment,
+                std::move(better_moves),
+                before_results[index],
+                {"validated browser evidence", "deterministic classifier rule " + category},
+                "proven",
+                "taxonomy-2",
+            });
+        }
+        std::stable_sort(
+            analysis.mistakes.begin(), analysis.mistakes.end(),
+            [](const Mistake& left, const Mistake& right) { return left.loss > right.loss; });
+        if (analysis.mistakes.size() > options.top_mistakes)
+            analysis.mistakes.resize(options.top_mistakes);
+        for (std::size_t index = 0; index < analysis.mistakes.size(); ++index)
+            analysis.mistakes[index].rank = index + 1;
+    }
+    calculate_accuracy(analysis);
+    return analysis;
+}
+
 } // namespace
 
 std::string classify_tactical_motif(chess::Board board, const chess::Move& best_move) {
@@ -542,6 +631,18 @@ std::string classify_mistake_category(const chess::Game& game, std::size_t ply,
     if (ply >= game.plies.size())
         throw Error(ErrorCode::InvalidArgument, "mistake ply is outside the game");
     return classify_category(game, ply, best_before, best_after);
+}
+
+GameAnalysis assemble_observation_review(
+    const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
+    const std::vector<engine::AnalysisResult>& after_results, ClassificationState state,
+    AnalyzerOptions options, std::string_view engine_version,
+    std::string_view actual_engine_profile, std::string_view requested_engine_profile,
+    std::string_view engine_name, std::string_view engine_source, std::string_view engine_hash) {
+    return assemble_observation_review_impl(game, before_results, after_results, state, options,
+                                             engine_version, actual_engine_profile,
+                                             requested_engine_profile, engine_name, engine_source,
+                                             engine_hash);
 }
 
 std::string AnalysisCache::key(const engine::AnalysisRequest& request) {
@@ -680,15 +781,6 @@ GameAnalysis Analyzer::analyze_shallow(const chess::Game& game, ProgressCallback
     };
     report(AnalysisStage::Parsing, 1, 1, "Game reconstructed");
 
-    GameAnalysis analysis;
-    analysis.game_id = game.identity;
-    const OpeningMatch opening = recognize_opening(game);
-    analysis.eco = opening.eco;
-    analysis.opening = opening.name;
-    analysis.book_ply = opening.book_ply;
-    analysis.departure_ply = opening.departure_ply;
-    analysis.opening_book_version = opening.book_version;
-    analysis.moves.reserve(game.plies.size());
     std::vector<engine::AnalysisResult> before_results(game.plies.size());
     std::vector<engine::AnalysisResult> after_results(game.plies.size());
 
@@ -703,14 +795,11 @@ GameAnalysis Analyzer::analyze_shallow(const chess::Game& game, ProgressCallback
         after_request.priority = priority;
         before_results[index] = analyze_cached(before_request, stop_token);
         after_results[index] = analyze_cached(after_request, stop_token);
-        MoveAssessment assessment;
-        populate_engine_contract(assessment, game, index, before_results[index],
-                                 after_results[index], ClassificationState::Provisional, opening);
-        analysis.moves.push_back(std::move(assessment));
         report(AnalysisStage::ShallowScan, index + 1, game.plies.size(), "Scanning positions");
     }
-    calculate_accuracy(analysis);
-    return analysis;
+    return assemble_observation_review(game, before_results, after_results,
+                                       ClassificationState::Provisional, options_, {}, "native",
+                                       {}, "Stockfish", "cpp");
 }
 
 GameAnalysis Analyzer::analyze_deep(const chess::Game& game, GameAnalysis analysis,

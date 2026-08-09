@@ -756,6 +756,7 @@ void EventLogRepository::replay() {
                 std::map<std::string, json::Value> batches;
                 std::set<std::string> recommendations;
                 std::optional<ChessComProfile> chesscom_profile;
+                std::optional<training::PlayerIdentity> player_identity;
                 std::map<std::string, ChessComArchiveEntry> chesscom_archive;
                 std::map<std::string, ChessComMonthCheckpoint> chesscom_checkpoints;
                 ChessComSyncState chesscom_sync_state;
@@ -822,6 +823,9 @@ void EventLogRepository::replay() {
                     }
                     chesscom_sync_state = sync_state_from_json(
                         snapshot.get("chesscom_sync_state", json::Value::Object{}));
+                    if (!snapshot.get("player_identity", null_value).is_null())
+                        player_identity = training::player_identity_from_json(
+                            snapshot.at("player_identity"));
                 }
                 games_ = std::move(games);
                 drills_ = std::move(drills);
@@ -830,6 +834,7 @@ void EventLogRepository::replay() {
                 batches_ = std::move(batches);
                 recommended_resources_ = std::move(recommendations);
                 chesscom_profile_ = std::move(chesscom_profile);
+                player_identity_ = std::move(player_identity);
                 chesscom_archive_ = std::move(chesscom_archive);
                 chesscom_checkpoints_ = std::move(chesscom_checkpoints);
                 chesscom_sync_state_ = std::move(chesscom_sync_state);
@@ -926,6 +931,8 @@ void EventLogRepository::replay() {
                                           static_cast<std::uint64_t>(payload.at("sequence").as_number()) + 1);
             } else if (event.type == storage::EventType::ChessComProfileUpdated) {
                 chesscom_profile_ = chesscom_profile_from_json(payload);
+            } else if (event.type == storage::EventType::PlayerIdentityUpdated) {
+                player_identity_ = training::player_identity_from_json(payload);
             } else if (event.type == storage::EventType::ChessComArchiveChunkIndexed) {
                 for (const auto& value : payload.at("entries").as_array()) {
                     auto entry = chesscom_archive_from_json(value);
@@ -1375,16 +1382,10 @@ training::Drill EventLogRepository::advance_hint(std::string_view drill_id, std:
 training::Profile EventLogRepository::profile_unlocked() const {
     training::Profile result;
     result.games_imported = games_.size();
-    std::map<std::string, std::size_t> player_frequency;
-    for (const auto& [_, game] : games_) {
-        const std::string white = game.imported.game.tag("White");
-        const std::string black = game.imported.game.tag("Black");
-        if (!white.empty()) ++player_frequency[white];
-        if (!black.empty()) ++player_frequency[black];
-    }
-    for (const auto& [player, count] : player_frequency)
-        if (result.player_name.empty() || count > player_frequency[result.player_name])
-            result.player_name = player;
+    result.player_identity = player_identity_;
+    if (player_identity_ &&
+        player_identity_->decision == training::PlayerIdentityDecision::Confirmed)
+        result.player_name = player_identity_->player_name;
     std::map<std::string, training::Weakness> weaknesses;
     std::map<std::string, std::set<std::string>> category_games;
     std::map<std::string, std::vector<std::int64_t>> category_times;
@@ -1705,6 +1706,9 @@ std::filesystem::path EventLogRepository::create_snapshot() {
                           {"chesscom_profile", chesscom_profile_
                                                    ? chesscom_profile_json(*chesscom_profile_)
                                                    : json::Value{}},
+                          {"player_identity", player_identity_
+                                                   ? training::to_json(*player_identity_)
+                                                   : json::Value{}},
                           {"chesscom_archive", std::move(chesscom_archive)},
                           {"chesscom_checkpoints", std::move(chesscom_checkpoints)},
                           {"chesscom_sync_state", sync_state_json(chesscom_sync_state_)},
@@ -1868,6 +1872,41 @@ void EventLogRepository::save_chesscom_profile(ChessComProfile profile) {
 std::optional<ChessComProfile> EventLogRepository::chesscom_profile() const {
     std::lock_guard lock(mutex_);
     return chesscom_profile_;
+}
+
+void EventLogRepository::save_player_identity(training::PlayerIdentity identity) {
+    std::lock_guard lock(mutex_);
+    training::validate_player_identity(identity);
+    const auto game = games_.find(identity.game_id);
+    if (game == games_.end())
+        throw Error(ErrorCode::NotFound, "cannot decide identity for an unknown game");
+    const std::string white = game->second.imported.game.tag("White");
+    const std::string black = game->second.imported.game.tag("Black");
+    if (!identity.player_name.empty() && identity.player_name != white &&
+        identity.player_name != black)
+        throw Error(ErrorCode::InvalidArgument,
+                    "player identity must match a name in the imported game");
+    if (identity.decision == training::PlayerIdentityDecision::Confirmed &&
+        identity.player_name != white && identity.player_name != black)
+        throw Error(ErrorCode::InvalidArgument,
+                    "confirmed player identity must match a name in the imported game");
+    if (identity.decided_at_ms == 0)
+        identity.decided_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+    if (player_identity_ && *player_identity_ == identity)
+        return;
+    const storage::Event identity_event = log_.append(
+        storage::EventType::PlayerIdentityUpdated,
+        json::dump(training::to_json(identity)));
+    player_identity_ = std::move(identity);
+    note_applied_event(identity_event);
+    rebuild_indexes();
+}
+
+std::optional<training::PlayerIdentity> EventLogRepository::player_identity() const {
+    std::lock_guard lock(mutex_);
+    return player_identity_;
 }
 
 std::size_t
@@ -2443,6 +2482,11 @@ json::Value to_json(const analysis::GameAnalysis& analysis) {
         {"black_accuracy", analysis.black_accuracy},
         {"accuracy_sample_size", analysis.accuracy_sample_size},
         {"accuracy_version", analysis.accuracy_version},
+        {"requested_engine_profile", analysis.requested_engine_profile},
+        {"actual_engine_profile", analysis.actual_engine_profile},
+        {"engine_name", analysis.engine_name},
+        {"engine_source", analysis.engine_source},
+        {"engine_hash", analysis.engine_hash},
     };
 }
 
@@ -2490,6 +2534,11 @@ analysis::GameAnalysis analysis_from_json(const json::Value& value) {
     result.black_accuracy = value.get("black_accuracy", 0.0).as_number();
     result.accuracy_sample_size = value.get("accuracy_sample_size", 0).as_size();
     result.accuracy_version = value.get("accuracy_version", "legacy").as_string();
+    result.requested_engine_profile = value.get("requested_engine_profile", "").as_string();
+    result.actual_engine_profile = value.get("actual_engine_profile", "").as_string();
+    result.engine_name = value.get("engine_name", "").as_string();
+    result.engine_source = value.get("engine_source", "").as_string();
+    result.engine_hash = value.get("engine_hash", "").as_string();
     return result;
 }
 

@@ -10,6 +10,7 @@ import type {
   IngestSync,
   Job,
   Profile,
+  PlayerIdentity,
   ResourceRecommendation,
   RuntimeSettings,
   ReviewAttempt,
@@ -18,6 +19,8 @@ import type {
   VariationAnalysis,
 } from "./types";
 import { apiUrl } from "./config/runtime";
+import { accountAccessToken } from "./auth-session";
+import type { BrowserAnalysisRequest, BrowserObservationPayload } from "./browser-engine";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -35,6 +38,10 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  if (!headers.has("Authorization")) {
+    const accountToken = await accountAccessToken();
+    if (accountToken) headers.set("Authorization", `Bearer ${accountToken}`);
+  }
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -45,7 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    throw new Error("Plywise API is unavailable.");
+    throw new Error("Plywise service is unavailable. Start the C++ service on port 8787, or check the hosted API origin.");
   }
   const body = (await response.json()) as T & Partial<ApiFailure>;
   if (!response.ok) {
@@ -149,6 +156,51 @@ export function startAnalysis(id: string): Promise<Job> {
   return request(`/api/games/${encodeURIComponent(id)}/analysis`, { method: "POST" });
 }
 
+export type BrowserAnalysisStartResponse = BrowserAnalysisRequest & {
+  readonly status: "collecting";
+  readonly expectedObservations: number;
+};
+
+export type BrowserAnalysisFinalizationResponse = {
+  readonly status: "complete";
+  readonly staging: false;
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly analysis: NonNullable<StoredGame["analysis"]>;
+};
+
+export type BrowserObservationResponse = {
+  readonly status: "accepted" | "duplicate";
+  readonly staging: true;
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly ply: number;
+  readonly sequence: number;
+};
+
+export function startBrowserAnalysis(input: BrowserAnalysisRequest): Promise<BrowserAnalysisStartResponse> {
+  return request(`/api/games/${encodeURIComponent(input.gameId)}/browser-analysis`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function submitBrowserObservation(input: BrowserObservationPayload): Promise<BrowserObservationResponse> {
+  return request(`/api/games/${encodeURIComponent(input.gameId)}/browser-observations`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function finalizeBrowserAnalysis(
+  gameId: string, analysisRunId: string,
+): Promise<BrowserAnalysisFinalizationResponse> {
+  return request(`/api/games/${encodeURIComponent(gameId)}/browser-observations/finalize`, {
+    method: "POST",
+    body: JSON.stringify({ analysisRunId }),
+  });
+}
+
 export function loadJob(id: number): Promise<Job> {
   return request(`/api/jobs/${id}`);
 }
@@ -228,6 +280,15 @@ export function generateSupplementalDrills(): Promise<{ added: number; drills: D
 
 export function loadProfile(): Promise<Profile> {
   return request<Profile>("/api/profile");
+}
+
+export function savePlayerIdentity(input: {
+  game_id: string;
+  player_name: string;
+  source: PlayerIdentity["source"];
+  decision: PlayerIdentity["decision"];
+}): Promise<{ identity: PlayerIdentity }> {
+  return request("/api/profile/identity", { method: "PUT", body: JSON.stringify(input) });
 }
 
 export async function loadResources(): Promise<ResourceRecommendation[]> {

@@ -8,6 +8,12 @@ permissions:
   contents: read
 
 jobs:
+  public-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: sh scripts/check-public-surface.sh
+
   native:
     runs-on: macos-latest
     steps:
@@ -58,8 +64,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: sudo apt-get update
-      - run: sudo apt-get install --yes --no-install-recommends postgresql-client
+      - run: sudo apt-get install --yes --no-install-recommends build-essential cmake libcurl4-openssl-dev libpq-dev libssl-dev ninja-build postgresql-client
       - run: ./scripts/postgres-foundation-test.sh
+      - run: cmake -S . -B build-postgres -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPCT_BUILD_BENCHMARKS=OFF -DPCT_ENABLE_POSTGRES_ADAPTER=ON -DPCT_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build-postgres --target pct-tests
+      - run: ./scripts/postgres-repository-test.sh build-postgres/pct-tests
 
   sanitizers:
     runs-on: macos-latest

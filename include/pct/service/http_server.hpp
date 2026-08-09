@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pct/analysis/browser_observation.hpp"
 #include "pct/app/job_manager.hpp"
 #include "pct/app/ingest_manager.hpp"
 #include "pct/app/repository.hpp"
@@ -7,11 +8,15 @@
 
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -37,6 +42,93 @@ struct Readiness {
     std::string engine;
 };
 
+// A request scope keeps the repository and job queue selected by the authenticated owner
+// together. Hosted callers must return objects that remain alive for the duration of the request;
+// the API never stores these pointers between requests.
+struct ApiScope {
+    app::IRepository* repository{nullptr};
+    app::JobManager* jobs{nullptr};
+    // Hosted scopes pin their owner resources while request or websocket code uses these
+    // pointers. Local and test scopes leave the lifetime empty.
+    std::shared_ptr<void> lifetime;
+};
+
+struct GuestSessionCredential {
+    std::string guest_id;
+    std::string token;
+    std::int64_t expires_at_ms{0};
+};
+
+struct GuestClaimResult {
+    std::string guest_id;
+    std::string account_id;
+    std::size_t transferred_games{0};
+    bool already_claimed{false};
+};
+
+struct AccountExportResult {
+    std::string request_id;
+    json::Value data;
+    std::int64_t completed_at_ms{0};
+};
+
+struct AccountDeletionResult {
+    std::string request_id;
+    std::string receipt_token;
+    std::int64_t completed_at_ms{0};
+    std::int64_t backup_retention_until_ms{0};
+};
+
+struct AuthConfig {
+    using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
+    using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
+    using GuestSessionCreator = std::function<std::optional<GuestSessionCredential>()>;
+    using GuestAnalysisReservation =
+        std::function<void(const app::OwnerId& guest, std::string_view game_id)>;
+    using BrowserObservationBegin =
+        std::function<void(const app::OwnerId& owner,
+                           const analysis::BrowserObservationRunContext& context)>;
+    using BrowserObservationSubmit = std::function<analysis::BrowserObservationReceipt(
+        const app::OwnerId& owner, const analysis::BrowserObservationContext& context,
+        const analysis::BrowserEngineObservation& observation)>;
+    using BrowserObservationFinalize = std::function<analysis::BrowserObservationBundle(
+        const app::OwnerId& owner, std::string_view game_id, std::string_view analysis_run_id)>;
+    using GuestClaimHandler = std::function<GuestClaimResult(
+        std::string_view token, const app::OwnerId& account, std::string_view idempotency_key)>;
+    using FreshTokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
+    using AccountExportHandler = std::function<AccountExportResult(
+        const app::OwnerId& account, std::string_view idempotency_key)>;
+    using AccountDeletionHandler = std::function<AccountDeletionResult(
+        const app::OwnerId& account, std::string_view idempotency_key)>;
+
+    // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
+    bool required{false};
+    TokenVerifier verify;
+    // When present, authenticated requests are routed to an owner-scoped repository and job
+    // manager. Without it, the API retains the fixed local repository behavior.
+    ScopeResolver resolve_scope;
+    // These callbacks keep guest token generation and claim transactions behind the hosted
+    // runtime. The API only validates the request shape and serializes typed results.
+    GuestSessionCreator create_guest_session;
+    // Hosted mode atomically consumes the guest's one free analysis before work is queued.
+    GuestAnalysisReservation reserve_guest_analysis;
+    // Hosted mode persists browser observations so an interrupted run can resume after restart.
+    BrowserObservationBegin begin_browser_observation;
+    BrowserObservationSubmit submit_browser_observation;
+    BrowserObservationFinalize finalize_browser_observation;
+    GuestClaimHandler claim_guest;
+    FreshTokenVerifier verify_fresh;
+    AccountExportHandler export_account;
+    AccountDeletionHandler delete_account;
+    // Guest review is retained for local compatibility tests, but hosted deployments disable it
+    // explicitly so every public product flow starts behind account authentication.
+    bool allow_guest_access{true};
+    // The current ingest manager is process-scoped. Hosted accounts must not share it until an
+    // owner-scoped persistent adapter is wired, so hosted main disables the async profile/sync
+    // routes while direct single-game imports remain available through the scoped repository.
+    bool allow_shared_ingest{false};
+};
+
 class Api {
   public:
     using Diagnostics = std::function<json::Value()>;
@@ -45,21 +137,37 @@ class Api {
 
     Api(import::ImportService& importer, app::IRepository& repository, app::JobManager& jobs,
         Diagnostics diagnostics = {}, AdvancedDrills advanced_drills = {},
-        app::IngestManager* ingest = nullptr, ReadinessCheck readiness = {})
-        : importer_(importer), repository_(repository), jobs_(jobs),
+        app::IngestManager* ingest = nullptr, ReadinessCheck readiness = {},
+        AuthConfig auth = {})
+        : importer_(importer), default_repository_(repository), default_jobs_(jobs),
           diagnostics_(std::move(diagnostics)), advanced_drills_(std::move(advanced_drills)),
-          ingest_(ingest), readiness_(std::move(readiness)) {}
+          ingest_(ingest), readiness_(std::move(readiness)), auth_(std::move(auth)) {}
 
     [[nodiscard]] Response handle(const Request& request);
+    [[nodiscard]] std::optional<Response> authorize(
+        const Request& request, std::optional<app::OwnerId>* authenticated_owner = nullptr) const;
+    [[nodiscard]] std::optional<ApiScope> scope_for_owner(const app::OwnerId& owner) const;
+    [[nodiscard]] bool has_scoped_authorization() const noexcept {
+        return static_cast<bool>(auth_.resolve_scope);
+    }
 
   private:
+    struct Authentication {
+        std::optional<app::OwnerId> owner;
+        std::optional<Response> denial;
+    };
+
+    [[nodiscard]] Authentication authenticate(const Request& request) const;
+
     import::ImportService& importer_;
-    app::IRepository& repository_;
-    app::JobManager& jobs_;
+    app::IRepository& default_repository_;
+    app::JobManager& default_jobs_;
     Diagnostics diagnostics_;
     AdvancedDrills advanced_drills_;
     app::IngestManager* ingest_{nullptr};
     ReadinessCheck readiness_;
+    AuthConfig auth_;
+    analysis::BrowserObservationLedger browser_observations_;
 };
 
 struct ServerOptions {
@@ -96,15 +204,31 @@ class HttpServer {
     std::atomic<std::uint16_t> bound_port_{0};
     std::atomic<int> listen_fd_{-1};
     std::mutex clients_mutex_;
-    std::vector<int> websocket_clients_;
+    struct WebSocketClient {
+        int fd{-1};
+        std::optional<app::OwnerId> owner;
+    };
+    std::vector<WebSocketClient> websocket_clients_;
+    std::mutex scoped_observers_mutex_;
+    struct ScopedObserver {
+        app::JobManager::ObserverId observer_id{0};
+        std::shared_ptr<void> lifetime;
+    };
+    std::map<app::JobManager*, ScopedObserver> scoped_observers_;
     std::mutex client_threads_mutex_;
-    std::vector<std::thread> client_threads_;
+    std::condition_variable client_threads_cv_;
+    std::size_t active_client_threads_{0};
+    static constexpr std::size_t max_active_client_threads_{128};
 
     void handle_client(int client_fd);
     void handle_websocket(int client_fd, const Request& request);
+    void subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,
+                                    std::shared_ptr<void> lifetime = {});
+    void remove_scoped_observers() noexcept;
     [[nodiscard]] Response static_file(std::string_view path) const;
     [[nodiscard]] bool host_allowed(std::string_view host) const;
     [[nodiscard]] bool origin_allowed(std::string_view origin) const;
+    void broadcast_to_owner(const app::OwnerId& owner, std::string_view message);
 };
 
 } // namespace pct::service

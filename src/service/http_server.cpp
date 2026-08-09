@@ -19,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <set>
@@ -30,6 +31,8 @@ namespace {
 
 constexpr std::size_t max_header_size = 64 * 1024;
 constexpr std::size_t max_body_size = 10 * 1024 * 1024;
+constexpr timeval client_io_timeout{10, 0};
+constexpr std::string_view websocket_auth_protocol = "plywise-auth";
 
 std::int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -57,6 +60,11 @@ bool imported_game_matches(const import::ImportedGame& imported,
     } catch (const Error&) {
         return false;
     }
+}
+
+bool completed_game(const app::StoredGame& stored) {
+    const std::string result = stored.imported.game.tag("Result");
+    return result == "1-0" || result == "0-1" || result == "1/2-1/2";
 }
 
 std::string lowercase(std::string value) {
@@ -89,6 +97,24 @@ bool valid_loopback_origin(std::string_view origin) {
     constexpr std::string_view scheme = "http://";
     return origin.starts_with(scheme) &&
            valid_loopback_authority(origin.substr(scheme.size()));
+}
+
+std::optional<std::string> websocket_bearer_token(std::string_view protocols) {
+    const std::size_t separator = protocols.find(',');
+    if (separator == std::string_view::npos)
+        return std::nullopt;
+    const std::string_view scheme = protocols.substr(0, separator);
+    std::size_t token_start = separator + 1;
+    while (token_start < protocols.size() && protocols[token_start] == ' ')
+        ++token_start;
+    const std::string_view token = protocols.substr(token_start);
+    if (scheme != websocket_auth_protocol || token.empty() || token.size() > 4096 ||
+        token.find(',') != std::string_view::npos ||
+        std::any_of(token.begin(), token.end(), [](unsigned char character) {
+            return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
+        }))
+        return std::nullopt;
+    return std::string(token);
 }
 
 bool valid_port(std::string_view value) {
@@ -233,6 +259,7 @@ std::string_view error_code(ErrorCode code) {
     case ErrorCode::NotFound: return "not_found";
     case ErrorCode::NetworkError: return "network_error";
     case ErrorCode::Timeout: return "timeout";
+    case ErrorCode::QuotaExceeded: return "quota_exceeded";
     case ErrorCode::EngineError: return "engine_error";
     case ErrorCode::IoError: return "io_error";
     case ErrorCode::Corruption: return "corruption";
@@ -243,6 +270,16 @@ std::string_view error_code(ErrorCode code) {
 Response error_response(int status, std::string message, ErrorCode code) {
     return json_response(status, json::Value::Object{{"error", std::move(message)},
                                                       {"code", std::string(error_code(code))}});
+}
+
+Response auth_response(int status, std::string message, std::string code) {
+    Response response = json_response(status, json::Value::Object{
+                                                    {"error", std::move(message)},
+                                                    {"code", std::move(code)},
+                                                });
+    if (status == 401)
+        response.headers.insert_or_assign("WWW-Authenticate", "Bearer");
+    return response;
 }
 
 Response ingest_error(int status, std::string message, std::string code,
@@ -268,6 +305,8 @@ int status_for(ErrorCode code) {
         return 502;
     case ErrorCode::Timeout:
         return 504;
+    case ErrorCode::QuotaExceeded:
+        return 429;
     case ErrorCode::EngineError:
     case ErrorCode::IoError:
     case ErrorCode::Corruption:
@@ -293,6 +332,142 @@ std::size_t query_size(const std::map<std::string, std::string>& query,
     return static_cast<std::size_t>(parse_id(found->second));
 }
 
+bool listed_key(std::string_view key, std::initializer_list<std::string_view> values) {
+    return std::find(values.begin(), values.end(), key) != values.end();
+}
+
+void require_object_keys(const json::Value& value,
+                         std::initializer_list<std::string_view> required,
+                         std::initializer_list<std::string_view> optional,
+                         std::string_view object_name) {
+    const auto& object = value.as_object();
+    for (const auto& [key, _] : object) {
+        if (!listed_key(key, required) && !listed_key(key, optional))
+            throw Error(ErrorCode::InvalidArgument,
+                        std::string(object_name) + " contains an unsupported field");
+    }
+    for (const std::string_view key : required) {
+        if (!object.contains(std::string(key)))
+            throw Error(ErrorCode::ParseError,
+                        std::string(object_name) + " is missing " + std::string(key));
+    }
+}
+
+std::string bounded_text(const json::Value& value, std::size_t max_length,
+                         std::string_view field) {
+    std::string text = value.as_string();
+    if (text.size() > max_length)
+        throw Error(ErrorCode::InvalidArgument,
+                    std::string(field) + " exceeds its size limit");
+    return text;
+}
+
+struct BrowserEngineIdentity {
+    std::string name;
+    std::string version;
+    std::string source;
+    std::string hash;
+};
+
+BrowserEngineIdentity parse_browser_engine_identity(const json::Value& value) {
+    require_object_keys(value, {"name", "version", "source", "hash"}, {}, "engine");
+    return BrowserEngineIdentity{
+        bounded_text(value.at("name"), 128, "engine name"),
+        bounded_text(value.at("version"), 128, "engine version"),
+        bounded_text(value.at("source"), 128, "engine source"),
+        bounded_text(value.at("hash"), 256, "engine hash"),
+    };
+}
+
+void require_browser_engine_identity(const BrowserEngineIdentity& engine) {
+    if (engine.name != analysis::browser_engine_name ||
+        engine.version != analysis::browser_engine_version ||
+        engine.source != analysis::browser_engine_source ||
+        engine.hash != analysis::browser_engine_asset_hash)
+        throw Error(ErrorCode::InvalidArgument, "browser engine identity is unsupported");
+}
+
+analysis::BrowserObservationRunContext parse_browser_observation_run(
+    const json::Value& value, BrowserEngineIdentity& engine) {
+    require_object_keys(value, {"contractVersion", "analysisRunId", "gameId", "profile", "engine"}, {},
+                        "browser analysis request");
+    if (bounded_text(value.at("contractVersion"), 64, "contract version") !=
+        analysis::browser_observation_contract_version)
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observation contract version is unsupported");
+    engine = parse_browser_engine_identity(value.at("engine"));
+    require_browser_engine_identity(engine);
+    return analysis::BrowserObservationRunContext{
+        bounded_text(value.at("gameId"), analysis::browser_observation_max_id_length, "game id"),
+        bounded_text(value.at("analysisRunId"), analysis::browser_observation_max_id_length,
+                     "analysis run id"),
+        bounded_text(value.at("profile"), 32, "profile"),
+    };
+}
+
+analysis::BrowserEngineObservation parse_browser_observation(const json::Value& value) {
+    require_object_keys(value,
+                        {"contractVersion", "analysisRunId", "gameId", "ply", "sequence",
+                         "fen", "profile", "engine", "depth", "nodes", "timeMs", "multipv",
+                         "bestMove", "lines"},
+                        {}, "browser observation");
+    const BrowserEngineIdentity engine = parse_browser_engine_identity(value.at("engine"));
+    analysis::BrowserEngineObservation observation;
+    observation.contract_version = bounded_text(value.at("contractVersion"), 64,
+                                                "contract version");
+    observation.analysis_run_id = bounded_text(
+        value.at("analysisRunId"), analysis::browser_observation_max_id_length, "analysis run id");
+    observation.game_id = bounded_text(value.at("gameId"),
+                                       analysis::browser_observation_max_id_length, "game id");
+    observation.ply = value.at("ply").as_size();
+    observation.sequence = value.at("sequence").as_size();
+    observation.fen = bounded_text(value.at("fen"), analysis::browser_observation_max_fen_length,
+                                   "FEN");
+    observation.profile = bounded_text(value.at("profile"), 32, "profile");
+    observation.engine_name = engine.name;
+    observation.engine_version = engine.version;
+    observation.engine_source = engine.source;
+    observation.engine_hash = engine.hash;
+    observation.depth = value.at("depth").as_int();
+    observation.nodes = value.at("nodes").as_size();
+    observation.time_ms = value.at("timeMs").as_size();
+    observation.multipv = value.at("multipv").as_int();
+    observation.best_move = bounded_text(value.at("bestMove"), 5, "best move");
+
+    const auto& lines = value.at("lines").as_array();
+    if (lines.size() > analysis::browser_observation_max_lines)
+        throw Error(ErrorCode::InvalidArgument, "browser observation has too many lines");
+    observation.lines.reserve(lines.size());
+    for (const auto& encoded : lines) {
+        require_object_keys(encoded, {"rank", "centipawns", "mate", "moves"}, {},
+                            "browser observation line");
+        analysis::BrowserObservationLine line;
+        line.rank = encoded.at("rank").as_int();
+        const auto& centipawns = encoded.at("centipawns");
+        const auto& mate = encoded.at("mate");
+        if (!centipawns.is_null())
+            line.centipawns = centipawns.as_int();
+        if (!mate.is_null())
+            line.mate = mate.as_int();
+        const auto& moves = encoded.at("moves").as_array();
+        if (moves.size() > analysis::browser_observation_max_pv_length)
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation principal variation is too long");
+        line.moves.reserve(moves.size());
+        for (const auto& move : moves)
+            line.moves.push_back(bounded_text(move, 5, "principal variation move"));
+        observation.lines.push_back(std::move(line));
+    }
+    return observation;
+}
+
+std::string browser_owner_key(const app::OwnerId& owner) {
+    const std::string kind = owner.kind() == app::OwnerKind::Account
+                                 ? "account"
+                                 : owner.kind() == app::OwnerKind::Guest ? "guest" : "local";
+    return kind + ":" + std::string(owner.value());
+}
+
 std::string reason_phrase(int status) {
     switch (status) {
     case 200:
@@ -305,6 +480,8 @@ std::string reason_phrase(int status) {
         return "No Content";
     case 400:
         return "Bad Request";
+    case 401:
+        return "Unauthorized";
     case 403:
         return "Forbidden";
     case 404:
@@ -368,13 +545,21 @@ std::optional<Request> read_request(int fd) {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         const std::size_t colon = line.find(':');
-        if (colon == std::string::npos)
-            continue;
+        if (colon == std::string::npos || colon == 0)
+            throw Error(ErrorCode::InvalidArgument, "invalid HTTP header");
         std::string key = lowercase(line.substr(0, colon));
+        if (std::any_of(key.begin(), key.end(), [](unsigned char character) {
+                return std::isspace(character) != 0 || character < 0x21U;
+            }))
+            throw Error(ErrorCode::InvalidArgument, "invalid HTTP header name");
         std::size_t start = colon + 1;
-        while (start < line.size() && line[start] == ' ')
+        while (start < line.size() && (line[start] == ' ' || line[start] == '\t'))
             ++start;
-        request.headers.insert_or_assign(std::move(key), line.substr(start));
+        if (key == "transfer-encoding")
+            throw Error(ErrorCode::InvalidArgument, "transfer-encoding is unsupported");
+        if (key == "content-length" && request.headers.contains(key))
+            throw Error(ErrorCode::InvalidArgument, "duplicate content-length header");
+        request.headers.emplace(std::move(key), line.substr(start));
     }
     std::size_t content_length = 0;
     if (const auto found = request.headers.find("content-length"); found != request.headers.end()) {
@@ -515,18 +700,299 @@ std::string mime_type(const std::filesystem::path& path) {
 
 } // namespace
 
+Api::Authentication Api::authenticate(const Request& request) const {
+    // A scoped resolver is an authorization boundary even when a caller forgot to set the
+    // legacy `required` flag. Never fall back to the default owner's data in that case.
+    if (!auth_.required && !auth_.resolve_scope)
+        return {};
+
+    if (!auth_.verify)
+        return Authentication{{}, auth_response(503, "authentication is not configured",
+                                                 "auth_unavailable")};
+
+    auto authorization = request.headers.find("authorization");
+    if (authorization == request.headers.end())
+        authorization = request.headers.find("Authorization");
+    if (authorization == request.headers.end())
+        return Authentication{{}, auth_response(401, "authentication is required",
+                                                 "auth_required")};
+
+    constexpr std::string_view bearer_prefix = "Bearer ";
+    const std::string_view value = authorization->second;
+    if (!value.starts_with(bearer_prefix))
+        return Authentication{{}, auth_response(401, "bearer authentication is required",
+                                                 "invalid_token")};
+    const std::string_view token = value.substr(bearer_prefix.size());
+    if (token.empty() || token.size() > 4096 ||
+        std::any_of(token.begin(), token.end(), [](unsigned char character) {
+            return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
+        })) {
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
+    }
+
+    std::optional<app::OwnerId> owner;
+    try {
+        owner = auth_.verify(token);
+    } catch (...) {
+        // A verifier must never leak provider details or token material through this boundary.
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
+    }
+    if (!owner)
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
+    if (owner->kind() == app::OwnerKind::Guest && !auth_.allow_guest_access)
+        return Authentication{{}, auth_response(410, "guest analysis is disabled; sign in to continue",
+                                                 "guest_analysis_disabled")};
+    return Authentication{std::move(owner), {}};
+}
+
+std::optional<Response> Api::authorize(
+    const Request& request, std::optional<app::OwnerId>* authenticated_owner) const {
+    const Authentication authentication = authenticate(request);
+    if (authenticated_owner)
+        *authenticated_owner = authentication.owner;
+    if (authentication.denial)
+        return authentication.denial;
+    // A scoped resolver owns the repository choice. The fixed-owner comparison remains for the
+    // legacy local/one-owner hosted adapter and keeps this public helper backwards compatible.
+    if (authentication.owner && !auth_.resolve_scope &&
+        *authentication.owner != default_repository_.owner())
+        return auth_response(403, "resource is outside the authenticated owner", "forbidden");
+    return std::nullopt;
+}
+
+std::optional<ApiScope> Api::scope_for_owner(const app::OwnerId& owner) const {
+    if (!auth_.resolve_scope) {
+        if (owner == default_repository_.owner())
+            return ApiScope{&default_repository_, &default_jobs_, {}};
+        return std::nullopt;
+    }
+    try {
+        const auto scope = auth_.resolve_scope(owner);
+        if (!scope || scope->repository == nullptr || scope->jobs == nullptr ||
+            scope->repository->owner() != owner)
+            return std::nullopt;
+        return scope;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 Response Api::handle(const Request& request) {
     try {
         const auto parts = path_parts(request.path);
+        const bool guest_session_route =
+            request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "session"};
+        const bool guest_claim_route =
+            request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "claim"};
+        const bool account_export_route =
+            request.method == "POST" &&
+            parts == std::vector<std::string>{"api", "account", "export"};
+        const bool account_delete_route =
+            request.method == "POST" &&
+            parts == std::vector<std::string>{"api", "account", "delete"};
+        const bool shared_ingest_forbidden = auth_.resolve_scope && !auth_.allow_shared_ingest;
+        const bool public_route = guest_session_route ||
+                                  (request.method == "GET" &&
+                                   (parts == std::vector<std::string>{"api", "health"} ||
+                                    parts == std::vector<std::string>{"api", "ready"}));
+        ApiScope scope{&default_repository_, &default_jobs_, {}};
+        std::optional<app::OwnerId> authenticated_owner;
+        if (!public_route) {
+            const Authentication authentication = authenticate(request);
+            if (authentication.denial)
+                return *authentication.denial;
+            authenticated_owner = authentication.owner;
+            if (authentication.owner && !guest_claim_route) {
+                if (auth_.resolve_scope) {
+                    std::optional<ApiScope> resolved;
+                    try {
+                        resolved = auth_.resolve_scope(*authentication.owner);
+                    } catch (...) {
+                        return auth_response(503, "authenticated storage is unavailable",
+                                             "storage_unavailable");
+                    }
+                    if (!resolved || resolved->repository == nullptr || resolved->jobs == nullptr ||
+                        resolved->repository->owner() != *authentication.owner)
+                        return auth_response(503, "authenticated storage is unavailable",
+                                             "storage_unavailable");
+                    scope = *resolved;
+                } else if (*authentication.owner != default_repository_.owner()) {
+                    return auth_response(403, "resource is outside the authenticated owner",
+                                         "forbidden");
+                }
+            }
+        }
+        if (scope.repository == nullptr || scope.jobs == nullptr)
+            return error_response(500, "request scope is unavailable");
+
+        if (guest_session_route) {
+            if (!auth_.allow_guest_access)
+                return auth_response(410, "guest analysis is disabled; sign in to continue",
+                                     "guest_analysis_disabled");
+            if (!auth_.create_guest_session)
+                return auth_response(503, "guest sessions are not configured",
+                                     "guest_sessions_unavailable");
+            const auto session = auth_.create_guest_session();
+            if (!session)
+                return auth_response(503, "guest sessions are unavailable",
+                                     "guest_sessions_unavailable");
+            return json_response(201, json::Value::Object{
+                                          {"guest_id", session->guest_id},
+                                          {"token", session->token},
+                                          {"expires_at_ms", static_cast<double>(session->expires_at_ms)},
+                                      });
+        }
+
+        if (guest_claim_route) {
+            if (!auth_.allow_guest_access)
+                return auth_response(410, "guest analysis is disabled; sign in to continue",
+                                     "guest_analysis_disabled");
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Account)
+                return auth_response(403, "account authentication is required", "account_required");
+            if (!auth_.claim_guest)
+                return auth_response(503, "guest claiming is not configured",
+                                     "guest_claim_unavailable");
+            const json::Value body = json::parse(request.body);
+            for (const auto& [key, _] : body.as_object()) {
+                if (key != "guest_token" && key != "idempotency_key")
+                    throw Error(ErrorCode::InvalidArgument,
+                                "guest claim accepts only guest_token and idempotency_key");
+            }
+            const std::string token = body.at("guest_token").as_string();
+            std::string idempotency_key = body.get("idempotency_key", "").as_string();
+            if (idempotency_key.empty()) {
+                if (const auto found = request.headers.find("idempotency-key");
+                    found != request.headers.end())
+                    idempotency_key = found->second;
+            }
+            if (idempotency_key.empty())
+                throw Error(ErrorCode::InvalidArgument, "guest claim requires an idempotency key");
+            const GuestClaimResult result =
+                auth_.claim_guest(token, *authenticated_owner, idempotency_key);
+            return json_response(200, json::Value::Object{
+                                          {"guest_id", result.guest_id},
+                                          {"account_id", result.account_id},
+                                          {"transferred_games", result.transferred_games},
+                                      {"already_claimed", result.already_claimed},
+                                      });
+        }
+
+        if (account_export_route || account_delete_route) {
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Account)
+                return auth_response(403, "account authentication is required", "account_required");
+
+            const json::Value body = request.body.empty()
+                                         ? json::Value::Object{}
+                                         : json::parse(request.body);
+            require_object_keys(body, {}, {"idempotency_key", "confirm"}, "account request");
+            std::string idempotency_key = body.get("idempotency_key", "").as_string();
+            if (idempotency_key.empty()) {
+                if (const auto found = request.headers.find("idempotency-key");
+                    found != request.headers.end())
+                    idempotency_key = found->second;
+            }
+            if (idempotency_key.empty())
+                throw Error(ErrorCode::InvalidArgument,
+                            "account request requires an idempotency key");
+            static_cast<void>(bounded_text(json::Value(idempotency_key), 256,
+                                           "account idempotency key"));
+
+            if (account_export_route) {
+                if (!auth_.export_account)
+                    return auth_response(503, "account export is not configured",
+                                         "account_export_unavailable");
+                const AccountExportResult result =
+                    auth_.export_account(*authenticated_owner, idempotency_key);
+                return json_response(200, json::Value::Object{
+                                              {"request_id", result.request_id},
+                                              {"status", "completed"},
+                                              {"completed_at_ms",
+                                               static_cast<double>(result.completed_at_ms)},
+                                              {"data", std::move(result.data)},
+                                          });
+            }
+
+            if (!body.get("confirm", false).as_bool())
+                throw Error(ErrorCode::InvalidArgument,
+                            "account deletion requires confirm=true");
+            if (!auth_.verify_fresh)
+                return auth_response(503, "fresh authorization is not configured",
+                                     "fresh_authorization_unavailable");
+            const auto reauth = request.headers.find("x-plywise-reauth-token");
+            if (reauth == request.headers.end() || reauth->second.empty())
+                return auth_response(401, "fresh authorization is required",
+                                     "fresh_authorization_required");
+            std::optional<app::OwnerId> fresh_owner;
+            try {
+                fresh_owner = auth_.verify_fresh(reauth->second);
+            } catch (...) {
+                fresh_owner = std::nullopt;
+            }
+            if (!fresh_owner || *fresh_owner != *authenticated_owner)
+                return auth_response(401, "fresh authorization is invalid",
+                                     "fresh_authorization_invalid");
+            if (!auth_.delete_account)
+                return auth_response(503, "account deletion is not configured",
+                                     "account_deletion_unavailable");
+            const AccountDeletionResult result =
+                auth_.delete_account(*authenticated_owner, idempotency_key);
+            return json_response(200, json::Value::Object{
+                                          {"request_id", result.request_id},
+                                          {"status", "completed"},
+                                          {"receipt_token", result.receipt_token.empty()
+                                                                 ? json::Value{}
+                                                                 : json::Value(result.receipt_token)},
+                                          {"deleted_at_ms",
+                                           static_cast<double>(result.completed_at_ms)},
+                                          {"backup_retention_until_ms",
+                                           static_cast<double>(result.backup_retention_until_ms)},
+                                          {"backup_retention_days", 30},
+                                          {"backup_retention_notice",
+                                           "Encrypted backups may retain deleted data until the "
+                                           "retention deadline."},
+                                      });
+        }
+
+        // Keep the route implementation below unchanged while selecting its dependencies per
+        // request. These locals intentionally shadow the fixed constructor members.
+        app::IRepository& repository_ = *scope.repository;
+        app::JobManager& jobs_ = *scope.jobs;
+        const auto enforce_guest_analysis_quota = [&](std::string_view game_id)
+            -> std::optional<Response> {
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Guest)
+                return std::nullopt;
+            if (!auth_.reserve_guest_analysis)
+                return auth_response(503, "guest analysis quota is not configured",
+                                     "guest_quota_unavailable");
+            auth_.reserve_guest_analysis(*authenticated_owner, game_id);
+            return std::nullopt;
+        };
+        const bool durable_browser_staging =
+            static_cast<bool>(auth_.begin_browser_observation) &&
+            static_cast<bool>(auth_.submit_browser_observation) &&
+            static_cast<bool>(auth_.finalize_browser_observation);
+        const bool partial_browser_staging =
+            static_cast<bool>(auth_.begin_browser_observation) ||
+            static_cast<bool>(auth_.submit_browser_observation) ||
+            static_cast<bool>(auth_.finalize_browser_observation);
+        const auto require_browser_staging = [&]() -> std::optional<Response> {
+            if (partial_browser_staging && !durable_browser_staging)
+                return auth_response(503, "browser analysis staging is not configured",
+                                     "browser_staging_unavailable");
+            return std::nullopt;
+        };
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
-            return json_response(200, json::Value::Object{
-                                          {"status", "ok"},
-                                          {"version", "0.3.0"},
-                                          {"service", "plywise-api"},
-                                          {"local_only", state.local_only},
-                                          {"games", repository_.size()},
-                                      });
+            json::Value::Object health{
+                {"status", "ok"},
+                {"version", "0.3.0"},
+                {"service", "plywise-api"},
+                {"local_only", state.local_only},
+                {"auth_required", auth_.required},
+            };
+            if (!auth_.required)
+                health.emplace("games", repository_.size());
+            return json_response(200, std::move(health));
         }
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "ready"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
@@ -541,7 +1007,6 @@ Response Api::handle(const Request& request) {
                          {"storage", state.storage_ready ? "ready" : "unavailable"},
                          {"engine", state.engine_ready ? "ready" : "unavailable"},
                      }},
-                    {"engine", state.engine},
                 });
         }
         if (request.method == "GET" &&
@@ -644,6 +1109,36 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "profile"} && request.method == "GET")
             return json_response(200, training::to_json(repository_.profile()));
+        if (parts == std::vector<std::string>{"api", "profile", "identity"}) {
+            if (request.method == "GET") {
+                const auto identity = repository_.player_identity();
+                return json_response(200, json::Value::Object{
+                                              {"identity", identity ? training::to_json(*identity)
+                                                                       : json::Value{}},
+                                          });
+            }
+            if (request.method == "PUT") {
+                const json::Value body = json::parse(request.body);
+                for (const auto& [key, _] : body.as_object())
+                    if (key != "game_id" && key != "player_name" && key != "source" &&
+                        key != "decision")
+                        throw Error(ErrorCode::InvalidArgument,
+                                    "identity accepts only game_id, player_name, source, and decision");
+                training::PlayerIdentity identity;
+                identity.game_id = body.at("game_id").as_string();
+                identity.player_name = body.get("player_name", "").as_string();
+                identity.source = body.at("source").as_string();
+                identity.decision = training::player_identity_decision(
+                    body.at("decision").as_string());
+                repository_.save_player_identity(std::move(identity));
+                const auto saved = repository_.player_identity();
+                if (!saved)
+                    throw Error(ErrorCode::Corruption, "saved player identity could not be loaded");
+                return json_response(200, json::Value::Object{
+                                              {"identity", training::to_json(*saved)},
+                                          });
+            }
+        }
         if (parts == std::vector<std::string>{"api", "chesscom", "profile"}) {
             if (request.method == "GET") {
                 const auto profile = repository_.chesscom_profile();
@@ -655,6 +1150,9 @@ Response Api::handle(const Request& request) {
                                                         {"profile", nullptr}});
             }
             if (request.method == "PUT") {
+                if (shared_ingest_forbidden)
+                    return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                        "ingest_unavailable", {"paste_pgn"});
                 if (!ingest_)
                     return ingest_error(503, "Chess.com ingest is unavailable",
                                         "ingest_unavailable", {"retry"});
@@ -678,6 +1176,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "chesscom", "sync"} &&
             request.method == "POST") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -697,6 +1198,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "chesscom" &&
             parts[2] == "sync") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -778,7 +1282,7 @@ Response Api::handle(const Request& request) {
                     if (!imported_game_matches(imported, parsed.game_id))
                         throw Error(ErrorCode::Corruption,
                                     "local archive PGN did not match its exact game identifier");
-                } else if (ingest_) {
+                } else if (ingest_ && !shared_ingest_forbidden) {
                     const auto resolution = ingest_->resolve(
                         body.at("url").as_string(), body.get("username", "").as_string());
                     return json_response(202, json::Value::Object{
@@ -803,6 +1307,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "import", "resolve"} &&
             request.method == "POST") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry", "paste_pgn"});
@@ -818,6 +1325,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "import" &&
             parts[2] == "resolutions") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -908,7 +1418,125 @@ Response Api::handle(const Request& request) {
             if (parts.size() == 3 && request.method == "GET") {
                 return json_response(200, to_json(*game, true));
             }
+            if (parts.size() == 4 && parts[3] == "browser-analysis" &&
+                request.method == "POST") {
+                if (!completed_game(*game))
+                    throw Error(ErrorCode::InvalidArgument,
+                                "analysis requires a completed game");
+                BrowserEngineIdentity engine;
+                auto run = parse_browser_observation_run(json::parse(request.body), engine);
+                if (run.game_id != parts[2])
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser analysis game does not match the route");
+                if (game->imported.game.plies.size() >
+                    analysis::browser_observation_max_run_observations / 2)
+                    throw Error(ErrorCode::InvalidArgument,
+                                "game is too long for the browser analysis contract");
+                if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
+                    return *quota;
+                run.expected_observations = game->imported.game.plies.size() * 2;
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                if (durable_browser_staging)
+                    auth_.begin_browser_observation(repository_.owner(), run);
+                else
+                    browser_observations_.begin(browser_owner_key(repository_.owner()), run);
+                return json_response(201, json::Value::Object{
+                                             {"status", "collecting"},
+                                             {"contractVersion",
+                                              std::string(analysis::browser_observation_contract_version)},
+                                             {"analysisRunId", run.analysis_run_id},
+                                             {"gameId", run.game_id},
+                                             {"profile", run.profile},
+                                             {"expectedObservations", run.expected_observations},
+                                             {"engine", json::Value::Object{
+                                                            {"name", engine.name},
+                                                            {"version", engine.version},
+                                                            {"source", engine.source},
+                                                            {"hash", engine.hash},
+                                                        }},
+                                         });
+            }
+            if (parts.size() == 4 && parts[3] == "browser-observations" &&
+                request.method == "POST") {
+                const auto observation = parse_browser_observation(json::parse(request.body));
+                if (observation.game_id != parts[2])
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation game does not match the route");
+                if (observation.ply >= game->imported.game.plies.size())
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation ply is outside the canonical game");
+                const auto& canonical_ply = game->imported.game.plies[observation.ply];
+                if (observation.fen != canonical_ply.fen_before &&
+                    observation.fen != canonical_ply.fen_after)
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation FEN does not match the canonical game");
+                const analysis::BrowserObservationContext context{
+                    parts[2], observation.analysis_run_id, observation.profile,
+                    observation.fen,
+                };
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                const auto receipt = durable_browser_staging
+                                         ? auth_.submit_browser_observation(repository_.owner(),
+                                                                            context, observation)
+                                         : browser_observations_.submit(
+                                               browser_owner_key(repository_.owner()), context,
+                                               observation);
+                const bool duplicate = receipt.disposition ==
+                                       analysis::BrowserObservationDisposition::Duplicate;
+                return json_response(duplicate ? 200 : 202, json::Value::Object{
+                                                             {"status", duplicate ? "duplicate"
+                                                                                   : "accepted"},
+                                                             {"staging", true},
+                                                             {"analysisRunId",
+                                                              observation.analysis_run_id},
+                                                             {"gameId", observation.game_id},
+                                                             {"ply", observation.ply},
+                                                             {"sequence", observation.sequence},
+                                                         });
+            }
+            if (parts.size() == 5 && parts[3] == "browser-observations" &&
+                parts[4] == "finalize" && request.method == "POST") {
+                const json::Value body = json::parse(request.body);
+                require_object_keys(body, {"analysisRunId"}, {},
+                                    "browser observation finalization");
+                const std::string run_id = bounded_text(
+                    body.at("analysisRunId"), analysis::browser_observation_max_id_length,
+                    "analysis run id");
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                const auto bundle = durable_browser_staging
+                                        ? auth_.finalize_browser_observation(
+                                              repository_.owner(), parts[2], run_id)
+                                        : browser_observations_.finalize(
+                                              browser_owner_key(repository_.owner()), parts[2], run_id);
+                if (game->analysis) {
+                    return json_response(200, json::Value::Object{
+                                                 {"status", "complete"},
+                                                 {"staging", false},
+                                                 {"analysisRunId", run_id},
+                                                 {"gameId", parts[2]},
+                                                 {"analysis", app::to_json(*game->analysis)},
+                                             });
+                }
+                const analysis::GameAnalysis review =
+                    analysis::assemble_browser_review(game->imported.game, bundle.observations);
+                repository_.save_analysis(review);
+                return json_response(200, json::Value::Object{
+                                             {"status", "complete"},
+                                             {"staging", false},
+                                             {"analysisRunId", run_id},
+                                             {"gameId", parts[2]},
+                                             {"analysis", app::to_json(review)},
+                                         });
+            }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "POST") {
+                if (!completed_game(*game))
+                    throw Error(ErrorCode::InvalidArgument,
+                                "analysis requires a completed game");
+                if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
+                    return *quota;
                 return json_response(202, app::to_json(jobs_.start(parts[2])));
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "GET") {
@@ -1079,18 +1707,13 @@ HttpServer::HttpServer(Api& api, app::JobManager& jobs, ServerOptions options,
 }
 
 HttpServer::~HttpServer() {
+    stop();
+    std::unique_lock lock(client_threads_mutex_);
+    client_threads_cv_.wait(lock, [this] { return active_client_threads_ == 0; });
     jobs_.set_observer({});
     if (ingest_)
         ingest_->set_observer({});
-    stop();
-    std::vector<std::thread> client_threads;
-    {
-        std::lock_guard lock(client_threads_mutex_);
-        client_threads.swap(client_threads_);
-    }
-    for (auto& thread : client_threads)
-        if (thread.joinable())
-            thread.join();
+    remove_scoped_observers();
 }
 
 void HttpServer::run() {
@@ -1150,8 +1773,27 @@ void HttpServer::run() {
             log(LogLevel::Warning, "http", std::string("accept failed: ") + std::strerror(errno));
             continue;
         }
-        std::lock_guard lock(client_threads_mutex_);
-        client_threads_.emplace_back([this, client] { handle_client(client); });
+        {
+            std::lock_guard lock(client_threads_mutex_);
+            if (active_client_threads_ >= max_active_client_threads_) {
+                constexpr std::string_view busy =
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                static_cast<void>(send_all(client, busy.data(), busy.size()));
+                close(client);
+                continue;
+            }
+            ++active_client_threads_;
+        }
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &client_io_timeout,
+                   sizeof(client_io_timeout));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &client_io_timeout,
+                   sizeof(client_io_timeout));
+        std::thread([this, client] {
+            handle_client(client);
+            std::lock_guard lock(client_threads_mutex_);
+            --active_client_threads_;
+            client_threads_cv_.notify_all();
+        }).detach();
     }
     close_listener();
 }
@@ -1164,8 +1806,8 @@ void HttpServer::stop() noexcept {
         close(listen_fd);
     }
     std::lock_guard lock(clients_mutex_);
-    for (const int client : websocket_clients_)
-        static_cast<void>(shutdown(client, SHUT_RDWR));
+    for (const auto& client : websocket_clients_)
+        static_cast<void>(shutdown(client.fd, SHUT_RDWR));
 }
 
 void HttpServer::handle_client(int client_fd) {
@@ -1195,10 +1837,10 @@ void HttpServer::handle_client(int client_fd) {
         if (request->method == "OPTIONS" && request->path.starts_with("/api/")) {
             response = Response{204, {}, {}};
             response.headers.insert_or_assign("Access-Control-Allow-Methods",
-                                              "GET, POST, DELETE, OPTIONS");
+                                              "GET, POST, PUT, DELETE, OPTIONS");
             response.headers.insert_or_assign(
                 "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Idempotency-Key");
+                "Authorization, Content-Type, Idempotency-Key, X-Plywise-Reauth-Token");
             response.headers.insert_or_assign("Access-Control-Max-Age", "600");
         } else {
             response = request->path.starts_with("/api/") ? api_.handle(*request)
@@ -1239,6 +1881,60 @@ void HttpServer::handle_client(int client_fd) {
 }
 
 void HttpServer::handle_websocket(int client_fd, const Request& request) {
+    const auto send_http_response = [&](const Response& response) {
+        std::ostringstream head;
+        head << "HTTP/1.1 " << response.status << ' ' << reason_phrase(response.status)
+             << "\r\n";
+        for (const auto& [key, value] : response.headers)
+            head << key << ": " << value << "\r\n";
+        head << "Content-Length: " << response.body.size()
+             << "\r\nConnection: close\r\n\r\n";
+        const std::string encoded = head.str();
+        static_cast<void>(send_all(client_fd, encoded.data(), encoded.size()));
+        static_cast<void>(send_all(client_fd, response.body.data(), response.body.size()));
+    };
+
+    Request authenticated_request = request;
+    std::string selected_protocol;
+    const auto authorization = request.headers.find("authorization");
+    const auto protocols = request.headers.find("sec-websocket-protocol");
+    if (authorization == request.headers.end() && protocols != request.headers.end()) {
+        if (const auto token = websocket_bearer_token(protocols->second)) {
+            authenticated_request.headers.insert_or_assign(
+                "authorization", "Bearer " + *token);
+            selected_protocol = std::string(websocket_auth_protocol);
+        }
+    }
+
+    std::optional<app::OwnerId> owner;
+    if (const auto denied = api_.authorize(authenticated_request, &owner)) {
+        const Response response = *denied;
+        send_http_response(response);
+        close(client_fd);
+        return;
+    }
+
+    if (api_.has_scoped_authorization() && !owner) {
+        send_http_response(auth_response(401, "authentication is required", "auth_required"));
+        close(client_fd);
+        return;
+    }
+
+    app::JobManager* event_jobs = &jobs_;
+    std::shared_ptr<void> scope_lifetime;
+    if (owner) {
+        const auto scope = api_.scope_for_owner(*owner);
+        if (!scope) {
+            send_http_response(json_response(
+                503, json::Value::Object{{"error", "owner-scoped event streaming is unavailable"},
+                                         {"code", "events_unavailable"}}));
+            close(client_fd);
+            return;
+        }
+        event_jobs = scope->jobs;
+        scope_lifetime = scope->lifetime;
+    }
+
     const auto origin = request.headers.find("origin");
     if (origin == request.headers.end() || !origin_allowed(origin->second)) {
         constexpr std::string_view forbidden =
@@ -1257,32 +1953,40 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     const std::string accept = websocket_accept(key->second);
     const std::string response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                  "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
-                                 accept + "\r\n\r\n";
+                                 accept +
+                                 (selected_protocol.empty()
+                                      ? "\r\n\r\n"
+                                      : "\r\nSec-WebSocket-Protocol: " + selected_protocol +
+                                            "\r\n\r\n");
     if (!send_all(client_fd, response.data(), response.size())) {
         close(client_fd);
         return;
     }
+    if (owner)
+        subscribe_to_owner_events(*event_jobs, *owner, std::move(scope_lifetime));
     {
         std::lock_guard lock(clients_mutex_);
-        websocket_clients_.push_back(client_fd);
+        websocket_clients_.push_back(WebSocketClient{client_fd, owner});
     }
     json::Value::Array jobs;
-    for (const auto& job : jobs_.list())
+    for (const auto& job : event_jobs->list())
         jobs.push_back(app::to_json(job));
     const std::string snapshot = websocket_frame(
         json::dump(json::Value::Object{{"type", "jobs_snapshot"}, {"jobs", std::move(jobs)}}));
     if (!send_all(client_fd, snapshot.data(), snapshot.size())) {
         std::lock_guard lock(clients_mutex_);
-        std::erase(websocket_clients_, client_fd);
+        std::erase_if(websocket_clients_,
+                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
         close(client_fd);
         return;
     }
-    if (ingest_) {
+    if (ingest_ && !owner) {
         const std::string ingest_snapshot = websocket_frame(json::dump(json::Value::Object{
             {"type", "ingest_snapshot"}, {"ingest", ingest_->snapshot()}}));
         if (!send_all(client_fd, ingest_snapshot.data(), ingest_snapshot.size())) {
             std::lock_guard lock(clients_mutex_);
-            std::erase(websocket_clients_, client_fd);
+            std::erase_if(websocket_clients_,
+                          [&](const WebSocketClient& client) { return client.fd == client_fd; });
             close(client_fd);
             return;
         }
@@ -1305,16 +2009,59 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     }
     {
         std::lock_guard lock(clients_mutex_);
-        std::erase(websocket_clients_, client_fd);
+        std::erase_if(websocket_clients_,
+                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
     }
     close(client_fd);
 }
 
 void HttpServer::broadcast(std::string_view message) {
+    if (api_.has_scoped_authorization())
+        return;
     const std::string frame = websocket_frame(message);
     std::lock_guard lock(clients_mutex_);
     std::erase_if(websocket_clients_,
-                  [&](int client) { return !send_all(client, frame.data(), frame.size()); });
+                  [&](const WebSocketClient& client) {
+                      return !client.owner &&
+                             !send_all(client.fd, frame.data(), frame.size());
+                  });
+}
+
+void HttpServer::broadcast_to_owner(const app::OwnerId& owner, std::string_view message) {
+    const std::string frame = websocket_frame(message);
+    std::lock_guard lock(clients_mutex_);
+    std::erase_if(websocket_clients_, [&](const WebSocketClient& client) {
+        if (!client.owner || *client.owner != owner)
+            return false;
+        return !send_all(client.fd, frame.data(), frame.size());
+    });
+}
+
+void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,
+                                           std::shared_ptr<void> lifetime) {
+    std::lock_guard lock(scoped_observers_mutex_);
+    if (scoped_observers_.contains(&jobs))
+        return;
+    const app::JobManager::ObserverId observer_id = jobs.add_observer(
+        [this, owner](const app::AnalysisJob& job) {
+            broadcast_to_owner(
+                owner, json::dump(json::Value::Object{{"type", "job_update"},
+                                                       {"job", app::to_json(job)}}));
+        });
+    if (observer_id != 0)
+        scoped_observers_.emplace(&jobs, ScopedObserver{observer_id, std::move(lifetime)});
+}
+
+void HttpServer::remove_scoped_observers() noexcept {
+    std::map<app::JobManager*, ScopedObserver> observers;
+    {
+        std::lock_guard lock(scoped_observers_mutex_);
+        observers.swap(scoped_observers_);
+    }
+    for (const auto& [jobs, observer] : observers) {
+        if (jobs)
+            jobs->remove_observer(observer.observer_id);
+    }
 }
 
 bool HttpServer::valid_websocket_origin(std::string_view origin) {

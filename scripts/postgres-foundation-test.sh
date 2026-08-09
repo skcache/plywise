@@ -61,7 +61,10 @@ INSERT INTO games (id, canonical_hash, normalized_pgn) VALUES
     ('game_b', decode(repeat('22', 32), 'hex'), '[Result "0-1"] 1. d4 d5 0-1');
 INSERT INTO game_owners (game_id, owner_kind, owner_id, source_kind, source_key) VALUES
     ('game_a', 'account', 'account_a', 'manual_pgn', 'import_a'),
-    ('game_a', 'account', 'account_b', 'manual_pgn', 'import_a');
+    ('game_a', 'account', 'account_b', 'manual_pgn', 'import_a'),
+    ('game_a', 'guest', 'guest_a', 'manual_pgn', 'guest_import_a');
+INSERT INTO guest_analysis_reservations (guest_id, owner_kind, game_id)
+    VALUES ('guest_a', 'guest', 'game_a');
 
 INSERT INTO analysis_runs (
     id, game_id, owner_kind, owner_id, idempotency_key, source, engine_build,
@@ -144,6 +147,10 @@ expect_failure "position with mismatched owner" \
   "INSERT INTO plywise.analysis_positions (run_id, game_id, owner_kind, owner_id, ply, sequence, canonical_fen_hash, depth, nodes, time_ms, observation_json) VALUES ('run_a2', 'game_a', 'account', 'account_b', 1, 0, decode(repeat('55', 32), 'hex'), 12, 100, 10, '{}'::jsonb)"
 expect_failure "practice item using another owner's evidence" \
   "INSERT INTO plywise.practice_items (id, owner_kind, owner_id, evidence_id, state, schedule_version) VALUES ('practice_b', 'account', 'account_b', 'evidence_a', 'queued', 'schedule-v1')"
+expect_failure "second guest free-analysis reservation" \
+  "INSERT INTO plywise.guest_analysis_reservations (guest_id, owner_kind, game_id) VALUES ('guest_a', 'guest', 'game_b')"
+expect_failure "guest reservation for an unknown game" \
+  "INSERT INTO plywise.guest_analysis_reservations (guest_id, owner_kind, game_id) VALUES ('guest_a', 'guest', 'missing_game')"
 
 pg_dump --format=custom --file "$dump_directory/plywise.dump" "$test_database"
 createdb "$restore_database"
@@ -159,7 +166,7 @@ restored_migrations="$(
   PGDATABASE="$restore_database" psql -X --tuples-only --no-align \
     --command "SELECT count(*) FROM plywise.schema_migrations"
 )"
-if [[ "$restored_runs" != "2" || "$restored_migrations" != "1" ]]; then
+if [[ "$restored_runs" != "2" || "$restored_migrations" != "6" ]]; then
   echo "Restored database did not preserve the qualified schema and data" >&2
   exit 1
 fi

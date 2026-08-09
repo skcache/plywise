@@ -112,6 +112,9 @@ TEST_CASE("drills attempts profiles and recommendations survive event replay") {
         storage::EventLog log(path);
         app::Repository repository(log);
         CHECK(repository.add(imported) == app::AddResult::Added);
+        repository.save_player_identity(training::PlayerIdentity{
+            std::string(training::player_identity_contract_version), game.identity, "Alex", "pgn",
+            training::PlayerIdentityDecision::Confirmed, 0});
         repository.save_analysis(sample_analysis(game));
         const auto drills = repository.drills(10'000);
         CHECK_EQ(drills.size(), 1ULL);
@@ -388,6 +391,10 @@ TEST_CASE("multiple games produce explainable recurrence and profile denominator
         const auto game = chess::parse_pgn(pgn);
         static_cast<void>(repository.add(
             import::ImportedGame{game, {}, pgn, import::ImportMethod::ManualPgn}));
+        if (!repository.player_identity())
+            repository.save_player_identity(training::PlayerIdentity{
+                std::string(training::player_identity_contract_version), game.identity, "Alex", "pgn",
+                training::PlayerIdentityDecision::Confirmed, 0});
         auto completed = sample_analysis(game);
         completed.game_id = game.identity;
         completed.moves.front().fen_before = game.plies.front().fen_before;
@@ -448,6 +455,10 @@ TEST_CASE("five eligible games expose every statistically gated dashboard rate")
         const auto game = chess::parse_pgn(pgn);
         static_cast<void>(repository.add(
             import::ImportedGame{game, {}, pgn, import::ImportMethod::ManualPgn}));
+        if (!repository.player_identity())
+            repository.save_player_identity(training::PlayerIdentity{
+                std::string(training::player_identity_contract_version), game.identity, "Alex", "pgn",
+                training::PlayerIdentityDecision::Confirmed, 0});
         auto completed = sample_analysis(game);
         completed.game_id = game.identity;
         completed.moves.front().phase = analysis::GamePhase::Endgame;

@@ -29,6 +29,7 @@ class Parser {
     }
 
   private:
+    static constexpr std::size_t max_depth = 64;
     std::string_view input_;
     std::size_t offset_{0};
 
@@ -53,10 +54,12 @@ class Parser {
         return false;
     }
 
-    Value parse_value() {
+    Value parse_value(std::size_t depth = 0) {
         skip_space();
         if (offset_ >= input_.size())
             fail("expected a value");
+        if (depth > max_depth)
+            fail("nesting depth exceeds the supported limit");
         switch (input_[offset_]) {
         case 'n':
             return literal("null", Value{});
@@ -67,9 +70,9 @@ class Parser {
         case '"':
             return Value(parse_string());
         case '[':
-            return parse_array();
+            return parse_array(depth);
         case '{':
-            return parse_object();
+            return parse_object(depth);
         default:
             if (input_[offset_] == '-' || (input_[offset_] >= '0' && input_[offset_] <= '9')) {
                 return parse_number();
@@ -209,13 +212,13 @@ class Parser {
         return Value(value);
     }
 
-    Value parse_array() {
+    Value parse_array(std::size_t depth) {
         consume('[');
         Value::Array values;
         if (consume(']'))
             return Value(std::move(values));
         while (true) {
-            values.push_back(parse_value());
+            values.push_back(parse_value(depth + 1));
             if (consume(']'))
                 return Value(std::move(values));
             if (!consume(','))
@@ -223,7 +226,7 @@ class Parser {
         }
     }
 
-    Value parse_object() {
+    Value parse_object(std::size_t depth) {
         consume('{');
         Value::Object values;
         if (consume('}'))
@@ -235,7 +238,7 @@ class Parser {
             std::string key = parse_string();
             if (!consume(':'))
                 fail("expected colon after object key");
-            if (!values.emplace(std::move(key), parse_value()).second)
+            if (!values.emplace(std::move(key), parse_value(depth + 1)).second)
                 fail("duplicate object key");
             if (consume('}'))
                 return Value(std::move(values));

@@ -3,6 +3,8 @@ import { loadEnv } from "vite";
 const allowedPublicVariables = new Set([
   "VITE_PLYWISE_API_ORIGIN",
   "VITE_PLYWISE_EVENT_ORIGIN",
+  "VITE_SUPABASE_URL",
+  "VITE_SUPABASE_PUBLISHABLE_KEY",
 ]);
 
 const modeFlag = process.argv.indexOf("--mode");
@@ -56,7 +58,8 @@ function validateOrigin(name, protocols) {
   if (
     mode === "production" &&
     ((name === "VITE_PLYWISE_API_ORIGIN" && parsed.protocol !== "https:") ||
-      (name === "VITE_PLYWISE_EVENT_ORIGIN" && parsed.protocol !== "wss:"))
+      (name === "VITE_PLYWISE_EVENT_ORIGIN" && parsed.protocol !== "wss:") ||
+      (name === "VITE_SUPABASE_URL" && parsed.protocol !== "https:"))
   ) {
     console.error(`${name} must use TLS in a configured production build.`);
     process.exit(1);
@@ -67,4 +70,16 @@ function validateOrigin(name, protocols) {
 export const validatedPublicOrigins = {
   api: validateOrigin("VITE_PLYWISE_API_ORIGIN", ["http:", "https:"]),
   events: validateOrigin("VITE_PLYWISE_EVENT_ORIGIN", ["ws:", "wss:"]),
+  supabase: validateOrigin("VITE_SUPABASE_URL", ["https:", "http:"]),
 };
+
+const supabaseUrl = publicEnvironment.VITE_SUPABASE_URL?.trim();
+const supabaseKey = publicEnvironment.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
+if (Boolean(supabaseUrl) !== Boolean(supabaseKey)) {
+  console.error("VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY must be configured together.");
+  process.exit(1);
+}
+if (supabaseKey && /service[_-]?role|secret/i.test(supabaseKey)) {
+  console.error("VITE_SUPABASE_PUBLISHABLE_KEY must not contain a service-role or secret key.");
+  process.exit(1);
+}

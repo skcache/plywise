@@ -317,6 +317,7 @@ std::size_t EventLog::compact(const std::function<void(CompactionStage)>& stage_
     bool kept_queue_state = false;
     bool kept_migration = false;
     bool kept_chesscom_profile = false;
+    bool kept_player_identity = false;
     bool kept_chesscom_sync_state = false;
     for (auto iterator = state.events.rbegin(); iterator != state.events.rend(); ++iterator) {
         bool keep = true;
@@ -353,6 +354,9 @@ std::size_t EventLog::compact(const std::function<void(CompactionStage)>& stage_
             } else if (iterator->type == EventType::ChessComProfileUpdated) {
                 keep = !kept_chesscom_profile;
                 kept_chesscom_profile = true;
+            } else if (iterator->type == EventType::PlayerIdentityUpdated) {
+                keep = !kept_player_identity;
+                kept_player_identity = true;
             } else if (iterator->type == EventType::ChessComSyncStateChanged) {
                 keep = !kept_chesscom_sync_state;
                 kept_chesscom_sync_state = true;
@@ -480,6 +484,7 @@ std::string_view name(EventType type) {
     case EventType::VariationSaved: return "VariationSaved";
     case EventType::VariationDeleted: return "VariationDeleted";
     case EventType::ReviewAttempted: return "ReviewAttempted";
+    case EventType::PlayerIdentityUpdated: return "PlayerIdentityUpdated";
     }
     return "Unknown";
 }

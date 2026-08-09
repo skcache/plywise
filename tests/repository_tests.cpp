@@ -127,6 +127,47 @@ TEST_CASE("repository deduplicates imports and replays completed analysis") {
     remove_repository_files(path);
 }
 
+TEST_CASE("repository never infers a player until the imported identity is confirmed") {
+    const auto path = repository_path();
+    remove_repository_files(path);
+    const chess::Game parsed = chess::parse_pgn(pgn);
+    const import::ImportedGame imported{
+        parsed, {}, std::string(pgn), import::ImportMethod::ManualPgn};
+    {
+        storage::EventLog log(path);
+        app::Repository repository(log);
+        CHECK(repository.add(imported) == app::AddResult::Added);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(!repository.player_identity().has_value());
+
+        training::PlayerIdentity identity;
+        identity.game_id = parsed.identity;
+        identity.player_name = "Alex";
+        identity.source = "pgn";
+        identity.decision = training::PlayerIdentityDecision::Confirmed;
+        repository.save_player_identity(identity);
+        CHECK_EQ(repository.profile().player_name, "Alex");
+        CHECK(repository.profile().player_identity.has_value());
+        CHECK(repository.profile().player_identity->decision ==
+              training::PlayerIdentityDecision::Confirmed);
+
+        identity.decision = training::PlayerIdentityDecision::Declined;
+        repository.save_player_identity(identity);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(repository.profile().player_identity->decision ==
+              training::PlayerIdentityDecision::Declined);
+    }
+    {
+        storage::EventLog log(path);
+        app::Repository repository(log);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(repository.player_identity().has_value());
+        CHECK(repository.player_identity()->decision ==
+              training::PlayerIdentityDecision::Declined);
+    }
+    remove_repository_files(path);
+}
+
 TEST_CASE("repository persists variation trees and deletion tombstones") {
     const auto path = repository_path();
     remove_repository_files(path);
@@ -209,6 +250,11 @@ TEST_CASE("repository round trips the Phase 2.1 per-ply classification contract"
         move.time_ms = 42;
         move.multipv = 3;
         move.engine_version = "stockfish-test";
+        completed.requested_engine_profile = "balanced";
+        completed.actual_engine_profile = "balanced";
+        completed.engine_name = "Stockfish";
+        completed.engine_source = "browser";
+        completed.engine_hash = "sha256:test-build";
         completed.moves.push_back(move);
         repository.save_analysis(completed);
         const auto attempt = repository.record_review_attempt(parsed.identity, 0, "d2d4");
@@ -235,6 +281,11 @@ TEST_CASE("repository round trips the Phase 2.1 per-ply classification contract"
         CHECK_EQ(move.engine_version, "stockfish-test");
         CHECK_EQ(move.classification_model_version,
                  std::string(analysis::classification_model_version));
+        CHECK_EQ(restored->analysis->requested_engine_profile, "balanced");
+        CHECK_EQ(restored->analysis->actual_engine_profile, "balanced");
+        CHECK_EQ(restored->analysis->engine_name, "Stockfish");
+        CHECK_EQ(restored->analysis->engine_source, "browser");
+        CHECK_EQ(restored->analysis->engine_hash, "sha256:test-build");
         const auto attempts = repository.review_attempts(parsed.identity);
         CHECK_EQ(attempts.size(), 1ULL);
         CHECK(attempts.front().accepted);

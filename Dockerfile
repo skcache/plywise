@@ -10,6 +10,7 @@ RUN apt-get update \
         ca-certificates \
         cmake \
         libcurl4-openssl-dev \
+        libpq-dev \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
@@ -33,6 +34,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         libcurl4 \
+        libpq5 \
         stockfish \
     && mkdir -p /licenses /opt/plywise/resources /var/lib/plywise \
     && cp /usr/share/common-licenses/GPL-3 /licenses/stockfish-GPL-3.0.txt \
@@ -50,6 +52,7 @@ LABEL org.opencontainers.image.title="Plywise C++ service" \
       org.opencontainers.image.source="https://github.com/siddhantkuwar/plywise"
 
 ENV PCT_BIND_ADDRESS=0.0.0.0 \
+    PCT_REQUIRE_AUTH=true \
     PCT_PORT=8787 \
     PCT_DATA_DIR=/var/lib/plywise \
     PCT_WEB_ROOT=/opt/plywise/web \

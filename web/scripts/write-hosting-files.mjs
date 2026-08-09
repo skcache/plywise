@@ -11,6 +11,7 @@ if (validatedPublicOrigins.events) {
   events.protocol = events.protocol === "https:" ? "wss:" : "ws:";
   connectSources.add(events.origin);
 }
+if (validatedPublicOrigins.supabase) connectSources.add(validatedPublicOrigins.supabase);
 
 const contentSecurityPolicy = [
   "default-src 'self'",
@@ -19,6 +20,7 @@ const contentSecurityPolicy = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "script-src 'self'",
+  "worker-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",

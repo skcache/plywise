@@ -38,6 +38,8 @@ using JobObserver = std::function<void(const AnalysisJob&)>;
 
 class JobManager {
   public:
+    using ObserverId = std::uint64_t;
+
     JobManager(IRepository& repository, analysis::Analyzer& analyzer,
                JobManagerOptions options = {});
     ~JobManager();
@@ -66,6 +68,8 @@ class JobManager {
     [[nodiscard]] engine::AnalysisResult analyze_variation_position(std::string_view fen);
     [[nodiscard]] std::size_t queue_capacity() const noexcept { return options_.max_queued; }
     void set_observer(JobObserver observer);
+    [[nodiscard]] ObserverId add_observer(JobObserver observer);
+    void remove_observer(ObserverId observer_id);
 
   private:
     IRepository& repository_;
@@ -92,6 +96,8 @@ class JobManager {
     std::map<std::uint64_t, engine::AnalysisPriority> requested_priorities_;
     std::uint64_t next_id_{1};
     JobObserver observer_;
+    std::map<ObserverId, JobObserver> additional_observers_;
+    ObserverId next_observer_id_{1};
     std::size_t observer_calls_{0};
     std::vector<std::thread> workers_;
     CancellationSource worker_cancellation_;

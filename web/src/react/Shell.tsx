@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Icon, type IconName } from "./Icon";
 
-export type Route = "home" | "recent" | "analysis" | "explore" | "progress" | "settings";
+export type Route = "landing" | "home" | "recent" | "analysis" | "explore" | "progress" | "settings";
 
 const navigation: Array<{ route: Route; label: string; icon: IconName }> = [
   { route: "home", label: "Home", icon: "home" },
@@ -19,8 +19,8 @@ export function AppShell({ route, onRoute, header, children }: {
 }) {
   return <div className="app-frame">
     <aside className="side-rail" aria-label="Primary navigation">
-      <button className="brand-orb" aria-label="Personal Chess Tutor" onClick={() => onRoute("home")}>
-        <img src="/pieces/lasker/white_knight.svg" alt="" />
+      <button className="brand-orb" aria-label="Plywise home" onClick={() => onRoute("home")}>
+        <img src="/pieces/lasker/white_knight.svg" alt="" width={34} height={34} />
       </button>
       <nav>
         {navigation.map((item) => <button

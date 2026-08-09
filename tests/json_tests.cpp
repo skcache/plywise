@@ -37,3 +37,13 @@ TEST_CASE("JSON parser rejects malformed and duplicate data") {
     CHECK_THROWS(parse("{\"a\":1,\"a\":2}"));
     CHECK_THROWS(parse("[1 2]"));
 }
+
+TEST_CASE("JSON parser rejects excessive nesting before recursion can exhaust the stack") {
+    std::string nested;
+    for (int depth = 0; depth < 80; ++depth)
+        nested += "[";
+    nested += "0";
+    for (int depth = 0; depth < 80; ++depth)
+        nested += "]";
+    CHECK_THROWS(parse(nested));
+}

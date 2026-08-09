@@ -241,14 +241,8 @@ export function homeWeek(profile: Profile | null, now = Date.now()): HomeWeek {
   return { analyzed, practiced, mistakeTrend };
 }
 
-export function inferPlayerName(profile: Profile | null, games: StoredGame[]): string {
-  if (profile?.player_name) return profile.player_name;
-  const counts = new Map<string, number>();
-  for (const stored of games) for (const key of ["White", "Black"]) {
-    const name = stored.game.tags[key];
-    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+export function inferPlayerName(profile: Profile | null, _games: StoredGame[]): string {
+  return profile?.player_name ?? "";
 }
 
 export function gameTimestamp(tags: Record<string, string>): number | null {

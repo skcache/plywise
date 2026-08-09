@@ -3,6 +3,7 @@
 #include "pct/app/hosted_identity.hpp"
 #include "pct/app/postgres_repository.hpp"
 #include "pct/import/import_service.hpp"
+#include "pct/service/hosted_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -226,5 +227,49 @@ TEST_CASE("PostgreSQL repository persists legal variations and review attempts")
     CHECK(reopened.delete_variation(created.id));
     CHECK(!reopened.variation(created.id).has_value());
 }
+
+#if defined(PCT_HAS_OIDC)
+
+class HostedRuntimeEngine final : public engine::AnalysisEngine {
+  public:
+    engine::AnalysisResult analyze(const engine::AnalysisRequest&, CancellationToken) override {
+        return {};
+    }
+};
+
+TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    HostedRuntimeEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache);
+    service::HostedRuntime runtime(
+        service::HostedRuntimeOptions{
+            connection,
+            "https://project.supabase.co/auth/v1",
+            "authenticated",
+            "supabase",
+            "https://project.supabase.co/auth/v1/.well-known/jwks.json",
+        },
+        analyzer,
+        app::JobManagerOptions{1, 8, 0});
+
+    const auto resolve = runtime.scope_resolver();
+    const auto first = resolve(app::OwnerId::account("account_test_a"));
+    CHECK(first.has_value());
+    CHECK(first->repository != nullptr);
+    CHECK(first->jobs != nullptr);
+    CHECK(first->repository->owner() == app::OwnerId::account("account_test_a"));
+
+    const auto repeated = resolve(app::OwnerId::account("account_test_a"));
+    CHECK(repeated.has_value());
+    CHECK_EQ(repeated->repository, first->repository);
+    CHECK_EQ(repeated->jobs, first->jobs);
+    CHECK(!resolve(app::OwnerId::guest("guest_runtime")).has_value());
+}
+
+#endif
 
 #endif

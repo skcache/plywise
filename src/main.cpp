@@ -7,6 +7,7 @@
 #include "pct/engine/pool.hpp"
 #include "pct/import/import_service.hpp"
 #include "pct/service/http_server.hpp"
+#include "pct/service/hosted_runtime.hpp"
 #include "pct/storage/event_log.hpp"
 
 #include <algorithm>
@@ -46,6 +47,11 @@ struct Options {
     std::vector<std::string> allowed_origins;
     bool require_auth{false};
     bool require_auth_explicit{false};
+    std::string postgres_connection;
+    std::string oidc_issuer;
+    std::string oidc_audience{"authenticated"};
+    std::string oidc_provider{"supabase"};
+    std::string oidc_jwks_url;
 };
 
 std::optional<std::string> environment(std::string_view name) {
@@ -123,6 +129,25 @@ Options environment_options() {
     if (const auto value = environment("PCT_REQUIRE_AUTH")) {
         options.require_auth = boolean_option(*value, "PCT_REQUIRE_AUTH");
         options.require_auth_explicit = true;
+    }
+    if (const auto value = environment("PCT_POSTGRES_URL"))
+        options.postgres_connection = *value;
+    if (const auto value = environment("PCT_OIDC_ISSUER"))
+        options.oidc_issuer = *value;
+    if (const auto value = environment("PCT_OIDC_AUDIENCE"))
+        options.oidc_audience = *value;
+    if (const auto value = environment("PCT_OIDC_PROVIDER"))
+        options.oidc_provider = *value;
+    if (const auto value = environment("PCT_OIDC_JWKS_URL"))
+        options.oidc_jwks_url = *value;
+    if (const auto value = environment("PCT_SUPABASE_URL")) {
+        std::string base = *value;
+        while (base.ends_with('/'))
+            base.pop_back();
+        if (options.oidc_issuer.empty())
+            options.oidc_issuer = base + "/auth/v1";
+        if (options.oidc_jwks_url.empty())
+            options.oidc_jwks_url = options.oidc_issuer + "/.well-known/jwks.json";
     }
     return options;
 }
@@ -231,6 +256,37 @@ int main(int argc, char** argv) {
                                         options.retry_limit});
         pct::app::IngestManager ingest(importer, repository, jobs, {}, {}, {},
                                        options.chesscom_username);
+        std::unique_ptr<pct::service::HostedRuntime> hosted_runtime;
+        pct::service::AuthConfig auth{options.require_auth, {}};
+        const bool hosted_storage_configured = !options.postgres_connection.empty();
+        const bool hosted_identity_configured = !options.oidc_issuer.empty() ||
+                                                !options.oidc_jwks_url.empty();
+        if (hosted_storage_configured || hosted_identity_configured) {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+            if (!hosted_storage_configured || !hosted_identity_configured ||
+                options.oidc_issuer.empty() || options.oidc_jwks_url.empty())
+                throw std::runtime_error(
+                    "hosted runtime requires PCT_POSTGRES_URL, PCT_OIDC_ISSUER, and "
+                    "PCT_OIDC_JWKS_URL (or PCT_SUPABASE_URL)");
+            hosted_runtime = std::make_unique<pct::service::HostedRuntime>(
+                pct::service::HostedRuntimeOptions{
+                    options.postgres_connection,
+                    options.oidc_issuer,
+                    options.oidc_audience,
+                    options.oidc_provider,
+                    options.oidc_jwks_url,
+                },
+                analyzer,
+                pct::app::JobManagerOptions{options.workers, options.max_pending,
+                                            options.retry_limit});
+            auth.required = true;
+            auth.verify = hosted_runtime->token_verifier();
+            auth.resolve_scope = hosted_runtime->scope_resolver();
+#else
+            throw std::runtime_error(
+                "hosted runtime requires a build with PostgreSQL and OpenSSL support");
+#endif
+        }
         std::unique_ptr<pct::training::AdvancedDrillGenerator> advanced_drills;
         if (options.tactical_corpus_enabled && std::filesystem::exists(options.tactical_corpus)) {
             advanced_drills = std::make_unique<pct::training::AdvancedDrillGenerator>(
@@ -265,7 +321,7 @@ int main(int argc, char** argv) {
         }, &ingest, [=] {
             return pct::service::Readiness{
                 true, engine_ready, options.bind_address == "127.0.0.1", engine_identity};
-        }, pct::service::AuthConfig{options.require_auth, {}});
+        }, auth);
         pct::service::HttpServer server(
             api, jobs,
             pct::service::ServerOptions{options.port, options.web_root, options.bind_address,

@@ -44,6 +44,7 @@ add_library(pct_core
     src/training/tactical_corpus.cpp
     src/storage/event_log.cpp
     src/service/http_server.cpp
+    src/service/hosted_runtime.cpp
 )
 
 target_include_directories(pct_core PUBLIC include)

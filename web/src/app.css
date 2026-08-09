@@ -277,11 +277,10 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .landing-stage-input, .landing-stage-loading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; margin-top: 34px; padding: 0 15px; border: 1px solid var(--line-strong); border-radius: 17px; background: var(--surface-high); box-shadow: inset 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light); color: var(--text-soft); font-size: 10px; }
 .landing-stage-input span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .landing-stage-input b { flex: 0 0 auto; padding: 8px 10px; border-radius: 10px; color: var(--surface-high); background: var(--text); font-size: 9px; font-weight: 650; }
-.landing-stage-loading { display: grid; align-content: center; gap: 14px; min-height: 118px; }
-.landing-loading-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
-.landing-loading-copy strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.landing-loading-copy small { overflow: hidden; color: var(--text-faint); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.landing-loading-track { display: block; width: 120px; height: 20px; margin: 0; background: linear-gradient(var(--focus) 50%, transparent 0), linear-gradient(transparent 50%, var(--focus) 0), linear-gradient(var(--focus) 50%, transparent 0), linear-gradient(transparent 50%, var(--focus) 0), linear-gradient(var(--focus) 50%, transparent 0), linear-gradient(transparent 50%, var(--focus) 0) var(--surface-ink); background-size: calc(100% / 6 + 1px) 200%; background-repeat: no-repeat; animation: landing-loader 2s infinite; }
+.landing-stage-loading { display: grid; place-items: center; min-height: 68px; }
+.landing-thinking-line { display: inline-flex; align-items: baseline; max-width: 100%; color: var(--text-soft); font-size: 10px; font-weight: 650; letter-spacing: -.01em; line-height: 1.2; }
+.landing-thinking-text { position: relative; max-width: 100%; overflow-wrap: anywhere; color: var(--text-soft); }
+.landing-thinking-text::after { position: absolute; inset: 0; content: attr(data-text); color: var(--text); text-shadow: 0 0 7px color-mix(in srgb, var(--text) 28%, transparent); pointer-events: none; clip-path: polygon(-25% 0, -5% 0, 15% 100%, -5% 100%); animation: landing-thinking-sweep 2.3s ease-in-out infinite; }
 .landing-stage-board { position: relative; display: flex; align-items: center; gap: 12px; min-height: 190px; margin-top: 24px; padding: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-high); box-shadow: inset 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light); }
 .landing-stage-board .chess-board { width: min(180px, 72%); flex: 0 0 auto; border-radius: 10px; box-shadow: 6px 8px 13px var(--shadow-dark); }
 .landing-stage-board > span { min-width: 0; color: var(--good); font-size: 10px; font-weight: 650; }
@@ -884,14 +883,12 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .landing-preview-board { cursor: pointer; }
 .landing-preview-board .chess-board { width: min(100%, 390px); margin: 0 auto; border-radius: 18px; box-shadow: 10px 13px 24px var(--shadow-dark); }
 .landing-preview-copy strong { display: block; margin: 13px 0 10px; font-size: clamp(22px, 2.4vw, 32px); font-weight: 560; letter-spacing: -.055em; line-height: 1.04; }
-@keyframes landing-loader {
-  0% { background-position: 0 100%, 20% 0, 40% 100%, 60% 0, 80% 100%, 100% 0; }
-  16.67% { background-position: 0 0, 20% 0, 40% 100%, 60% 0, 80% 100%, 100% 0; }
-  33.33% { background-position: 0 0, 20% 100%, 40% 100%, 60% 0, 80% 100%, 100% 0; }
-  50% { background-position: 0 0, 20% 100%, 40% 0, 60% 0, 80% 100%, 100% 0; }
-  66.67% { background-position: 0 0, 20% 100%, 40% 0, 60% 100%, 80% 100%, 100% 0; }
-  83.33% { background-position: 0 0, 20% 100%, 40% 0, 60% 100%, 80% 0, 100% 0; }
-  100% { background-position: 0 0, 20% 100%, 40% 0, 60% 100%, 80% 0, 100% 100%; }
+@keyframes landing-thinking-sweep {
+  0%, 12% { opacity: 0; clip-path: polygon(-25% 0, -5% 0, 15% 100%, -5% 100%); }
+  24% { opacity: .82; clip-path: polygon(8% 0, 28% 0, 48% 100%, 28% 100%); }
+  52% { opacity: .82; clip-path: polygon(40% 0, 60% 0, 80% 100%, 60% 100%); }
+  78% { opacity: .82; clip-path: polygon(72% 0, 92% 0, 112% 100%, 92% 100%); }
+  88%, 100% { opacity: 0; clip-path: polygon(105% 0, 125% 0, 145% 100%, 125% 100%); }
 }
 
 .import-modal input, .import-modal textarea { box-shadow: none; transition: border-color 160ms ease, background-color 160ms ease; }
@@ -966,5 +963,5 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .landing-preview,
   .landing-preview:hover,
   .landing-preview:active { transform: none; transition: none; }
-  .landing-loading-track { animation: none; background-position: 0 0, 20% 100%, 40% 0, 60% 100%, 80% 0, 100% 100%; }
+  .landing-thinking-text::after { display: none; }
 }

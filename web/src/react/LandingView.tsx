@@ -84,10 +84,11 @@ export function LandingView({ onStart, onSignIn }: {
             <p>Paste a public link or PGN.</p>
           </article>
           <article className="landing-flow-stage">
-            <div className="landing-stage-heading"><strong>Analysis loading</strong></div>
-            <div className="landing-stage-loading" role="img" aria-label="Analysis loading">
-              <span className="landing-loading-copy"><strong>Reviewing the game</strong><small>Checking the game for key moments</small></span>
-              <span className="landing-loading-track" aria-hidden="true" />
+            <div className="landing-stage-heading"><strong>Review</strong></div>
+            <div className="landing-stage-loading" role="img" aria-label="Reviewing the game">
+              <span className="landing-thinking-line" aria-hidden="true">
+                <span className="landing-thinking-text" data-text="Reviewing the game...">Reviewing the game...</span>
+              </span>
             </div>
             <p>Let the review run when you are ready.</p>
           </article>

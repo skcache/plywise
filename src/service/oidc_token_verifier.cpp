@@ -211,7 +211,9 @@ struct OidcTokenVerifier::Impl {
         if (!options.issuer.starts_with("https://") || !bounded_text(options.issuer, 2048) ||
             !bounded_text(options.audience, 512) ||
             !bounded_text(options.provider, 128) || !options.load_jwks ||
-            !options.resolve_account || options.clock_skew_seconds > 300) {
+            !options.resolve_account || options.clock_skew_seconds > 300 ||
+            options.max_token_lifetime <= std::chrono::seconds::zero() ||
+            options.max_token_lifetime > std::chrono::hours(24 * 7)) {
             throw Error(ErrorCode::InvalidArgument, "OIDC verifier configuration is invalid");
         }
     }
@@ -312,6 +314,15 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
                 .count());
         const double skew = static_cast<double>(impl_->options.clock_skew_seconds);
         if (expiration.as_number() <= now - skew) {
+            return std::nullopt;
+        }
+
+        const json::Value issued_at = payload.get("iat", json::Value{});
+        if (!issued_at.is_number() || !finite_integer(issued_at.as_number()) ||
+            issued_at.as_number() > now + skew ||
+            expiration.as_number() <= issued_at.as_number() ||
+            expiration.as_number() - issued_at.as_number() >
+                static_cast<double>(impl_->options.max_token_lifetime.count())) {
             return std::nullopt;
         }
 

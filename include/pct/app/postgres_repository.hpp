@@ -32,6 +32,8 @@ class PostgresRepository final : public IRepository {
     void save_shallow_analysis(const analysis::GameAnalysis& analysis) override;
     [[nodiscard]] std::optional<StoredGame> get(std::string_view id) const override;
     [[nodiscard]] std::vector<StoredGame> list() const override;
+    [[nodiscard]] std::vector<StoredGame>
+    list_page(std::size_t limit, std::size_t offset) const override;
     [[nodiscard]] std::size_t size() const override;
 
     [[nodiscard]] std::vector<training::Drill>

@@ -1,4 +1,5 @@
 #include "pct/app/hosted_browser_observations.hpp"
+#include "pct/app/postgres_connection.hpp"
 
 #include "pct/common/error.hpp"
 #include "pct/common/json.hpp"
@@ -152,7 +153,9 @@ RunRow run_from_row(const Result& result) {
 
 struct HostedBrowserObservationStore::Impl {
     explicit Impl(const std::string& connection_string) {
-        connection = PQconnectdb(connection_string.c_str());
+        const std::string secure_connection =
+            validate_postgres_connection_security(connection_string);
+        connection = PQconnectdb(secure_connection.c_str());
         if (connection == nullptr || PQstatus(connection) != CONNECTION_OK) {
             if (connection != nullptr)
                 PQfinish(connection);

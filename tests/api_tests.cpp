@@ -64,6 +64,32 @@ TEST_CASE("API imports PGN and returns navigable game data immediately") {
     CHECK_EQ(json::parse(move.body).at("san").as_string(), "e4");
 }
 
+TEST_CASE("API game and mistake lists enforce bounded pagination") {
+    ApiFixture fixture;
+    const auto imported = fixture.api.handle(service::Request{
+        "POST", "/api/import", {},
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"},
+        })});
+    CHECK_EQ(imported.status, 202);
+
+    const auto games = fixture.api.handle(service::Request{
+        "GET", "/api/games?limit=1&offset=0", {}, {}});
+    CHECK_EQ(games.status, 200);
+    CHECK_EQ(json::parse(games.body).at("games").as_array().size(), 1ULL);
+    CHECK(!json::parse(games.body).at("has_more").as_bool());
+
+    const auto mistakes = fixture.api.handle(service::Request{
+        "GET", "/api/mistakes?limit=1&offset=0", {}, {}});
+    CHECK_EQ(mistakes.status, 200);
+    CHECK_EQ(json::parse(mistakes.body).at("limit").as_size(), 1ULL);
+
+    CHECK_EQ(fixture.api.handle(service::Request{
+                  "GET", "/api/games?limit=101", {}, {}})
+                 .status,
+             400);
+}
+
 TEST_CASE("API persists explicit imported identity decisions") {
     ApiFixture fixture;
     const auto imported = fixture.api.handle(service::Request{

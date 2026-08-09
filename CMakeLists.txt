@@ -27,6 +27,7 @@ configure_file(resources/tactical-corpus.json resources/tactical-corpus.json COP
 add_library(pct_core
     src/common/json.cpp
     src/app/repository.cpp
+    src/app/postgres_connection.cpp
     src/app/job_manager.cpp
     src/app/ingest_manager.cpp
     src/chess/board.cpp
@@ -145,6 +146,7 @@ if(BUILD_TESTING)
         tests/phase3_e2e_tests.cpp
         tests/hosted_vertical_slice_tests.cpp
         tests/account_data_controls_tests.cpp
+        tests/postgres_connection_tests.cpp
     )
     if(OpenSSL_FOUND AND PCT_ENABLE_OIDC_AUTH)
         target_sources(pct-tests PRIVATE tests/oidc_token_verifier_tests.cpp)

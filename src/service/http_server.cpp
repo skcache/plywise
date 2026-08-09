@@ -292,6 +292,29 @@ Response ingest_error(int status, std::string message, std::string code,
                                                       {"actions", std::move(encoded)}});
 }
 
+std::string public_ingest_error_message(ErrorCode code, std::string_view detail) {
+    switch (code) {
+    case ErrorCode::InvalidArgument:
+    case ErrorCode::ParseError:
+    case ErrorCode::IllegalMove:
+    case ErrorCode::Unsupported:
+        return std::string(detail);
+    case ErrorCode::NotFound:
+        return "the requested import resource was not found";
+    case ErrorCode::NetworkError:
+        return "Chess.com is unavailable right now";
+    case ErrorCode::Timeout:
+        return "Chess.com did not respond in time";
+    case ErrorCode::QuotaExceeded:
+        return "the import or analysis limit has been reached";
+    case ErrorCode::EngineError:
+    case ErrorCode::IoError:
+    case ErrorCode::Corruption:
+        return "the import could not be completed";
+    }
+    return "the import could not be completed";
+}
+
 int status_for(ErrorCode code) {
     switch (code) {
     case ErrorCode::InvalidArgument:
@@ -1025,22 +1048,66 @@ Response Api::handle(const Request& request) {
             return json_response(200, std::move(result));
         }
         if (parts == std::vector<std::string>{"api", "games"} && request.method == "GET") {
+            const auto query = query_parameters(request.path);
+            for (const auto& [key, _] : query)
+                if (key != "limit" && key != "offset")
+                    throw Error(ErrorCode::InvalidArgument, "unknown game list query field");
+            const std::size_t limit = query_size(query, "limit", 50);
+            const std::size_t offset = query_size(query, "offset", 0);
+            if (limit == 0 || limit > app::game_list_page_limit ||
+                offset > app::game_list_offset_limit)
+                throw Error(ErrorCode::InvalidArgument,
+                            "game list page is outside the safe bounds");
+            auto page = repository_.list_page(limit + 1, offset);
+            const bool has_more = page.size() > limit;
+            if (has_more)
+                page.pop_back();
             json::Value::Array games;
-            for (const auto& game : repository_.list())
+            for (const auto& game : page)
                 games.push_back(to_json(game));
-            return json_response(200, json::Value::Object{{"games", std::move(games)}});
+            return json_response(200, json::Value::Object{
+                                          {"games", std::move(games)},
+                                          {"limit", limit},
+                                          {"offset", offset},
+                                          {"has_more", has_more},
+                                          {"next_offset", offset + page.size()},
+                                      });
         }
         if (parts == std::vector<std::string>{"api", "mistakes"} && request.method == "GET") {
+            const auto query = query_parameters(request.path);
+            for (const auto& [key, _] : query)
+                if (key != "limit" && key != "offset")
+                    throw Error(ErrorCode::InvalidArgument, "unknown mistake list query field");
+            const std::size_t limit = query_size(query, "limit", 100);
+            const std::size_t offset = query_size(query, "offset", 0);
+            if (limit == 0 || limit > app::game_list_page_limit ||
+                offset > app::game_list_offset_limit)
+                throw Error(ErrorCode::InvalidArgument,
+                            "mistake list page is outside the safe bounds");
+            auto page = repository_.list_page(limit + 1, offset);
+            const bool has_more = page.size() > limit;
+            if (has_more)
+                page.pop_back();
             json::Value::Array mistakes;
-            for (const auto& game : repository_.list()) {
+            for (const auto& game : page) {
                 if (!game.analysis)
                     continue;
                 const json::Value analysis = app::to_json(*game.analysis);
                 for (const auto& mistake : analysis.at("mistakes").as_array()) {
                     mistakes.push_back(mistake);
+                    if (mistakes.size() >= limit)
+                        break;
                 }
+                if (mistakes.size() >= limit)
+                    break;
             }
-            return json_response(200, json::Value::Object{{"mistakes", std::move(mistakes)}});
+            return json_response(200, json::Value::Object{
+                                          {"mistakes", std::move(mistakes)},
+                                          {"limit", limit},
+                                          {"offset", offset},
+                                          {"has_more", has_more},
+                                          {"next_offset", offset + page.size()},
+                                      });
         }
         if (parts == std::vector<std::string>{"api", "settings"} && request.method == "GET") {
             return json_response(200, json::Value::Object{
@@ -1668,10 +1735,12 @@ Response Api::handle(const Request& request) {
         }
         return error_response(404, "route does not exist");
     } catch (const Error& error) {
+        log(LogLevel::Warning, "api", error.what());
         if (request.path.starts_with("/api/chesscom/") ||
-            request.path.starts_with("/api/import/resolve") ||
-            request.path.starts_with("/api/import/resolutions/"))
-            return ingest_error(status_for(error.code()), error.what(), "invalid_request");
+            request.path.starts_with("/api/import"))
+            return ingest_error(status_for(error.code()),
+                                public_ingest_error_message(error.code(), error.what()),
+                                std::string(error_code(error.code())));
         return error_response(status_for(error.code()), error.what(), error.code());
     } catch (const std::exception& error) {
         log(LogLevel::Error, "api", error.what());

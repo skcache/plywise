@@ -97,7 +97,8 @@ SigningKey make_signing_key(std::string_view kid) {
 std::string sign_token(EVP_PKEY* pkey, std::string_view kid, double expiration,
                        std::string_view issuer = "https://issuer.example",
                        std::string_view audience = "plywise-web",
-                       std::optional<double> auth_time = std::nullopt) {
+                       std::optional<double> auth_time = std::nullopt,
+                       std::optional<double> issued_at = std::nullopt) {
     const std::string header = json::dump(json::Value::Object{
         {"alg", "RS256"},
         {"kid", std::string(kid)},
@@ -106,6 +107,7 @@ std::string sign_token(EVP_PKEY* pkey, std::string_view kid, double expiration,
     json::Value payload_value = json::Value::Object{
         {"aud", std::string(audience)},
         {"exp", expiration},
+        {"iat", issued_at.value_or(expiration - 300)},
         {"iss", std::string(issuer)},
         {"sub", "subject-123"},
     };
@@ -192,6 +194,14 @@ TEST_CASE("OIDC verifier rejects expired, forged, and wrongly issued tokens") {
     std::string forged = sign_token(key.pkey.get(), "key-1", now + 300);
     forged.back() = forged.back() == 'A' ? 'B' : 'A';
     CHECK(!verifier.verify(forged).has_value());
+    CHECK(!verifier.verify(sign_token(key.pkey.get(), "key-1", now + 90000,
+                                      "https://issuer.example", "plywise-web", std::nullopt,
+                                      now))
+               .has_value());
+    CHECK(!verifier.verify(sign_token(key.pkey.get(), "key-1", now + 300,
+                                      "https://issuer.example", "plywise-web", std::nullopt,
+                                      now + 301))
+               .has_value());
 }
 
 TEST_CASE("OIDC fresh verification requires a recent signed auth_time claim") {

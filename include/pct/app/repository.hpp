@@ -7,6 +7,8 @@
 #include "pct/storage/event_log.hpp"
 #include "pct/training/training.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -72,6 +74,8 @@ inline constexpr std::size_t bulk_game_import_limit = 1000;
 inline constexpr std::size_t bulk_game_import_pgn_byte_limit = 64U * 1024U * 1024U;
 inline constexpr std::size_t bulk_game_import_single_pgn_byte_limit = 10U * 1024U * 1024U;
 inline constexpr std::size_t bulk_game_import_source_url_limit = 2048;
+inline constexpr std::size_t game_list_page_limit = 100;
+inline constexpr std::size_t game_list_offset_limit = 1'000'000;
 
 struct ChessComProfile {
     std::string original_username;
@@ -181,6 +185,20 @@ class IGameRepository : public virtual IOwnedRepository {
     bulk_add(std::vector<import::ImportedGame> imported_games) = 0;
     [[nodiscard]] virtual std::optional<StoredGame> get(std::string_view id) const = 0;
     [[nodiscard]] virtual std::vector<StoredGame> list() const = 0;
+    // Public list endpoints must page before serializing owner data. The default keeps local
+    // adapters compatible; persistent adapters should override this with a bounded query.
+    [[nodiscard]] virtual std::vector<StoredGame>
+    list_page(std::size_t limit, std::size_t offset) const {
+        if (limit == 0 || limit > game_list_page_limit + 1 ||
+            offset > game_list_offset_limit)
+            throw Error(ErrorCode::InvalidArgument, "game list page is outside the safe bounds");
+        const auto all = list();
+        if (offset >= all.size())
+            return {};
+        const auto end = std::min(all.size(), offset + limit);
+        return std::vector<StoredGame>(all.begin() + static_cast<std::ptrdiff_t>(offset),
+                                       all.begin() + static_cast<std::ptrdiff_t>(end));
+    }
     [[nodiscard]] virtual std::size_t size() const = 0;
     [[nodiscard]] virtual std::size_t
     index_chesscom_archive_chunk(std::vector<ChessComArchiveEntry> entries) = 0;

@@ -1,5 +1,6 @@
 #include "pct/app/postgres_repository.hpp"
 #include "pct/app/hosted_identity.hpp"
+#include "pct/app/postgres_connection.hpp"
 
 #include "pct/chess/san.hpp"
 #include "pct/common/error.hpp"
@@ -341,7 +342,9 @@ WHERE go.owner_kind = $1 AND go.owner_id = $2
 )sql";
 
 std::vector<StoredGame> select_games(PGconn* connection, const OwnerId& owner,
-                                     std::optional<std::string_view> game_id = std::nullopt) {
+                                     std::optional<std::string_view> game_id = std::nullopt,
+                                     std::optional<std::size_t> limit = std::nullopt,
+                                     std::size_t offset = 0) {
     require_owner(connection, owner);
     std::string statement(game_select);
     std::vector<std::string> parameters{owner_kind_name(owner.kind()), std::string(owner.value())};
@@ -350,6 +353,14 @@ std::vector<StoredGame> select_games(PGconn* connection, const OwnerId& owner,
         parameters.emplace_back(*game_id);
     }
     statement += " ORDER BY go.imported_at DESC, g.id";
+    if (limit) {
+        const std::size_t limit_parameter = parameters.size() + 1;
+        parameters.push_back(std::to_string(*limit));
+        const std::size_t offset_parameter = parameters.size() + 1;
+        parameters.push_back(std::to_string(offset));
+        statement += " LIMIT $" + std::to_string(limit_parameter) +
+                     " OFFSET $" + std::to_string(offset_parameter);
+    }
     const Result result = execute(connection, statement, parameters);
     std::vector<StoredGame> games;
     games.reserve(static_cast<std::size_t>(PQntuples(result.get())));
@@ -457,7 +468,9 @@ std::string analysis_status_name(std::string_view job_status) {
 
 struct PostgresRepository::Impl {
     explicit Impl(const std::string& connection_string) {
-        connection = PQconnectdb(connection_string.c_str());
+        const std::string secure_connection =
+            validate_postgres_connection_security(connection_string);
+        connection = PQconnectdb(secure_connection.c_str());
         if (connection == nullptr || PQstatus(connection) != CONNECTION_OK) {
             if (connection != nullptr)
                 PQfinish(connection);
@@ -689,6 +702,14 @@ std::optional<StoredGame> PostgresRepository::get(std::string_view id) const {
 std::vector<StoredGame> PostgresRepository::list() const {
     std::lock_guard lock(mutex_);
     return select_games(impl_->connection, owner_);
+}
+
+std::vector<StoredGame> PostgresRepository::list_page(std::size_t limit,
+                                                       std::size_t offset) const {
+    if (limit == 0 || limit > game_list_page_limit + 1 || offset > game_list_offset_limit)
+        throw Error(ErrorCode::InvalidArgument, "game list page is outside the safe bounds");
+    std::lock_guard lock(mutex_);
+    return select_games(impl_->connection, owner_, std::nullopt, limit, offset);
 }
 
 std::size_t PostgresRepository::size() const {
@@ -1211,7 +1232,9 @@ std::vector<ReviewAttempt> PostgresRepository::review_attempts(std::string_view 
 
 struct HostedIdentityStore::Impl {
     explicit Impl(const std::string& connection_string) {
-        connection = PQconnectdb(connection_string.c_str());
+        const std::string secure_connection =
+            validate_postgres_connection_security(connection_string);
+        connection = PQconnectdb(secure_connection.c_str());
         if (connection == nullptr || PQstatus(connection) != CONNECTION_OK) {
             if (connection != nullptr)
                 PQfinish(connection);

@@ -29,6 +29,7 @@ import {
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
 import { clearGuestSession, loadGuestSession, saveGuestSession } from "../guest-session";
 import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
+import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
@@ -82,6 +83,7 @@ export default function App() {
   const [selectedExploreId, setSelectedExploreId] = useState("");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("pct-theme") as Theme | null) ?? "system");
   const [engineLinesDefault, setEngineLinesDefault] = useState(() => localStorage.getItem("pct-engine-lines-default") === "true");
+  const [browserProfile, setBrowserProfile] = useState<BrowserEngineProfile>(() => normalizeBrowserEngineProfile(localStorage.getItem("pct-browser-engine-profile")));
   const [importOpen, setImportOpen] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importStage, setImportStage] = useState("");
@@ -291,6 +293,10 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("pct-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("pct-browser-engine-profile", browserProfile);
+  }, [browserProfile]);
 
   useEffect(() => {
     const expected = route === "landing" ? "#/" : `#/${route}`;
@@ -781,7 +787,7 @@ export default function App() {
     view = <ProgressView games={games} profile={profile} onOpen={openGame}/>;
   } else {
     header = <TopBar title="Settings" detail="Local preferences"/>;
-    view = <SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={(value) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); }} runtime={runtimeSettings} diagnostics={diagnostics}/>;
+    view = <SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={(value) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); }} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/>;
   }
 
   return <>
@@ -935,8 +941,35 @@ function ProgressView({ games, profile, onOpen }: { games: StoredGame[]; profile
   return <section className="soft-surface progress-surface"><header className="progress-heading"><div><span>Rating profile</span><strong>{latest?.rating ?? profile?.latest_rating ?? "—"}</strong><small>{delta === null ? "More dated games needed for a 30-day change" : `${delta >= 0 ? "+" : ""}${delta} over the latest 30-day window`}</small></div><div className="rating-chart">{ratings.length > 1 ? <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-label="Rating history"><path d="M0 42H100"/><polyline points={line}/>{ratings.map((point, index) => <circle key={point.gameId} cx={index / (ratings.length - 1) * 100} cy={42 - (point.rating - min) / range * 32} r="1.3"/>)}</svg> : <p>Import dated games with rating tags to build this history.</p>}</div></header><div className="progress-grid"><section className="profile-block"><span>Review evidence</span><div className="metric-row"><div><strong>{profile?.games_analyzed ?? games.filter((game) => game.analysis).length}</strong><small>analyzed games</small></div><div><strong>{profile?.total_positions ?? games.flatMap((game) => game.analysis?.moves ?? []).length}</strong><small>classified positions</small></div><div><strong>{profile ? Math.round(profile.drill_accuracy * 100) : "—"}%</strong><small>retry accuracy</small></div></div></section><section className="profile-block weaknesses"><span>Recurring weaknesses</span>{profile?.weaknesses.slice(0, 4).map((item) => <div key={item.category}><strong>{item.category}</strong><small>{item.occurrences} occurrences · {item.average_loss_cp.toFixed(0)} average CP loss</small><em>{Math.round(item.recurrence_rate * 100)}%</em></div>) ?? <p>Analyze multiple games to reveal repeated evidence.</p>}</section><section className="profile-block learning-positions"><span>Positions worth revisiting</span>{arc.slice(0, 5).map((item) => <button key={item.gameId} onClick={() => onOpen(item.gameId, item.largestSwingPly)}><div><strong>{item.title}</strong><small>{item.opening}</small></div><em>{(item.largestSwing * 100).toFixed(1)}% swing</em></button>)}</section></div></section>;
 }
 
-function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, runtime, diagnostics }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null }) {
-  return <section className="soft-surface settings-surface"><header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header><div className="settings-list"><section><div><h2>Appearance</h2><p>Follow macOS or keep a deliberate light or dark workspace.</p></div><div className="segmented-control" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="theme" value={item} checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div></section><section><div><h2>Engine evidence</h2><p>Choose whether the technical line is the first tab when opening Overview.</p></div><label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label></section><section><div><h2>Browser engine</h2><p>The free browser path uses a pinned Stockfish.js build. Its source record and GPL license are included with this release.</p></div><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></section><section><div><h2>Analysis runtime</h2><p>Read-only facts reported by the local C++ service.</p></div><dl className="runtime-grid"><div><dt>Shallow depth</dt><dd>{runtime?.shallow_depth ?? "—"}</dd></div><div><dt>Deep depth</dt><dd>{runtime?.deep_depth ?? "—"}</dd></div><div><dt>Engine workers</dt><dd>{diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Queue capacity</dt><dd>{diagnostics?.job_queue_capacity ?? "—"}</dd></div></dl></section><section><div><h2>Coaching style</h2><p>A selectable style will appear when C++ exposes a persisted coaching-provider contract.</p></div><span className="unavailable-setting">Unavailable in this build</span></section></div></section>;
+function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, runtime, diagnostics }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null }) {
+  return <section className="soft-surface settings-surface">
+    <header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header>
+    <div className="settings-list">
+      <section>
+        <div><h2>Appearance</h2><p>Follow macOS or keep a deliberate light or dark workspace.</p></div>
+        <div className="segmented-control" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="theme" value={item} checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div>
+      </section>
+      <section>
+        <div><h2>Engine evidence</h2><p>Choose whether the technical line is the first tab when opening Overview.</p></div>
+        <label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label>
+      </section>
+      <section>
+        <div><h2>Browser engine</h2><p>Choose the free analysis pass. Quick is the safe default; Balanced searches deeper and can use more battery on smaller devices.</p><small className="settings-inline-note">Saved on this device for now. Account sync and persisted review metadata come with hosted browser finalization.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
+        <fieldset className="engine-profile-options">
+          <legend className="sr-only">Browser analysis profile</legend>
+          {browserEngineProfiles().map((profile) => <label key={profile.id} className={`engine-profile-option ${browserProfile === profile.id ? "active" : ""}`}>
+            <input type="radio" name="browser-engine-profile" value={profile.id} checked={browserProfile === profile.id} onChange={() => onBrowserProfile(profile.id)}/>
+            <span><strong>{profile.label}{profile.id === "quick" && <em>Default</em>}</strong><small>{profile.description}</small><small>Depth {profile.depth} · up to {Math.round(profile.maxAnalysisMs / 1000)} seconds</small></span>
+          </label>)}
+        </fieldset>
+      </section>
+      <section>
+        <div><h2>Analysis runtime</h2><p>Read-only facts reported by the local C++ service.</p></div>
+        <dl className="runtime-grid"><div><dt>Shallow depth</dt><dd>{runtime?.shallow_depth ?? "—"}</dd></div><div><dt>Deep depth</dt><dd>{runtime?.deep_depth ?? "—"}</dd></div><div><dt>Engine workers</dt><dd>{diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Queue capacity</dt><dd>{diagnostics?.job_queue_capacity ?? "—"}</dd></div></dl>
+      </section>
+      <section><div><h2>Coaching style</h2><p>A selectable style will appear when C++ exposes a persisted coaching-provider contract.</p></div><span className="unavailable-setting">Unavailable in this build</span></section>
+    </div>
+  </section>;
 }
 
 function ImportModal({ busy, stage, error, onClose, onSubmit }: { busy: boolean; stage: string; error: string; onClose: () => void; onSubmit: (url: string, pgn: string) => void }) {

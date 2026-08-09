@@ -3,6 +3,7 @@ import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
 const previewFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const reviewFen = "r1b1r1k1/ppq2ppp/3p1n2/3Pp3/2P5/5NP1/PPQ2PBP/R3R1K1 w - - 0 18";
 
 function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
   const preview = event.currentTarget;
@@ -42,8 +43,7 @@ export function LandingView({ onStart, onSignIn }: {
 
       <section className="landing-hero" aria-labelledby="landing-title">
         <div className="landing-copy">
-          <p className="landing-eyebrow">Open-source chess analysis</p>
-          <h1 id="landing-title">Free chess analysis, without the fuss.</h1>
+          <h1 id="landing-title">Free chess analysis.</h1>
           <p className="landing-lede">Bring a public game link or PGN, create an account, and follow the analysis.</p>
           <div className="landing-actions">
             <button className="landing-primary" onClick={onStart}>Sign up to analyze <Icon name="analysis" /></button>
@@ -77,24 +77,25 @@ export function LandingView({ onStart, onSignIn }: {
         </div>
         <div className="landing-visual-flow">
           <article className="landing-flow-stage">
-            <div className="landing-stage-heading"><span>01</span><strong>Bring a game</strong></div>
+            <div className="landing-stage-heading"><strong>Bring a game</strong></div>
             <div className="landing-stage-input" role="img" aria-label="Paste a public game link or PGN">
               <span>chess.com/game/...</span><b>Analyze</b>
             </div>
             <p>Paste a public link or PGN.</p>
           </article>
           <article className="landing-flow-stage">
-            <div className="landing-stage-heading"><span>02</span><strong>Analysis loading</strong></div>
+            <div className="landing-stage-heading"><strong>Analysis loading</strong></div>
             <div className="landing-stage-loading" role="img" aria-label="Analysis loading">
               <span className="landing-stage-spinner" aria-hidden="true" />
-              <span>Reviewing the game</span>
+              <span className="landing-loading-copy"><strong>Reviewing the game</strong><small>Checking the game for key moments</small></span>
+              <span className="landing-loading-pulse" aria-hidden="true" />
             </div>
             <p>Let the review run when you are ready.</p>
           </article>
           <article className="landing-flow-stage landing-flow-stage-board">
-            <div className="landing-stage-heading"><span>03</span><strong>Follow the review</strong></div>
+            <div className="landing-stage-heading"><strong>Follow the review</strong></div>
             <div className="landing-stage-board" role="img" aria-label="Chess analysis board with a suggested move">
-              <ChessBoard fen={previewFen} orientation="white" activeUci="e2e4" showArrow />
+              <ChessBoard fen={reviewFen} orientation="white" activeUci="c2f5" showArrow />
               <span>Analysis ready</span>
             </div>
             <p>See the position and the move worth another look.</p>

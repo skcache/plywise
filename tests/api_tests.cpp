@@ -64,6 +64,25 @@ TEST_CASE("API imports PGN and returns navigable game data immediately") {
     CHECK_EQ(json::parse(move.body).at("san").as_string(), "e4");
 }
 
+TEST_CASE("API refuses analysis for incomplete games") {
+    ApiFixture fixture;
+    const auto imported = fixture.api.handle(service::Request{
+        "POST", "/api/import", {},
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"*\"]\n\n1. e4 e5 *"},
+        })});
+    CHECK_EQ(imported.status, 202);
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+
+    const auto analysis = fixture.api.handle(
+        service::Request{"POST", "/api/games/" + game_id + "/analysis", {}, {}});
+    CHECK_EQ(analysis.status, 400);
+    const auto body = json::parse(analysis.body);
+    CHECK_EQ(body.at("code").as_string(), "invalid_argument");
+    CHECK(body.at("error").as_string().find("completed game") != std::string::npos);
+    CHECK(fixture.jobs.list().empty());
+}
+
 TEST_CASE("API variation contract validates moves and preserves sibling branches") {
     ApiFixture fixture;
     const std::string import_body = json::dump(json::Value::Object{

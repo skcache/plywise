@@ -61,6 +61,11 @@ bool imported_game_matches(const import::ImportedGame& imported,
     }
 }
 
+bool completed_game(const app::StoredGame& stored) {
+    const std::string result = stored.imported.game.tag("Result");
+    return result == "1-0" || result == "0-1" || result == "1/2-1/2";
+}
+
 std::string lowercase(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));
@@ -1373,6 +1378,9 @@ Response Api::handle(const Request& request) {
                                                          });
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "POST") {
+                if (!completed_game(*game))
+                    throw Error(ErrorCode::InvalidArgument,
+                                "analysis requires a completed game");
                 return json_response(202, app::to_json(jobs_.start(parts[2])));
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "GET") {

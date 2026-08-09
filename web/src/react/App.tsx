@@ -376,7 +376,12 @@ export default function App() {
       setError("");
     } catch (analysisError) {
       setGuestTrial(releaseGuestAnalysis(gameId));
-      setError(analysisError instanceof Error ? analysisError.message : "Could not start analysis.");
+      const message = analysisError instanceof ApiError &&
+        analysisError.code === "invalid_argument" &&
+        analysisError.message.toLowerCase().includes("completed game")
+        ? "Only completed games can be analyzed. Import a finished game to continue."
+        : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
+      setError(message);
     }
   }, [games, openGame]);
 

@@ -14,6 +14,7 @@ export function AccountPrompt({
   busyProvider,
   message,
   onProvider,
+  onLocalSignIn,
   onModeChange,
   onPasswordSignUp,
   onPasswordSignIn,
@@ -27,6 +28,7 @@ export function AccountPrompt({
   busyProvider: AuthProvider | null;
   message: string;
   onProvider: (provider: AuthProvider) => void;
+  onLocalSignIn: () => void;
   onModeChange: (mode: AuthEntryMode) => void;
   onPasswordSignUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   onPasswordSignIn: (email: string, password: string) => Promise<AuthResult>;
@@ -76,7 +78,9 @@ export function AccountPrompt({
 
   const signUpMode = mode === "sign-up";
   const accountLabel = auth.session ? displayName(auth.session.user.user_metadata, auth.session.user.email) : "";
-  const statusMessage = submitMessage || message || (auth.configured
+  const statusMessage = submitMessage || message || (auth.local
+    ? "Local test mode is active. This account stays on this machine."
+    : auth.configured
     ? resetMode
       ? "Enter your email and we will send a reset link if an account matches it."
       : ""
@@ -198,6 +202,11 @@ export function AccountPrompt({
           </button>)}
         </div>
       </>}
+
+      {auth.local && <div className="account-local-access">
+        <button type="button" className="account-secondary" onClick={onLocalSignIn}>Use local test account</button>
+        <small>Development only · uses the local C++ repository</small>
+      </div>}
 
       <p id="account-form-status" className={`account-prompt-status ${submitError ? "is-error" : ""}`} role={submitError ? "alert" : "status"} aria-live="polite">{statusMessage}</p>
       <footer>

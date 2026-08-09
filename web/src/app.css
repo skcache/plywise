@@ -793,6 +793,9 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .account-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 19px; padding-top: 18px; border-top: 1px solid var(--line); }
 .account-modal footer small { color: var(--text-faint); font-size: 9px; line-height: 1.4; }
 .account-modal footer button { flex: 0 0 auto; min-height: 42px; padding: 0 15px; border: 1px solid var(--line); border-radius: 15px; color: var(--text); background: var(--surface-low); box-shadow: 6px 7px 14px var(--shadow-dark), -3px -3px 8px var(--shadow-light); cursor: pointer; font-size: 11px; }
+.account-entry-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.account-entry-actions .account-mode-switch { min-height: 32px; padding: 0 3px; border: 0; color: var(--text-soft); background: transparent; box-shadow: none; font-size: 10px; }
+.account-entry-actions .account-mode-switch:hover { color: var(--text); }
 
 @media (max-width: 1270px) {
   .app-frame { grid-template-columns: 104px minmax(0, 1fr); }

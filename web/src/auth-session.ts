@@ -11,6 +11,7 @@ export type AuthEntryMode = "sign-up" | "sign-in";
 
 export type AuthSnapshot = {
   configured: boolean;
+  local: boolean;
   session: Session | null;
   event: AuthChangeEvent | null;
   message: string;
@@ -36,6 +37,7 @@ const providerLabels: Record<AuthProvider, string> = {
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? "";
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "";
 const authStorage = safeSessionStorage();
+const localAuthStorage = safeLocalStorage();
 const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
@@ -51,6 +53,10 @@ const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
       },
     })
   : null;
+// This is a development-only test harness. It never creates credentials, never
+// talks to Supabase, and is disabled in production builds by Vite's DEV constant.
+const localAuthMode = import.meta.env.DEV && client === null;
+const localAuthStorageKey = "plywise-local-test-session-v1";
 
 let currentSession: Session | null = null;
 let currentMessage = "";
@@ -61,7 +67,7 @@ if (client) {
     currentSession = session;
     if (event === "SIGNED_OUT") currentMessage = "You are signed out.";
     else if (event === "TOKEN_REFRESHED") currentMessage = "";
-    notify({ configured: true, session, event, message: currentMessage });
+    notify({ configured: true, local: false, session, event, message: currentMessage });
   });
 }
 
@@ -75,9 +81,14 @@ export function authConfigured(): boolean {
   return client !== null;
 }
 
+export function localAuthEnabled(): boolean {
+  return localAuthMode;
+}
+
 export function currentAuthSnapshot(): AuthSnapshot {
   return {
     configured: authConfigured(),
+    local: localAuthMode,
     session: currentSession,
     event: null,
     message: currentMessage,
@@ -91,7 +102,10 @@ export function subscribeAuth(listener: AuthListener): () => void {
 }
 
 export async function initializeAuth(): Promise<AuthSnapshot> {
-  if (!client) return currentAuthSnapshot();
+  if (!client) {
+    if (localAuthMode) currentSession = loadLocalSession();
+    return currentAuthSnapshot();
+  }
   if (!initialization) {
     initialization = (async () => {
       const callbackMessage = await completeAuthRedirect();
@@ -120,6 +134,20 @@ export async function initializeAuth(): Promise<AuthSnapshot> {
     });
   }
   return initialization;
+}
+
+/** Sign into the local repository without creating credentials or contacting Supabase. */
+export async function signInWithLocalAccount(): Promise<AuthResult> {
+  if (!localAuthMode) return { ok: false, message: "Local test access is only available in development." };
+  currentSession = createLocalSession();
+  try {
+    localAuthStorage?.setItem(localAuthStorageKey, "1");
+  } catch {
+    // Private browsing can reject storage; the current tab still works.
+  }
+  currentMessage = "Local test account ready.";
+  notify({ ...currentAuthSnapshot(), event: "SIGNED_IN" });
+  return { ok: true, message: currentMessage };
 }
 
 export async function signInWithProvider(
@@ -210,7 +238,17 @@ export async function updatePassword(password: string): Promise<AuthResult> {
 }
 
 export async function signOut(): Promise<{ ok: boolean; message: string }> {
-  if (!client) return { ok: true, message: "You are signed out." };
+  if (!client) {
+    currentSession = null;
+    try {
+      localAuthStorage?.removeItem(localAuthStorageKey);
+    } catch {
+      // Private browsing can reject storage.
+    }
+    currentMessage = "You are signed out.";
+    if (localAuthMode) notify({ ...currentAuthSnapshot(), event: "SIGNED_OUT" });
+    return { ok: true, message: currentMessage };
+  }
   try {
     const { error } = await client.auth.signOut();
     if (error) return { ok: false, message: "Sign out could not complete. Try again." };
@@ -233,7 +271,7 @@ export async function accountAccessToken(): Promise<string | null> {
 }
 
 export function cachedAccountAccessToken(): string | null {
-  return currentSession?.access_token ?? null;
+  return localAuthMode ? null : currentSession?.access_token ?? null;
 }
 
 export function saveAuthIntent(intent: AuthIntent): void {
@@ -307,6 +345,14 @@ function safeSessionStorage(): Storage | null {
   }
 }
 
+function safeLocalStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 async function completeAuthRedirect(): Promise<string | null> {
   if (typeof window === "undefined" || !client) return null;
   const url = new URL(window.location.href);
@@ -368,6 +414,34 @@ function readRecoveryTokens(hash: string): { access_token: string; refresh_token
 function cleanAuthUrl(path = "/"): void {
   if (typeof window === "undefined") return;
   window.history.replaceState(null, "", path);
+}
+
+function loadLocalSession(): Session | null {
+  try {
+    return localAuthStorage?.getItem(localAuthStorageKey) === "1" ? createLocalSession() : null;
+  } catch {
+    return null;
+  }
+}
+
+function createLocalSession(): Session {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    access_token: "",
+    refresh_token: "",
+    expires_in: 86400,
+    expires_at: now + 86400,
+    token_type: "bearer",
+    user: {
+      id: "local-dev-user",
+      aud: "authenticated",
+      role: "authenticated",
+      email: "local@plywise.test",
+      app_metadata: { provider: "local", providers: ["local"] },
+      user_metadata: { name: "Local test account" },
+      created_at: new Date(now * 1000).toISOString(),
+    },
+  };
 }
 
 

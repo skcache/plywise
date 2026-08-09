@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pct/analysis/browser_observation.hpp"
 #include "pct/app/job_manager.hpp"
 #include "pct/app/ingest_manager.hpp"
 #include "pct/app/repository.hpp"
@@ -117,6 +118,7 @@ class Api {
     app::IngestManager* ingest_{nullptr};
     ReadinessCheck readiness_;
     AuthConfig auth_;
+    analysis::BrowserObservationLedger browser_observations_;
 };
 
 struct ServerOptions {

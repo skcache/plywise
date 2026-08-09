@@ -1,4 +1,8 @@
 import {
+  BROWSER_ENGINE_ASSET_HASH,
+  BROWSER_ENGINE_NAME,
+  BROWSER_ENGINE_SOURCE,
+  BROWSER_OBSERVATION_CONTRACT_VERSION,
   BROWSER_ENGINE_VERSION,
   browserEngineProfile,
   normalizeBrowserEngineProfile,
@@ -44,8 +48,99 @@ export interface BrowserEngineObservation {
   readonly timeMs: number;
   readonly principalVariation: readonly string[];
   readonly profile: BrowserEngineProfile;
+  readonly engineName: typeof BROWSER_ENGINE_NAME;
   readonly engineVersion: typeof BROWSER_ENGINE_VERSION;
+  readonly engineHash: typeof BROWSER_ENGINE_ASSET_HASH;
   readonly source: "browser";
+}
+
+export interface BrowserObservationContext {
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly ply: number;
+  readonly sequence: number;
+  readonly fen: string;
+}
+
+export interface BrowserAnalysisRequest {
+  readonly contractVersion: typeof BROWSER_OBSERVATION_CONTRACT_VERSION;
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly profile: BrowserEngineProfile;
+  readonly engine: {
+    readonly name: typeof BROWSER_ENGINE_NAME;
+    readonly version: typeof BROWSER_ENGINE_VERSION;
+    readonly source: typeof BROWSER_ENGINE_SOURCE;
+    readonly hash: typeof BROWSER_ENGINE_ASSET_HASH;
+  };
+}
+
+export interface BrowserObservationPayload extends BrowserObservationContext {
+  readonly contractVersion: typeof BROWSER_OBSERVATION_CONTRACT_VERSION;
+  readonly profile: BrowserEngineProfile;
+  readonly engine: BrowserAnalysisRequest["engine"];
+  readonly depth: number;
+  readonly nodes: number;
+  readonly timeMs: number;
+  readonly multipv: 1;
+  readonly bestMove: string;
+  readonly lines: readonly [{
+    readonly rank: 1;
+    readonly centipawns: number | null;
+    readonly mate: number | null;
+    readonly moves: readonly string[];
+  }];
+}
+
+export function createBrowserAnalysisRequest(
+  context: Pick<BrowserObservationContext, "analysisRunId" | "gameId">,
+  profile: BrowserEngineProfile,
+): BrowserAnalysisRequest {
+  return {
+    contractVersion: BROWSER_OBSERVATION_CONTRACT_VERSION,
+    analysisRunId: context.analysisRunId,
+    gameId: context.gameId,
+    profile,
+    engine: {
+      name: BROWSER_ENGINE_NAME,
+      version: BROWSER_ENGINE_VERSION,
+      source: BROWSER_ENGINE_SOURCE,
+      hash: BROWSER_ENGINE_ASSET_HASH,
+    },
+  };
+}
+
+export function createBrowserObservationPayload(
+  observation: BrowserEngineObservation,
+  context: BrowserObservationContext,
+): BrowserObservationPayload {
+  if (observation.score === null)
+    throw new BrowserEngineError("failed", "The browser engine did not return a score.");
+  const moves = observation.principalVariation.length > 0
+    ? observation.principalVariation
+    : [observation.bestMove];
+  return {
+    ...context,
+    contractVersion: BROWSER_OBSERVATION_CONTRACT_VERSION,
+    profile: observation.profile,
+    engine: {
+      name: BROWSER_ENGINE_NAME,
+      version: observation.engineVersion,
+      source: BROWSER_ENGINE_SOURCE,
+      hash: observation.engineHash,
+    },
+    depth: observation.depth,
+    nodes: observation.nodes,
+    timeMs: observation.timeMs,
+    multipv: 1,
+    bestMove: observation.bestMove,
+    lines: [{
+      rank: 1,
+      centipawns: observation.score.type === "cp" ? observation.score.value : null,
+      mate: observation.score.type === "mate" ? observation.score.value : null,
+      moves,
+    }],
+  };
 }
 
 export interface BrowserEngineProgress {
@@ -342,7 +437,9 @@ export class BrowserEngine {
       timeMs: active.latest.timeMs,
       principalVariation: active.latest.principalVariation,
       profile: active.profile,
+      engineName: BROWSER_ENGINE_NAME,
       engineVersion: BROWSER_ENGINE_VERSION,
+      engineHash: BROWSER_ENGINE_ASSET_HASH,
       source: "browser",
     };
     this.finishAnalysisSuccess(observation);

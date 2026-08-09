@@ -20,6 +20,7 @@ import type {
 import { apiUrl } from "./config/runtime";
 import { accountAccessToken } from "./auth-session";
 import { loadGuestSession } from "./guest-session";
+import type { BrowserAnalysisRequest, BrowserObservationPayload } from "./browser-engine";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -179,6 +180,33 @@ export function importGameObservable(
 
 export function startAnalysis(id: string): Promise<Job> {
   return request(`/api/games/${encodeURIComponent(id)}/analysis`, { method: "POST" });
+}
+
+export type BrowserAnalysisStartResponse = BrowserAnalysisRequest & {
+  readonly status: "collecting";
+};
+
+export type BrowserObservationResponse = {
+  readonly status: "accepted" | "duplicate";
+  readonly staging: true;
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly ply: number;
+  readonly sequence: number;
+};
+
+export function startBrowserAnalysis(input: BrowserAnalysisRequest): Promise<BrowserAnalysisStartResponse> {
+  return request(`/api/games/${encodeURIComponent(input.gameId)}/browser-analysis`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function submitBrowserObservation(input: BrowserObservationPayload): Promise<BrowserObservationResponse> {
+  return request(`/api/games/${encodeURIComponent(input.gameId)}/browser-observations`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function loadJob(id: number): Promise<Job> {

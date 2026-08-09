@@ -182,6 +182,81 @@ TEST_CASE("API validates request shape and unknown resources") {
     CHECK_EQ(fixture.api.handle(service::Request{"GET", "/api/unknown", {}, {}}).status, 404);
 }
 
+TEST_CASE("API stages only owner-scoped, versioned browser observations") {
+    ApiFixture fixture;
+    const auto imported = fixture.api.handle(service::Request{
+        "POST", "/api/import", {},
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"},
+        })});
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const std::string run_id = "run-api-1";
+    const json::Value::Object engine{
+        {"name", std::string(analysis::browser_engine_name)},
+        {"version", std::string(analysis::browser_engine_version)},
+        {"source", std::string(analysis::browser_engine_source)},
+        {"hash", std::string(analysis::browser_engine_asset_hash)},
+    };
+    const auto started = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-analysis", {},
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id},
+            {"gameId", game_id},
+            {"profile", "quick"},
+            {"engine", engine},
+        })});
+    CHECK_EQ(started.status, 201);
+
+    const auto stored = fixture.repository.get(game_id);
+    CHECK(stored.has_value());
+    const std::string fen = stored->imported.game.plies.front().fen_before;
+    const auto observation_body = [&] {
+        json::Value::Array moves;
+        moves.emplace_back("e2e4");
+        return json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id},
+            {"gameId", game_id},
+            {"ply", 0},
+            {"sequence", 0},
+            {"fen", fen},
+            {"profile", "quick"},
+            {"engine", engine},
+            {"depth", 10},
+            {"nodes", 1000},
+            {"timeMs", 100},
+            {"multipv", 1},
+            {"bestMove", "e2e4"},
+            {"lines", json::Value::Array{json::Value::Object{
+                           {"rank", 1},
+                           {"centipawns", 32},
+                           {"mate", json::Value{}},
+                           {"moves", std::move(moves)},
+                       }}},
+        };
+    };
+    const auto accepted = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-observations", {},
+        json::dump(observation_body())});
+    CHECK_EQ(accepted.status, 202);
+    CHECK_EQ(json::parse(accepted.body).at("status").as_string(), "accepted");
+    CHECK(json::parse(accepted.body).at("staging").as_bool());
+
+    const auto duplicate = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-observations", {},
+        json::dump(observation_body())});
+    CHECK_EQ(duplicate.status, 200);
+    CHECK_EQ(json::parse(duplicate.body).at("status").as_string(), "duplicate");
+
+    auto forged = observation_body();
+    forged.insert_or_assign("fen", "8/8/8/8/8/8/8/8 w - - 0 1");
+    const auto rejected = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-observations", {},
+        json::dump(std::move(forged))});
+    CHECK_EQ(rejected.status, 400);
+}
+
 TEST_CASE("API distinguishes liveness from engine readiness") {
     ApiFixture fixture;
     service::Api degraded(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, [] {

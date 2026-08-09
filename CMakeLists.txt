@@ -39,6 +39,7 @@ add_library(pct_core
     src/engine/stockfish.cpp
     src/engine/pool.cpp
     src/analysis/analyzer.cpp
+    src/analysis/browser_observation.cpp
     src/analysis/opening_book.cpp
     src/training/training.cpp
     src/training/tactical_corpus.cpp
@@ -126,6 +127,7 @@ if(BUILD_TESTING)
         tests/engine_tests.cpp
         tests/pool_tests.cpp
         tests/analysis_tests.cpp
+        tests/browser_observation_tests.cpp
         tests/storage_tests.cpp
         tests/json_tests.cpp
         tests/repository_tests.cpp

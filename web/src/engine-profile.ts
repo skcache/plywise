@@ -1,6 +1,12 @@
 export type BrowserEngineProfile = "quick" | "balanced";
 
+export const BROWSER_OBSERVATION_CONTRACT_VERSION = "browser-observation-v1";
+export const BROWSER_ENGINE_NAME = "Stockfish";
 export const BROWSER_ENGINE_VERSION = "stockfish-18.0.8-lite-single";
+export const BROWSER_ENGINE_SOURCE = "browser";
+export const BROWSER_ENGINE_ASSET_HASH =
+  "js:5243fd9b276cab7dfe3ad1d43ab9ead73568fac76468c614242977a210c4a391;" +
+  "wasm:a8fbc05ec6920b56d7485826dcb02c5ffd2826bcbf751cf973046f237a9096f1";
 
 export interface BrowserEngineProfileConfig {
   readonly id: BrowserEngineProfile;

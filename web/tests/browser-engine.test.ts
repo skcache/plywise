@@ -1,9 +1,15 @@
 import {
   BrowserEngineError,
+  createBrowserAnalysisRequest,
+  createBrowserObservationPayload,
   createBrowserEngine,
   validateBrowserEngineRequest,
 } from "../src/browser-engine";
-import { browserEngineProfile, normalizeBrowserEngineProfile } from "../src/engine-profile";
+import {
+  BROWSER_ENGINE_ASSET_HASH,
+  browserEngineProfile,
+  normalizeBrowserEngineProfile,
+} from "../src/engine-profile";
 
 const startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -73,6 +79,17 @@ async function run() {
   expect(observation.bestMove === "e2e4", "engine should return the typed best move");
   expect(observation.ponderMove === "e7e5", "engine should preserve the optional ponder move");
   expect(observation.principalVariation.join(" ") === "e2e4 e7e5", "engine should preserve a bounded principal variation");
+  expect(observation.engineHash === BROWSER_ENGINE_ASSET_HASH, "engine observations should carry the pinned asset hash");
+  const request = createBrowserAnalysisRequest({ analysisRunId: "run-1", gameId: "game-1" }, "quick");
+  expect(request.engine.hash === BROWSER_ENGINE_ASSET_HASH, "run requests should pin the same engine asset");
+  const payload = createBrowserObservationPayload(observation, {
+    analysisRunId: "run-1",
+    gameId: "game-1",
+    ply: 0,
+    sequence: 0,
+    fen: startFen,
+  });
+  expect(payload.lines[0].moves[0] === "e2e4", "observation payloads should preserve the legal PV");
   expect(progress.length === 1 && progress[0] > 0, "progress should come from an engine info line");
   expect(engine.state === "ready", "engine should return to ready after analysis");
 

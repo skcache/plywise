@@ -19,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <set>
@@ -320,6 +321,142 @@ std::size_t query_size(const std::map<std::string, std::string>& query,
     if (found == query.end())
         return fallback;
     return static_cast<std::size_t>(parse_id(found->second));
+}
+
+bool listed_key(std::string_view key, std::initializer_list<std::string_view> values) {
+    return std::find(values.begin(), values.end(), key) != values.end();
+}
+
+void require_object_keys(const json::Value& value,
+                         std::initializer_list<std::string_view> required,
+                         std::initializer_list<std::string_view> optional,
+                         std::string_view object_name) {
+    const auto& object = value.as_object();
+    for (const auto& [key, _] : object) {
+        if (!listed_key(key, required) && !listed_key(key, optional))
+            throw Error(ErrorCode::InvalidArgument,
+                        std::string(object_name) + " contains an unsupported field");
+    }
+    for (const std::string_view key : required) {
+        if (!object.contains(std::string(key)))
+            throw Error(ErrorCode::ParseError,
+                        std::string(object_name) + " is missing " + std::string(key));
+    }
+}
+
+std::string bounded_text(const json::Value& value, std::size_t max_length,
+                         std::string_view field) {
+    std::string text = value.as_string();
+    if (text.size() > max_length)
+        throw Error(ErrorCode::InvalidArgument,
+                    std::string(field) + " exceeds its size limit");
+    return text;
+}
+
+struct BrowserEngineIdentity {
+    std::string name;
+    std::string version;
+    std::string source;
+    std::string hash;
+};
+
+BrowserEngineIdentity parse_browser_engine_identity(const json::Value& value) {
+    require_object_keys(value, {"name", "version", "source", "hash"}, {}, "engine");
+    return BrowserEngineIdentity{
+        bounded_text(value.at("name"), 128, "engine name"),
+        bounded_text(value.at("version"), 128, "engine version"),
+        bounded_text(value.at("source"), 128, "engine source"),
+        bounded_text(value.at("hash"), 256, "engine hash"),
+    };
+}
+
+void require_browser_engine_identity(const BrowserEngineIdentity& engine) {
+    if (engine.name != analysis::browser_engine_name ||
+        engine.version != analysis::browser_engine_version ||
+        engine.source != analysis::browser_engine_source ||
+        engine.hash != analysis::browser_engine_asset_hash)
+        throw Error(ErrorCode::InvalidArgument, "browser engine identity is unsupported");
+}
+
+analysis::BrowserObservationRunContext parse_browser_observation_run(
+    const json::Value& value, BrowserEngineIdentity& engine) {
+    require_object_keys(value, {"contractVersion", "analysisRunId", "gameId", "profile", "engine"}, {},
+                        "browser analysis request");
+    if (bounded_text(value.at("contractVersion"), 64, "contract version") !=
+        analysis::browser_observation_contract_version)
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observation contract version is unsupported");
+    engine = parse_browser_engine_identity(value.at("engine"));
+    require_browser_engine_identity(engine);
+    return analysis::BrowserObservationRunContext{
+        bounded_text(value.at("gameId"), analysis::browser_observation_max_id_length, "game id"),
+        bounded_text(value.at("analysisRunId"), analysis::browser_observation_max_id_length,
+                     "analysis run id"),
+        bounded_text(value.at("profile"), 32, "profile"),
+    };
+}
+
+analysis::BrowserEngineObservation parse_browser_observation(const json::Value& value) {
+    require_object_keys(value,
+                        {"contractVersion", "analysisRunId", "gameId", "ply", "sequence",
+                         "fen", "profile", "engine", "depth", "nodes", "timeMs", "multipv",
+                         "bestMove", "lines"},
+                        {}, "browser observation");
+    const BrowserEngineIdentity engine = parse_browser_engine_identity(value.at("engine"));
+    analysis::BrowserEngineObservation observation;
+    observation.contract_version = bounded_text(value.at("contractVersion"), 64,
+                                                "contract version");
+    observation.analysis_run_id = bounded_text(
+        value.at("analysisRunId"), analysis::browser_observation_max_id_length, "analysis run id");
+    observation.game_id = bounded_text(value.at("gameId"),
+                                       analysis::browser_observation_max_id_length, "game id");
+    observation.ply = value.at("ply").as_size();
+    observation.sequence = value.at("sequence").as_size();
+    observation.fen = bounded_text(value.at("fen"), analysis::browser_observation_max_fen_length,
+                                   "FEN");
+    observation.profile = bounded_text(value.at("profile"), 32, "profile");
+    observation.engine_name = engine.name;
+    observation.engine_version = engine.version;
+    observation.engine_source = engine.source;
+    observation.engine_hash = engine.hash;
+    observation.depth = value.at("depth").as_int();
+    observation.nodes = value.at("nodes").as_size();
+    observation.time_ms = value.at("timeMs").as_size();
+    observation.multipv = value.at("multipv").as_int();
+    observation.best_move = bounded_text(value.at("bestMove"), 5, "best move");
+
+    const auto& lines = value.at("lines").as_array();
+    if (lines.size() > analysis::browser_observation_max_lines)
+        throw Error(ErrorCode::InvalidArgument, "browser observation has too many lines");
+    observation.lines.reserve(lines.size());
+    for (const auto& encoded : lines) {
+        require_object_keys(encoded, {"rank", "centipawns", "mate", "moves"}, {},
+                            "browser observation line");
+        analysis::BrowserObservationLine line;
+        line.rank = encoded.at("rank").as_int();
+        const auto& centipawns = encoded.at("centipawns");
+        const auto& mate = encoded.at("mate");
+        if (!centipawns.is_null())
+            line.centipawns = centipawns.as_int();
+        if (!mate.is_null())
+            line.mate = mate.as_int();
+        const auto& moves = encoded.at("moves").as_array();
+        if (moves.size() > analysis::browser_observation_max_pv_length)
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation principal variation is too long");
+        line.moves.reserve(moves.size());
+        for (const auto& move : moves)
+            line.moves.push_back(bounded_text(move, 5, "principal variation move"));
+        observation.lines.push_back(std::move(line));
+    }
+    return observation;
+}
+
+std::string browser_owner_key(const app::OwnerId& owner) {
+    const std::string kind = owner.kind() == app::OwnerKind::Account
+                                 ? "account"
+                                 : owner.kind() == app::OwnerKind::Guest ? "guest" : "local";
+    return kind + ":" + std::string(owner.value());
 }
 
 std::string reason_phrase(int status) {
@@ -1101,6 +1238,57 @@ Response Api::handle(const Request& request) {
                 throw Error(ErrorCode::NotFound, "game does not exist");
             if (parts.size() == 3 && request.method == "GET") {
                 return json_response(200, to_json(*game, true));
+            }
+            if (parts.size() == 4 && parts[3] == "browser-analysis" &&
+                request.method == "POST") {
+                BrowserEngineIdentity engine;
+                const auto run = parse_browser_observation_run(json::parse(request.body), engine);
+                if (run.game_id != parts[2])
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser analysis game does not match the route");
+                browser_observations_.begin(browser_owner_key(repository_.owner()), run);
+                return json_response(201, json::Value::Object{
+                                             {"status", "collecting"},
+                                             {"contractVersion",
+                                              std::string(analysis::browser_observation_contract_version)},
+                                             {"analysisRunId", run.analysis_run_id},
+                                             {"gameId", run.game_id},
+                                             {"profile", run.profile},
+                                             {"engine", json::Value::Object{
+                                                            {"name", engine.name},
+                                                            {"version", engine.version},
+                                                            {"source", engine.source},
+                                                            {"hash", engine.hash},
+                                                        }},
+                                         });
+            }
+            if (parts.size() == 4 && parts[3] == "browser-observations" &&
+                request.method == "POST") {
+                const auto observation = parse_browser_observation(json::parse(request.body));
+                if (observation.game_id != parts[2])
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation game does not match the route");
+                if (observation.ply >= game->imported.game.plies.size())
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation ply is outside the canonical game");
+                const analysis::BrowserObservationContext context{
+                    parts[2], observation.analysis_run_id, observation.profile,
+                    game->imported.game.plies[observation.ply].fen_before,
+                };
+                const auto receipt = browser_observations_.submit(
+                    browser_owner_key(repository_.owner()), context, observation);
+                const bool duplicate = receipt.disposition ==
+                                       analysis::BrowserObservationDisposition::Duplicate;
+                return json_response(duplicate ? 200 : 202, json::Value::Object{
+                                                             {"status", duplicate ? "duplicate"
+                                                                                   : "accepted"},
+                                                             {"staging", true},
+                                                             {"analysisRunId",
+                                                              observation.analysis_run_id},
+                                                             {"gameId", observation.game_id},
+                                                             {"ply", observation.ply},
+                                                             {"sequence", observation.sequence},
+                                                         });
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "POST") {
                 return json_response(202, app::to_json(jobs_.start(parts[2])));

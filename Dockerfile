@@ -10,6 +10,7 @@ RUN apt-get update \
         ca-certificates \
         cmake \
         libcurl4-openssl-dev \
+        libpq-dev \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 

@@ -13,6 +13,7 @@ option(PCT_ENABLE_SANITIZERS "Enable address and undefined behavior sanitizers" 
 option(PCT_ENABLE_THREAD_SANITIZER "Enable the thread data-race sanitizer" OFF)
 option(PCT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(PCT_BUILD_BENCHMARKS "Build reproducible microbenchmarks" ON)
+option(PCT_ENABLE_POSTGRES_ADAPTER "Build the hosted PostgreSQL repository adapter when libpq is available" ON)
 
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)
@@ -46,6 +47,19 @@ add_library(pct_core
 
 target_include_directories(pct_core PUBLIC include)
 target_link_libraries(pct_core PUBLIC Threads::Threads CURL::libcurl)
+
+if(PCT_ENABLE_POSTGRES_ADAPTER)
+    find_package(PostgreSQL QUIET)
+    if(PostgreSQL_FOUND)
+        find_package(OpenSSL REQUIRED)
+        target_sources(pct_core PRIVATE src/app/postgres_repository.cpp)
+        target_include_directories(pct_core PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+        target_link_libraries(pct_core PUBLIC ${PostgreSQL_LIBRARIES} OpenSSL::Crypto)
+        target_compile_definitions(pct_core PUBLIC PCT_HAS_POSTGRES=1)
+    else()
+        message(STATUS "libpq was not found; hosted PostgreSQL adapter is disabled")
+    endif()
+endif()
 target_compile_definitions(
     pct_core PRIVATE
         PCT_RESOURCE_CATALOG_PATH="${CMAKE_CURRENT_BINARY_DIR}/resources/catalog.json"
@@ -114,6 +128,9 @@ if(BUILD_TESTING)
         tests/phase2_e2e_tests.cpp
         tests/phase3_e2e_tests.cpp
     )
+    if(PostgreSQL_FOUND AND PCT_ENABLE_POSTGRES_ADAPTER)
+        target_sources(pct-tests PRIVATE tests/postgres_repository_tests.cpp)
+    endif()
     target_link_libraries(pct-tests PRIVATE pct_core)
     add_executable(pct-fake-stockfish tests/fake_stockfish.cpp)
     add_executable(pct-crash-stockfish tests/crash_stockfish.cpp)

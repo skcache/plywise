@@ -78,7 +78,7 @@ chess::Move require_legal_move(chess::Board& board, std::string_view value) {
 
 void validate_line(const BrowserObservationLine& line, chess::Board board,
                    std::string_view best_move) {
-    if (line.rank != 1 || line.moves.empty() || line.moves.size() > browser_observation_max_pv_length)
+    if (line.rank != 1 || line.moves.size() > browser_observation_max_pv_length)
         throw Error(ErrorCode::InvalidArgument, "browser observation principal variation is invalid");
     if (line.centipawns.has_value() == line.mate.has_value())
         throw Error(ErrorCode::InvalidArgument, "browser observation score must be cp or mate");
@@ -86,7 +86,13 @@ void validate_line(const BrowserObservationLine& line, chess::Board board,
         throw Error(ErrorCode::InvalidArgument, "browser observation centipawn score is out of bounds");
     if (line.mate && (*line.mate < -1000 || *line.mate > 1000 || *line.mate == 0))
         throw Error(ErrorCode::InvalidArgument, "browser observation mate score is out of bounds");
-    if (line.moves.front() != best_move)
+    if (best_move == "0000") {
+        if (!line.moves.empty() || !board.legal_moves().empty())
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation terminal move is only valid without legal replies");
+        return;
+    }
+    if (line.moves.empty() || line.moves.front() != best_move)
         throw Error(ErrorCode::InvalidArgument, "browser observation best move does not match its line");
     for (const auto& value : line.moves) {
         require_bounded(value, 5, "principal variation move");

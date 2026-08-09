@@ -8,6 +8,7 @@ import {
   createGuestSession,
   deleteVariation,
   extendVariation,
+  finalizeBrowserAnalysis,
   importGameObservable,
   loadChessComProfile,
   loadChessComSync,
@@ -23,13 +24,17 @@ import {
   resetVariation,
   setVariationCursor,
   startChessComSync,
+  startBrowserAnalysis,
   startAnalysis,
+  submitBrowserObservation,
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
 import { clearGuestSession, loadGuestSession, saveGuestSession } from "../guest-session";
 import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
+import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
+import { runGuestBrowserReview, type GuestBrowserReviewProgress } from "../guest-browser-review";
 import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
@@ -98,7 +103,10 @@ export default function App() {
   const [authRevision, setAuthRevision] = useState(0);
   const [guestTrial, setGuestTrial] = useState<GuestTrialState>(() => loadGuestTrial());
   const [guestMessage, setGuestMessage] = useState("");
+  const [browserAnalysisProgress, setBrowserAnalysisProgress] = useState<GuestBrowserReviewProgress | null>(null);
   const autoplayTimer = useRef<number | null>(null);
+  const browserEngineRef = useRef<ReturnType<typeof createBrowserEngine> | null>(null);
+  const browserAnalysisAbort = useRef<AbortController | null>(null);
   const pendingClaim = useRef<{ guestToken: string; idempotencyKey: string } | null>(null);
   const pendingAccountContext = useRef<"landing" | "save">("landing");
   const accountFlowRequested = useRef(false);
@@ -241,6 +249,11 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  useEffect(() => () => {
+    browserAnalysisAbort.current?.abort();
+    browserEngineRef.current?.dispose();
+  }, []);
+
   useEffect(() => {
     if (authSnapshot.session) void handleAuthenticatedSession();
   }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
@@ -357,33 +370,112 @@ export default function App() {
     setRoute("analysis");
   }, [games]);
 
+  const startServerFallback = useCallback(async (gameId: string) => {
+    const job = await startAnalysis(gameId);
+    setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+    return "Browser analysis is unavailable here, so the hosted fallback is running.";
+  }, []);
+
   const analyzeGame = useCallback(async (gameId: string) => {
     const game = games.find((item) => item.game.id === gameId);
     if (!game) return;
     openGame(gameId, 0);
     if (game.analysis_status === "complete") return;
+    // Account reviews keep the existing hosted job path. Guests use the browser worker so the
+    // free first review does not require server Stockfish capacity.
+    if (authSnapshot.session) {
+      try {
+        const job = await startAnalysis(gameId);
+        setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+        setGuestTrial(markGuestAnalysisUsed(gameId));
+        setGuestMessage("");
+        setError("");
+      } catch (analysisError) {
+        setGuestTrial(releaseGuestAnalysis(gameId));
+        setError(analysisError instanceof Error ? analysisError.message : "Could not start analysis.");
+      }
+      return;
+    }
+
     const reservation = reserveGuestAnalysis(gameId);
     setGuestTrial(reservation.state);
     if (!reservation.ok) {
       setGuestMessage(reservation.reason === "already_reserved" ? "Your guest review is already in progress." : "Your one free guest review is complete. Account saving is coming next.");
       return;
     }
+
+    const abortController = new AbortController();
+    const engine = createBrowserEngine();
+    browserAnalysisAbort.current = abortController;
+    browserEngineRef.current = engine;
+    setBrowserAnalysisProgress({
+      gameId,
+      profile: browserProfile,
+      stage: "starting",
+      complete: 0,
+      total: Math.max(1, game.game.plies.length * 2),
+      ply: 0,
+      position: "before",
+      message: `Starting ${browserProfile === "balanced" ? "Balanced" : "Quick"} browser analysis`,
+    });
     try {
-      const job = await startAnalysis(gameId);
-      setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+      await runGuestBrowserReview(game, {
+        profile: browserProfile,
+        engine,
+        api: {
+          start: startBrowserAnalysis,
+          submit: submitBrowserObservation,
+          finalize: finalizeBrowserAnalysis,
+        },
+        signal: abortController.signal,
+        onProgress: setBrowserAnalysisProgress,
+      });
       setGuestTrial(markGuestAnalysisUsed(gameId));
-      setGuestMessage("");
+      setGuestMessage("Your browser review is ready.");
       setError("");
+      try {
+        await refreshGame(gameId);
+      } catch (refreshError) {
+        setError(refreshError instanceof Error ? refreshError.message : "Review is ready, but the game could not refresh yet.");
+      }
     } catch (analysisError) {
-      setGuestTrial(releaseGuestAnalysis(gameId));
-      const message = analysisError instanceof ApiError &&
-        analysisError.code === "invalid_argument" &&
-        analysisError.message.toLowerCase().includes("completed game")
-        ? "Only completed games can be analyzed. Import a finished game to continue."
-        : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
-      setError(message);
+      const fallback = isBrowserFallback(analysisError);
+      let message = analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
+        ? "Browser analysis cancelled. Your free review is still available."
+        : analysisError instanceof ApiError &&
+          analysisError.code === "invalid_argument" &&
+          analysisError.message.toLowerCase().includes("completed game")
+          ? "Only completed games can be analyzed. Import a finished game to continue."
+          : fallback
+          ? "Browser analysis is unavailable here."
+            : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
+      let fallbackStarted = false;
+      if (fallback) {
+        try {
+          message = await startServerFallback(gameId);
+          setGuestTrial(markGuestAnalysisUsed(gameId));
+          fallbackStarted = true;
+        } catch (fallbackError) {
+          setGuestTrial(releaseGuestAnalysis(gameId));
+          message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
+        }
+      } else {
+        setGuestTrial(releaseGuestAnalysis(gameId));
+      }
+      setGuestMessage(message);
+      if (!fallbackStarted) setError(message);
+    } finally {
+      browserAnalysisAbort.current = null;
+      browserEngineRef.current?.dispose();
+      browserEngineRef.current = null;
+      setBrowserAnalysisProgress(null);
     }
-  }, [games, openGame]);
+  }, [authSnapshot.session, browserProfile, games, openGame, refreshGame, startServerFallback]);
+
+  const cancelBrowserAnalysis = useCallback(() => {
+    browserAnalysisAbort.current?.abort();
+    void browserEngineRef.current?.cancel();
+  }, []);
 
   const refreshGames = useCallback(async () => {
     if (refreshBusy) return;
@@ -748,9 +840,10 @@ export default function App() {
     const tags = selectedGame?.game.tags ?? {};
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
+    const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
     header = <TopBar title={gameName} detail={opening} meta={selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
       {canSaveGuestReview && <SoftButton icon="book" onClick={() => openAccountPrompt("save")}>Save review</SoftButton>}
-      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>{selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
+      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? `${activeBrowserProgress.complete}/${activeBrowserProgress.total}` : selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => setOverviewOpen((value) => !value)}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
         <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
@@ -776,6 +869,7 @@ export default function App() {
       runtimeSettings={runtimeSettings}
       diagnostics={diagnostics}
       error={error}
+      browserProgress={activeBrowserProgress}
       onSelectPly={resetTransient}
       onNavigate={navigate}
       onTogglePlayback={togglePlayback}
@@ -793,6 +887,7 @@ export default function App() {
       onCloseOverview={() => setOverviewOpen(false)}
       onInspectorTab={setInspectorTab}
       onCancelJob={() => selectedJob && void cancelJob(selectedJob.id).then((job) => setJobs((current) => [...current.filter((item) => item.id !== job.id), job]))}
+      onCancelBrowserAnalysis={cancelBrowserAnalysis}
     />;
   } else if (route === "explore") {
     const entries = buildExploreEntries(games);
@@ -859,10 +954,10 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
 type AnalysisProps = {
   games: StoredGame[]; profile: Profile | null; selectedGame: StoredGame | null; selectedPly: number; selectedMove?: MoveAssessment; jobs: Job[]; selectedJob: Job | null;
   orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; tryMessage: string; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
-  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string;
+  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string; browserProgress: GuestBrowserReviewProgress | null;
   onSelectPly: (ply: number) => void; onNavigate: (action: "first" | "previous" | "next" | "last") => void; onTogglePlayback: () => void; onFlip: () => void; onSquare: (square: string) => void;
   onRetry: () => void; onRetrySubmit: (uci: string) => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
-  onToggleMoves: () => void; onCloseOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onCancelJob: () => void;
+  onToggleMoves: () => void; onCloseOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void;
 };
 
 function AnalysisView(props: AnalysisProps) {
@@ -873,7 +968,7 @@ function AnalysisView(props: AnalysisProps) {
   const fen = reviewMode === "variation" ? currentVariationNode?.fen ?? variation?.root_fen ?? initialFen : reviewMode === "try_move" || reviewMode === "revealed_move" ? move?.fen_before ?? ply?.fen_before ?? initialFen : ply?.fen_after ?? initialFen;
   const activeUci = reviewMode === "variation" ? currentVariationNode?.uci ?? "" : props.highlightedUci || ply?.uci || "";
   return <div className="analysis-layout">
-    {props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
+    {props.browserProgress ? <div className="analysis-progress"><span>{props.browserProgress.message}</span><progress aria-label="Browser analysis progress" max={props.browserProgress.total} value={props.browserProgress.complete}/><strong>{props.browserProgress.complete}/{props.browserProgress.total}</strong><button onClick={props.onCancelBrowserAnalysis}>Cancel</button></div> : props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
       <EvaluationBar value={move?.evaluation_after}/>
       <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={reviewMode === "try_move" || reviewMode === "variation"} showArrow={reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
@@ -1014,6 +1109,11 @@ function needsAttention(classification: string) {
 function classificationClass(value: string) { return value.toLowerCase().replace(/[^a-z]+/g, "-"); }
 function titleCase(value: string) { return value.replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function delay(ms: number) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+
+function isBrowserFallback(error: unknown): boolean {
+  return (error instanceof BrowserEngineError && ["unavailable", "timeout", "failed"].includes(error.code)) ||
+    (error instanceof ApiError && [404, 503].includes(error.status));
+}
 
 function createClaimIdempotencyKey() {
   return typeof crypto.randomUUID === "function"

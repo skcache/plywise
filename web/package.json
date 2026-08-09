@@ -19,7 +19,8 @@
     "test:session": "tsc tests/guest-session.test.ts src/guest-session.ts --outDir /tmp/pct-web-session --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-session/tests/guest-session.test.js",
     "test:auth": "tsc tests/auth-redirect.test.ts src/auth-redirect.ts --outDir /tmp/pct-web-auth --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-auth/tests/auth-redirect.test.js",
     "test:engine": "tsc tests/browser-engine.test.ts src/browser-engine.ts src/engine-profile.ts --outDir /tmp/pct-web-engine --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-engine/tests/browser-engine.test.js",
-    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:guest && npm run test:session && npm run test:auth && npm run test:engine"
+    "test:guest-browser": "tsc tests/guest-browser-review.test.ts src/guest-browser-review.ts src/browser-engine.ts src/engine-profile.ts src/types.ts --outDir /tmp/pct-web-guest-browser --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-guest-browser/tests/guest-browser-review.test.js",
+    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:guest && npm run test:session && npm run test:auth && npm run test:engine && npm run test:guest-browser"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

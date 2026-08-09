@@ -116,9 +116,11 @@ export function createBrowserObservationPayload(
 ): BrowserObservationPayload {
   if (observation.score === null)
     throw new BrowserEngineError("failed", "The browser engine did not return a score.");
+  // Stockfish reports `0000` after checkmate or stalemate because there is no legal reply.
+  // Keep that terminal observation explicit instead of inventing a move for C++ to validate.
   const moves = observation.principalVariation.length > 0
     ? observation.principalVariation
-    : [observation.bestMove];
+    : observation.bestMove === "0000" ? [] : [observation.bestMove];
   return {
     ...context,
     contractVersion: BROWSER_OBSERVATION_CONTRACT_VERSION,

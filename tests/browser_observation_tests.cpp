@@ -57,6 +57,23 @@ TEST_CASE("browser observations validate the pinned engine and legal principal v
         position_context(std::string(initial_fen)), observation));
 }
 
+TEST_CASE("browser observations preserve terminal positions without inventing a move") {
+    const auto game = chess::parse_pgn(R"pgn(
+[White "A"]
+[Black "B"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+)pgn");
+    auto observation = valid_observation(game.plies.back().fen_after, "0000", 3, 0);
+    observation.lines.front().moves.clear();
+    observation.lines.front().centipawns.reset();
+    observation.lines.front().mate = 1;
+    const auto result = analysis::validate_browser_observation(
+        position_context(observation.fen), observation);
+    CHECK(result.disposition == analysis::BrowserObservationDisposition::Accepted);
+}
+
 TEST_CASE("browser observation validation rejects forged positions and bounded payloads") {
     auto observation = valid_observation(std::string(initial_fen), "e2e4", 0, 0);
     auto context = position_context(std::string(initial_fen));

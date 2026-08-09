@@ -90,6 +90,19 @@ async function run() {
     fen: startFen,
   });
   expect(payload.lines[0].moves[0] === "e2e4", "observation payloads should preserve the legal PV");
+  const terminalPayload = createBrowserObservationPayload({
+    ...observation,
+    bestMove: "0000",
+    score: { type: "mate", value: 1 },
+    principalVariation: [],
+  }, {
+    analysisRunId: "run-1",
+    gameId: "game-1",
+    ply: 1,
+    sequence: 1,
+    fen: startFen,
+  });
+  expect(terminalPayload.lines[0].moves.length === 0, "terminal observations should not invent a legal move");
   expect(progress.length === 1 && progress[0] > 0, "progress should come from an engine info line");
   expect(engine.state === "ready", "engine should return to ready after analysis");
 

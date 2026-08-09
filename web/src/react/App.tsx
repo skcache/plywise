@@ -32,17 +32,18 @@ import { eventUrl } from "../config/runtime";
 import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
+import { LandingView } from "./LandingView";
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "line" | "method";
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const routes = new Set<Route>(["home", "recent", "analysis", "explore", "progress", "settings"]);
+const routes = new Set<Route>(["landing", "home", "recent", "analysis", "explore", "progress", "settings"]);
 
 function routeFromHash(): Route {
   const candidate = window.location.hash.replace(/^#\/?/, "") as Route;
-  return routes.has(candidate) ? candidate : "home";
+  return candidate && routes.has(candidate) ? candidate : "landing";
 }
 
 export default function App() {
@@ -81,6 +82,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
+  const [landingAccountMessage, setLandingAccountMessage] = useState("");
   const autoplayTimer = useRef<number | null>(null);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
@@ -138,7 +140,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const expected = `#/${route}`;
+    const expected = route === "landing" ? "#/" : `#/${route}`;
     if (window.location.hash !== expected) window.history.replaceState(null, "", expected);
   }, [route]);
 
@@ -441,10 +443,25 @@ export default function App() {
 
   const setAppRoute = useCallback((next: Route) => {
     setRoute(next);
+    setLandingAccountMessage("");
     setMoreOpen(false);
     setOverviewOpen(false);
     if (next === "settings") void refreshRuntime();
   }, [refreshRuntime]);
+
+  const startLandingReview = useCallback(() => {
+    setLandingAccountMessage("");
+    setRoute("home");
+    setImportOpen(true);
+  }, []);
+
+  const explainLandingAccount = useCallback(() => {
+    setLandingAccountMessage("Accounts are coming next. You can still start a free review without one.");
+  }, []);
+
+  if (route === "landing") {
+    return <LandingView onStart={startLandingReview} onSignIn={explainLandingAccount} accountMessage={landingAccountMessage}/>;
+  }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };
   let view: ReactNode;

@@ -104,6 +104,12 @@ export interface StoredGame {
     black_accuracy: number;
     accuracy_sample_size: number;
     accuracy_version: string;
+    /** Optional for reviews written before engine provenance was added. */
+    requested_engine_profile?: string;
+    actual_engine_profile?: string;
+    engine_name?: string;
+    engine_source?: string;
+    engine_hash?: string;
   } | null;
   pgn?: string;
 }

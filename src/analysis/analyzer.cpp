@@ -533,7 +533,9 @@ std::string explanation_for(std::string_view category, const chess::Game& game, 
 GameAnalysis assemble_observation_review_impl(
     const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
     const std::vector<engine::AnalysisResult>& after_results, ClassificationState state,
-    const AnalyzerOptions& options, std::string_view engine_version) {
+    const AnalyzerOptions& options, std::string_view engine_version,
+    std::string_view actual_engine_profile, std::string_view requested_engine_profile,
+    std::string_view engine_name, std::string_view engine_source, std::string_view engine_hash) {
     if (game.plies.empty())
         throw Error(ErrorCode::InvalidArgument, "cannot assemble an empty game review");
     if (before_results.size() != game.plies.size() || after_results.size() != game.plies.size())
@@ -548,6 +550,11 @@ GameAnalysis assemble_observation_review_impl(
     analysis.book_ply = opening.book_ply;
     analysis.departure_ply = opening.departure_ply;
     analysis.opening_book_version = opening.book_version;
+    analysis.actual_engine_profile = std::string(actual_engine_profile);
+    analysis.requested_engine_profile = std::string(requested_engine_profile);
+    analysis.engine_name = std::string(engine_name);
+    analysis.engine_source = std::string(engine_source);
+    analysis.engine_hash = std::string(engine_hash);
     analysis.moves.reserve(game.plies.size());
 
     for (std::size_t index = 0; index < game.plies.size(); ++index) {
@@ -629,9 +636,13 @@ std::string classify_mistake_category(const chess::Game& game, std::size_t ply,
 GameAnalysis assemble_observation_review(
     const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
     const std::vector<engine::AnalysisResult>& after_results, ClassificationState state,
-    AnalyzerOptions options, std::string_view engine_version) {
+    AnalyzerOptions options, std::string_view engine_version,
+    std::string_view actual_engine_profile, std::string_view requested_engine_profile,
+    std::string_view engine_name, std::string_view engine_source, std::string_view engine_hash) {
     return assemble_observation_review_impl(game, before_results, after_results, state, options,
-                                             engine_version);
+                                             engine_version, actual_engine_profile,
+                                             requested_engine_profile, engine_name, engine_source,
+                                             engine_hash);
 }
 
 std::string AnalysisCache::key(const engine::AnalysisRequest& request) {
@@ -787,7 +798,8 @@ GameAnalysis Analyzer::analyze_shallow(const chess::Game& game, ProgressCallback
         report(AnalysisStage::ShallowScan, index + 1, game.plies.size(), "Scanning positions");
     }
     return assemble_observation_review(game, before_results, after_results,
-                                       ClassificationState::Provisional, options_);
+                                       ClassificationState::Provisional, options_, {}, "native",
+                                       {}, "Stockfish", "cpp");
 }
 
 GameAnalysis Analyzer::analyze_deep(const chess::Game& game, GameAnalysis analysis,

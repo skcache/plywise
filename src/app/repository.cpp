@@ -2443,6 +2443,11 @@ json::Value to_json(const analysis::GameAnalysis& analysis) {
         {"black_accuracy", analysis.black_accuracy},
         {"accuracy_sample_size", analysis.accuracy_sample_size},
         {"accuracy_version", analysis.accuracy_version},
+        {"requested_engine_profile", analysis.requested_engine_profile},
+        {"actual_engine_profile", analysis.actual_engine_profile},
+        {"engine_name", analysis.engine_name},
+        {"engine_source", analysis.engine_source},
+        {"engine_hash", analysis.engine_hash},
     };
 }
 
@@ -2490,6 +2495,11 @@ analysis::GameAnalysis analysis_from_json(const json::Value& value) {
     result.black_accuracy = value.get("black_accuracy", 0.0).as_number();
     result.accuracy_sample_size = value.get("accuracy_sample_size", 0).as_size();
     result.accuracy_version = value.get("accuracy_version", "legacy").as_string();
+    result.requested_engine_profile = value.get("requested_engine_profile", "").as_string();
+    result.actual_engine_profile = value.get("actual_engine_profile", "").as_string();
+    result.engine_name = value.get("engine_name", "").as_string();
+    result.engine_source = value.get("engine_source", "").as_string();
+    result.engine_hash = value.get("engine_hash", "").as_string();
     return result;
 }
 

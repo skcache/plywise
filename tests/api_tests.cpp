@@ -377,10 +377,20 @@ TEST_CASE("API finalizes a complete browser run through the C++ review pipeline"
              "final");
     CHECK_EQ(body.at("analysis").at("moves").as_array().at(0).at("engine_version").as_string(),
              std::string(analysis::browser_engine_version));
+    CHECK_EQ(body.at("analysis").at("requested_engine_profile").as_string(), "quick");
+    CHECK_EQ(body.at("analysis").at("actual_engine_profile").as_string(), "quick");
+    CHECK_EQ(body.at("analysis").at("engine_name").as_string(),
+             std::string(analysis::browser_engine_name));
+    CHECK_EQ(body.at("analysis").at("engine_source").as_string(),
+             std::string(analysis::browser_engine_source));
+    CHECK_EQ(body.at("analysis").at("engine_hash").as_string(),
+             std::string(analysis::browser_engine_asset_hash));
     const auto reopened = fixture.repository.get(game_id);
     CHECK(reopened.has_value());
     CHECK(reopened->analysis.has_value());
     CHECK_EQ(reopened->analysis->moves.size(), 2ULL);
+    CHECK_EQ(reopened->analysis->requested_engine_profile, "quick");
+    CHECK_EQ(reopened->analysis->actual_engine_profile, "quick");
 
     const auto retry = fixture.api.handle(service::Request{
         "POST", "/api/games/" + game_id + "/browser-observations/finalize", {},

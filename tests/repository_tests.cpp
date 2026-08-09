@@ -209,6 +209,11 @@ TEST_CASE("repository round trips the Phase 2.1 per-ply classification contract"
         move.time_ms = 42;
         move.multipv = 3;
         move.engine_version = "stockfish-test";
+        completed.requested_engine_profile = "balanced";
+        completed.actual_engine_profile = "balanced";
+        completed.engine_name = "Stockfish";
+        completed.engine_source = "browser";
+        completed.engine_hash = "sha256:test-build";
         completed.moves.push_back(move);
         repository.save_analysis(completed);
         const auto attempt = repository.record_review_attempt(parsed.identity, 0, "d2d4");
@@ -235,6 +240,11 @@ TEST_CASE("repository round trips the Phase 2.1 per-ply classification contract"
         CHECK_EQ(move.engine_version, "stockfish-test");
         CHECK_EQ(move.classification_model_version,
                  std::string(analysis::classification_model_version));
+        CHECK_EQ(restored->analysis->requested_engine_profile, "balanced");
+        CHECK_EQ(restored->analysis->actual_engine_profile, "balanced");
+        CHECK_EQ(restored->analysis->engine_name, "Stockfish");
+        CHECK_EQ(restored->analysis->engine_source, "browser");
+        CHECK_EQ(restored->analysis->engine_hash, "sha256:test-build");
         const auto attempts = repository.review_attempts(parsed.identity);
         CHECK_EQ(attempts.size(), 1ULL);
         CHECK(attempts.front().accepted);

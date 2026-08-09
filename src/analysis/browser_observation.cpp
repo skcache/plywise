@@ -252,7 +252,9 @@ GameAnalysis assemble_browser_review(
         after_results.push_back(std::move(*after[index]));
     }
     return assemble_observation_review(game, before_results, after_results,
-                                       ClassificationState::Final, {}, engine_version);
+                                       ClassificationState::Final, {}, engine_version, profile,
+                                       profile, browser_engine_name, browser_engine_source,
+                                       browser_engine_asset_hash);
 }
 
 BrowserObservationLedger::BrowserObservationLedger(std::size_t max_runs,

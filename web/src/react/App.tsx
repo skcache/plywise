@@ -1029,7 +1029,7 @@ function OverviewDrawer(props: AnalysisProps) {
   return <aside className="overview-drawer"><header><div><span>Game Overview</span><strong>Evidence behind this review</strong></div><button aria-label="Close overview" onClick={props.onCloseOverview}><Icon name="close"/></button></header><nav>{(["summary", "line", "method"] as InspectorTab[]).map((tab) => <button key={tab} className={props.inspectorTab === tab ? "active" : ""} onClick={() => props.onInspectorTab(tab)}>{titleCase(tab)}</button>)}</nav><div className="drawer-body">
     {props.inspectorTab === "summary" && <><div className="summary-hero"><strong>{analysis?.accuracy.toFixed(1) ?? "—"}</strong><span>review accuracy</span></div><dl className="evidence-list"><div><dt>Opening</dt><dd>{[analysis?.eco, analysis?.opening].filter(Boolean).join(" · ") || "Unclassified"}</dd></div><div><dt>Book depth</dt><dd>{analysis?.book_ply ?? 0} plies</dd></div><div><dt>Selected evaluation</dt><dd>{formatEval(move?.evaluation_after)}</dd></div><div><dt>Classification</dt><dd>{move?.classification || "Pending"}</dd></div></dl></>}
     {props.inspectorTab === "line" && <><div className="engine-line"><span>Principal variation</span><strong>{move?.best_san || move?.best_uci || "—"}</strong><code>{move?.principal_variation.join(" ") || "No line available"}</code></div><dl className="evidence-list"><div><dt>Depth</dt><dd>{move?.depth || "—"}</dd></div><div><dt>Nodes</dt><dd>{move?.nodes?.toLocaleString() || "—"}</dd></div><div><dt>Workers</dt><dd>{props.diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Deep target</dt><dd>{props.runtimeSettings?.deep_depth ?? "—"}</dd></div></dl></>}
-    {props.inspectorTab === "method" && <div className="method-copy"><h3>Local, reproducible evidence</h3><p>C++ reconstructs each position, Stockfish evaluates candidates, and the versioned classification model assigns the displayed label. This panel exposes recorded evidence, not hidden reasoning.</p><dl className="evidence-list"><div><dt>Engine</dt><dd>{move?.engine_version || "Stockfish local"}</dd></div><div><dt>Classifier</dt><dd>{move?.classification_model_version || "Tutor model"}</dd></div></dl></div>}
+    {props.inspectorTab === "method" && <div className="method-copy"><h3>Local, reproducible evidence</h3><p>C++ reconstructs each position, Stockfish evaluates candidates, and the versioned classification model assigns the displayed label. This panel exposes recorded evidence, not hidden reasoning.</p><dl className="evidence-list"><div><dt>Requested profile</dt><dd>{engineProfileLabel(analysis?.requested_engine_profile)}</dd></div><div><dt>Actual profile</dt><dd>{engineProfileLabel(analysis?.actual_engine_profile)}</dd></div><div><dt>Engine</dt><dd>{analysis?.engine_name || move?.engine_version || "Stockfish local"}</dd></div><div><dt>Source</dt><dd>{engineSourceLabel(analysis?.engine_source)}</dd></div><div><dt>Engine build</dt><dd>{move?.engine_version || "Not recorded"}</dd></div><div><dt>Classifier</dt><dd>{move?.classification_model_version || "Tutor model"}</dd></div></dl></div>}
   </div></aside>;
 }
 
@@ -1066,7 +1066,7 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
         <label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label>
       </section>
       <section>
-        <div><h2>Browser engine</h2><p>Choose the free analysis pass. Quick is the safe default; Balanced searches deeper and can use more battery on smaller devices.</p><small className="settings-inline-note">Saved on this device for now. Account sync and persisted review metadata come with hosted browser finalization.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
+        <div><h2>Browser engine</h2><p>Choose the free analysis pass. Quick is the safe default; Balanced searches deeper and can use more battery on smaller devices.</p><small className="settings-inline-note">Saved on this device for now. Completed reviews keep the requested and actual profile plus engine source for later reference.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
         <fieldset className="engine-profile-options">
           <legend className="sr-only">Browser analysis profile</legend>
           {browserEngineProfiles().map((profile) => <label key={profile.id} className={`engine-profile-option ${browserProfile === profile.id ? "active" : ""}`}>
@@ -1108,6 +1108,17 @@ function needsAttention(classification: string) {
 
 function classificationClass(value: string) { return value.toLowerCase().replace(/[^a-z]+/g, "-"); }
 function titleCase(value: string) { return value.replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function engineProfileLabel(value?: string) {
+  if (value === "quick") return "Quick";
+  if (value === "balanced") return "Balanced";
+  if (value === "native") return "Native C++";
+  return value ? titleCase(value) : "Not recorded";
+}
+function engineSourceLabel(value?: string) {
+  if (value === "browser") return "Browser Stockfish";
+  if (value === "cpp") return "C++ service";
+  return value ? titleCase(value) : "Not recorded";
+}
 function delay(ms: number) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
 
 function isBrowserFallback(error: unknown): boolean {

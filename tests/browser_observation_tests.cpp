@@ -206,6 +206,11 @@ TEST_CASE("browser review assembly shares the server classification contract") {
     CHECK_EQ(browser.opening, server.opening);
     CHECK_EQ(browser.eco, server.eco);
     CHECK_EQ(browser.accuracy_sample_size, game.plies.size());
+    CHECK_EQ(browser.requested_engine_profile, "quick");
+    CHECK_EQ(browser.actual_engine_profile, "quick");
+    CHECK_EQ(browser.engine_name, std::string(analysis::browser_engine_name));
+    CHECK_EQ(browser.engine_source, std::string(analysis::browser_engine_source));
+    CHECK_EQ(browser.engine_hash, std::string(analysis::browser_engine_asset_hash));
     for (std::size_t index = 0; index < browser.moves.size(); ++index) {
         CHECK_EQ(browser.moves[index].played_uci, server.moves[index].played_uci);
         CHECK_EQ(browser.moves[index].best_uci, server.moves[index].best_uci);

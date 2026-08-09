@@ -1,25 +1,28 @@
 import { useEffect, useRef } from "react";
-import { authProviderLabel, type AuthProvider, type AuthSnapshot } from "../auth-session";
+import { authProviderLabel, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { Icon } from "./Icon";
 
 const providers: Array<{ id: AuthProvider; mark: string }> = [
   { id: "google", mark: "G" },
-  { id: "apple", mark: "" },
   { id: "github", mark: "GH" },
 ];
 
 export function AccountPrompt({
   auth,
+  mode,
   busyProvider,
   message,
   onProvider,
+  onModeChange,
   onSignOut,
   onClose,
 }: {
   auth: AuthSnapshot;
+  mode: AuthEntryMode;
   busyProvider: AuthProvider | null;
   message: string;
   onProvider: (provider: AuthProvider) => void;
+  onModeChange: (mode: AuthEntryMode) => void;
   onSignOut: () => void;
   onClose: () => void;
 }) {
@@ -56,14 +59,15 @@ export function AccountPrompt({
   }, [onClose]);
 
   const accountLabel = auth.session ? displayName(auth.session.user.user_metadata, auth.session.user.email) : "";
+  const signUpMode = mode === "sign-up";
 
   return <div className="modal-backdrop account-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section ref={dialogRef} className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-prompt-title" aria-describedby="account-prompt-description">
       <header>
         <div>
-          <span>Account entry</span>
-          <h2 id="account-prompt-title">Sign in to start a review.</h2>
-          <p id="account-prompt-description">Plywise keeps your games and reviews with your account, so you can come back to them later. No Chess.com password is needed.</p>
+          <span>{signUpMode ? "Create your account" : "Welcome back"}</span>
+          <h2 id="account-prompt-title">{signUpMode ? "Sign up to analyze." : "Sign in to analyze."}</h2>
+          <p id="account-prompt-description">Plywise keeps your games and reviews with your account. The first sign-up creates your account; the next time, the same provider signs you back in.</p>
         </div>
         <button ref={closeRef} type="button" aria-label="Close account prompt" onClick={onClose}><Icon name="close" /></button>
       </header>
@@ -79,7 +83,7 @@ export function AccountPrompt({
           <button type="button" className="account-primary" onClick={onClose}>Start a review</button>
         </footer>
       </> : <>
-        <div className="account-providers" aria-label="Sign-in providers">
+        <div className="account-providers" aria-label={signUpMode ? "Sign-up providers" : "Sign-in providers"}>
           {providers.map(({ id, mark }) => <button
             key={id}
             type="button"
@@ -87,19 +91,26 @@ export function AccountPrompt({
             onClick={() => onProvider(id)}
           >
             <span className="account-provider-mark" aria-hidden="true">{mark}</span>
-            <span><strong>Continue with {authProviderLabel(id)}</strong><small>{auth.configured ? "Secure account sign-in" : "Not configured in this build"}</small></span>
+            <span><strong>{signUpMode ? "Sign up with" : "Sign in with"} {authProviderLabel(id)}</strong><small>{auth.configured ? "Secure provider authentication" : "Not configured in this build"}</small></span>
             <span className="account-provider-arrow" aria-hidden="true">{busyProvider === id ? "…" : "→"}</span>
           </button>)}
         </div>
 
         <p className="account-prompt-status" role="status" aria-live="polite">
           {message || (auth.configured
-            ? "Choose the account you already use. You will return here when sign-in finishes."
-            : "Hosted sign-in is not configured in this local build. Add the public Supabase settings before publishing.")}
+            ? signUpMode
+              ? "Choose a provider to create your account. You will return here after approval."
+              : "Choose the provider attached to your Plywise account."
+            : "Hosted account entry is not configured in this local build. Add the public Supabase settings before publishing.")}
         </p>
         <footer>
-          <small>One account, one private library. Provider passwords stay with the provider.</small>
-          <button type="button" onClick={onClose}>Back to Plywise</button>
+          <small>Plywise never receives your provider password.</small>
+          <div className="account-entry-actions">
+            <button type="button" className="account-mode-switch" onClick={() => onModeChange(signUpMode ? "sign-in" : "sign-up")}>
+              {signUpMode ? "Already have an account? Sign in" : "New to Plywise? Sign up"}
+            </button>
+            <button type="button" onClick={onClose}>Back to Plywise</button>
+          </div>
         </footer>
       </>}
     </section>

@@ -6,7 +6,8 @@ import {
 } from "@supabase/supabase-js";
 import { authRedirectMessage } from "./auth-redirect";
 
-export type AuthProvider = "google" | "apple" | "github";
+export type AuthProvider = "google" | "github";
+export type AuthEntryMode = "sign-up" | "sign-in";
 
 export type AuthSnapshot = {
   configured: boolean;
@@ -18,11 +19,11 @@ export type AuthSnapshot = {
 export type AuthListener = (snapshot: AuthSnapshot) => void;
 export type AuthIntent = {
   context: "landing";
+  mode: AuthEntryMode;
 };
 
 const providerLabels: Record<AuthProvider, string> = {
   google: "Google",
-  apple: "Apple",
   github: "GitHub",
 };
 
@@ -107,6 +108,7 @@ export async function initializeAuth(): Promise<AuthSnapshot> {
 
 export async function signInWithProvider(
   provider: AuthProvider,
+  mode: AuthEntryMode = "sign-in",
   returnPath = typeof window === "undefined"
     ? "/"
     : `${window.location.pathname}${window.location.search}${window.location.hash}`,
@@ -132,7 +134,12 @@ export async function signInWithProvider(
   } catch {
     return { ok: false, message: `${authProviderLabel(provider)} sign-in could not start. Try again.` };
   }
-  return { ok: true, message: `Continuing with ${authProviderLabel(provider)}…` };
+  return {
+    ok: true,
+    message: mode === "sign-up"
+      ? `Continuing account setup with ${authProviderLabel(provider)}…`
+      : `Continuing with ${authProviderLabel(provider)}…`,
+  };
 }
 
 export async function signOut(): Promise<{ ok: boolean; message: string }> {
@@ -176,7 +183,7 @@ export function loadAuthIntent(): AuthIntent | null {
   try {
     const value = JSON.parse(window.sessionStorage.getItem("plywise-auth-intent-v1") ?? "null") as Partial<AuthIntent> | null;
     if (!value || value.context !== "landing") return null;
-    return { context: "landing" };
+    return { context: "landing", mode: value.mode === "sign-in" ? "sign-in" : "sign-up" };
   } catch {
     return null;
   }

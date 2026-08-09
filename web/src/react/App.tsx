@@ -32,7 +32,7 @@ import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, revie
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
 import { runBrowserReview, type BrowserReviewProgress } from "../browser-review";
-import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
+import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -97,6 +97,7 @@ export default function App() {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [accountPromptOpen, setAccountPromptOpen] = useState(false);
+  const [accountEntryMode, setAccountEntryMode] = useState<AuthEntryMode>("sign-up");
   const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>(currentAuthSnapshot);
   const [authMessage, setAuthMessage] = useState("");
   const [authBusy, setAuthBusy] = useState<AuthProvider | null>(null);
@@ -106,7 +107,6 @@ export default function App() {
   const autoplayTimer = useRef<number | null>(null);
   const browserEngineRef = useRef<ReturnType<typeof createBrowserEngine> | null>(null);
   const browserAnalysisAbort = useRef<AbortController | null>(null);
-  const pendingAccountContext = useRef<"landing">("landing");
   const accountFlowRequested = useRef(false);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
@@ -172,6 +172,7 @@ export default function App() {
     const intent = loadAuthIntent();
     if (intent) {
       accountFlowRequested.current = true;
+      setAccountEntryMode(intent.mode);
       setAccountPromptOpen(true);
     }
     const redirectMessage = consumeAuthRedirectMessage();
@@ -625,8 +626,9 @@ export default function App() {
     }
   }, [identityPrompt]);
 
-  const openAccountPrompt = useCallback(() => {
+  const openAccountPrompt = useCallback((mode: AuthEntryMode = "sign-up") => {
     accountFlowRequested.current = true;
+    setAccountEntryMode(mode);
     setAccountPromptOpen(true);
     setAuthMessage("");
   }, []);
@@ -643,22 +645,25 @@ export default function App() {
   }, [authSnapshot.session, openAccountPrompt, refreshRuntime]);
 
   const startLandingReview = useCallback(() => {
-    openAccountPrompt();
+    openAccountPrompt("sign-up");
   }, [openAccountPrompt]);
 
   const startProviderSignIn = useCallback(async (provider: AuthProvider) => {
     setAuthBusy(provider);
-    setAuthMessage(`Connecting to ${authProviderLabel(provider)}…`);
+    setAuthMessage(accountEntryMode === "sign-up"
+      ? `Setting up your account with ${authProviderLabel(provider)}…`
+      : `Connecting to ${authProviderLabel(provider)}…`);
     saveAuthIntent({
-      context: pendingAccountContext.current,
+      context: "landing",
+      mode: accountEntryMode,
     });
-    const result = await signInWithProvider(provider);
+    const result = await signInWithProvider(provider, accountEntryMode);
     setAuthMessage(result.message);
     if (!result.ok) {
       clearAuthIntent();
       setAuthBusy(null);
     }
-  }, []);
+  }, [accountEntryMode]);
 
   const handleSignOut = useCallback(async () => {
     setAuthBusy(null);
@@ -675,15 +680,17 @@ export default function App() {
 
   const accountPrompt = accountPromptOpen && <AccountPrompt
     auth={authSnapshot}
+    mode={accountEntryMode}
     busyProvider={authBusy}
     message={authMessage}
     onProvider={(provider) => void startProviderSignIn(provider)}
+    onModeChange={(mode) => { setAccountEntryMode(mode); setAuthMessage(""); }}
     onSignOut={() => void handleSignOut()}
     onClose={closeAccountPrompt}
   />;
 
   if (!authSnapshot.session) {
-    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
+    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("sign-in")}/>{accountPrompt}</>;
   }
 
   if (serviceError) {
@@ -691,7 +698,7 @@ export default function App() {
   }
 
   if (route === "landing") {
-    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
+    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("sign-in")}/>{accountPrompt}</>;
   }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };

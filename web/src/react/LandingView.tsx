@@ -25,14 +25,12 @@ export function LandingView({ onStart, onSignIn }: {
 
       <section className="landing-hero" aria-labelledby="landing-title">
         <div className="landing-copy">
-          <p className="landing-eyebrow">Open-source game analysis</p>
-          <h1 id="landing-title">See what changed in your game.</h1>
-          <p className="landing-lede">Plywise gives you a calm, board-first review of a finished chess game. Bring a public link or PGN, then follow the moments worth another look.</p>
+          <h1 id="landing-title">Free chess game analysis.</h1>
+          <p className="landing-lede">Bring a public link or PGN, then follow the review. Create an account to get started.</p>
           <div className="landing-actions">
-            <button className="landing-primary" onClick={onStart}>Sign in to analyze <Icon name="analysis" /></button>
+            <button className="landing-primary" onClick={onStart}>Sign up to analyze <Icon name="analysis" /></button>
             <button className="landing-secondary" onClick={onSignIn}>Already have an account? Sign in <span aria-hidden="true">→</span></button>
           </div>
-          <p className="landing-note"><Icon name="check" /> One finished game at a time · no subscription · no Chess.com password</p>
         </div>
 
         <section className="landing-preview" aria-label="Board-first review preview">

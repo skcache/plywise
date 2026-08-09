@@ -1,0 +1,21 @@
+Stockfish.js browser engine asset
+
+Package: stockfish 18.0.8
+License: GNU GPL version 3 (see COPYING.stockfish.txt)
+Upstream repository: https://github.com/nmrugg/stockfish.js
+Upstream source commit: https://github.com/nmrugg/stockfish.js/commit/93c994592dcf3b4b21052ab925e9b534df9c0918
+Package source offer: https://registry.npmjs.org/stockfish/-/stockfish-18.0.8.tgz
+
+The JavaScript and WASM files in this directory are the unmodified
+single-threaded lite files from that package. The package metadata records
+the upstream commit above and GPL-3.0 licensing. This source offer and the
+upstream build scripts are kept available so the distributed engine can be
+reproduced or replaced without treating it as Plywise source code.
+
+Files and SHA-256:
+stockfish-18-lite-single.js   5243fd9b276cab7dfe3ad1d43ab9ead73568fac76468c614242977a210c4a391
+stockfish-18-lite-single.wasm  a8fbc05ec6920b56d7485826dcb02c5ffd2826bcbf751cf973046f237a9096f1
+
+Plywise does not claim a project-wide license in this notice. The engine is
+distributed as a separately licensed dependency, with its license and source
+offer preserved next to the files that use it.

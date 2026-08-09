@@ -19,6 +19,7 @@ const contentSecurityPolicy = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "script-src 'self'",
+  "worker-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",

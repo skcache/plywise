@@ -679,6 +679,8 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .runtime-grid div { display: flex; justify-content: space-between; padding: 14px 16px; background: var(--surface-low); }
 .runtime-grid dt { color: var(--text-faint); font-size: 10px; }
 .runtime-grid dd { margin: 0; font: 600 11px ui-monospace, monospace; }
+.settings-notices { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+.settings-notices a { color: var(--text); font-size: 11px; text-decoration: underline; text-underline-offset: 3px; }
 .unavailable-setting { color: var(--text-faint); font-size: 11px; }
 
 /* Modal */

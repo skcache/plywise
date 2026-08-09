@@ -284,8 +284,21 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 /* Home */
 .home-console {
   display: grid;
-  grid-template-rows: minmax(210px, .88fr) minmax(250px, 1.12fr) 58px;
+  grid-template-rows: auto minmax(210px, .88fr) minmax(250px, 1.12fr) 58px;
 }
+.home-guest-strip { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 58px; padding: 0 32px; border-bottom: 1px solid var(--line); color: var(--text-soft); font-size: 10px; }
+.home-guest-strip > div { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.home-guest-strip > div > span:last-child { display: grid; gap: 3px; min-width: 0; }
+.home-guest-strip strong { color: var(--text); font-size: 11px; font-weight: 650; }
+.home-guest-strip small { color: var(--text-faint); font-size: 9px; }
+.home-guest-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--focus); box-shadow: 0 0 0 7px color-mix(in srgb, var(--focus) 13%, transparent); }
+.home-guest-dot.home-guest-reserved { background: var(--warn); box-shadow: 0 0 0 7px color-mix(in srgb, var(--warn) 13%, transparent); }
+.home-guest-dot.home-guest-used { background: var(--good); box-shadow: 0 0 0 7px color-mix(in srgb, var(--good) 13%, transparent); }
+.home-guest-strip button { flex: 0 0 auto; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 10px; font-weight: 650; }
+.home-guest-strip button span { display: inline-block; margin-left: 7px; color: var(--text-faint); transition: transform .16s ease; }
+.home-guest-strip button:hover span { transform: translateX(3px); }
+.home-guest-strip > p { max-width: 340px; margin: 0; color: var(--warn); font-size: 10px; line-height: 1.4; text-align: right; }
+.home-guest-next { flex: 0 0 auto; }
 .home-primary {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -738,7 +751,7 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
   .app-stage { padding-block: 18px; }
   .top-bar { height: 78px; border-radius: 28px; }
   .route-canvas { height: calc(100vh - 114px); padding-top: 18px; }
-  .home-console { grid-template-rows: minmax(190px, .78fr) minmax(230px, 1.22fr) 50px; }
+  .home-console { grid-template-rows: auto minmax(190px, .78fr) minmax(230px, 1.22fr) 50px; }
   .home-module { padding-block: 24px; }
   .home-module-icon { width: 46px; height: 46px; border-radius: 16px; }
   .home-module h2 { margin-top: 10px; font-size: 22px; }

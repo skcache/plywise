@@ -1,4 +1,5 @@
 import { homeContinueReview, homeFocus, homeRecentGames, homeWeek, inferPlayerName } from "../insights";
+import { guestTrialLabel, guestTrialRetention, type GuestTrialState } from "../guest-trial";
 import type { Drill, Job, Profile, StoredGame } from "../types";
 import { Icon } from "./Icon";
 
@@ -9,6 +10,8 @@ export function HomeView({
   drills,
   refreshBusy,
   refreshMessage,
+  guestTrial,
+  guestMessage,
   onOpen,
   onRecent,
   onImport,
@@ -20,6 +23,8 @@ export function HomeView({
   drills: Drill[];
   refreshBusy: boolean;
   refreshMessage: string;
+  guestTrial: GuestTrialState;
+  guestMessage: string;
   onOpen: (gameId: string, ply?: number) => void;
   onRecent: () => void;
   onImport: () => void;
@@ -34,6 +39,10 @@ export function HomeView({
 
   return <section className="soft-surface home-console">
     <h1 className="sr-only">Home</h1>
+    <div className="home-guest-strip" role="status">
+      <div><span className={`home-guest-dot home-guest-${guestTrial.status}`} aria-hidden="true"/><span><strong>{guestTrialLabel(guestTrial)}</strong><small>{guestTrialRetention(guestTrial)}</small></span></div>
+      {guestMessage ? <p>{guestMessage}</p> : guestTrial.status === "available" ? <button onClick={onImport}>Start with a completed game <span aria-hidden="true">→</span></button> : <small className="home-guest-next">Account saving is coming next.</small>}
+    </div>
     <div className="home-primary">
       <article className="home-module continue-module">
         <div className="home-module-icon"><Icon name="analysis"/></div>

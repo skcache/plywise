@@ -25,6 +25,7 @@ import {
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
+import { loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -83,6 +84,8 @@ export default function App() {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [landingAccountMessage, setLandingAccountMessage] = useState("");
+  const [guestTrial, setGuestTrial] = useState<GuestTrialState>(() => loadGuestTrial());
+  const [guestMessage, setGuestMessage] = useState("");
   const autoplayTimer = useRef<number | null>(null);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
@@ -203,11 +206,20 @@ export default function App() {
     if (!game) return;
     openGame(gameId, 0);
     if (game.analysis_status === "complete") return;
+    const reservation = reserveGuestAnalysis(gameId);
+    setGuestTrial(reservation.state);
+    if (!reservation.ok) {
+      setGuestMessage(reservation.reason === "already_reserved" ? "Your guest review is already in progress." : "Your one free guest review is complete. Account saving is coming next.");
+      return;
+    }
     try {
       const job = await startAnalysis(gameId);
       setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
+      setGuestTrial(markGuestAnalysisUsed(gameId));
+      setGuestMessage("");
       setError("");
     } catch (analysisError) {
+      setGuestTrial(releaseGuestAnalysis(gameId));
       setError(analysisError instanceof Error ? analysisError.message : "Could not start analysis.");
     }
   }, [games, openGame]);
@@ -444,6 +456,7 @@ export default function App() {
   const setAppRoute = useCallback((next: Route) => {
     setRoute(next);
     setLandingAccountMessage("");
+    setGuestMessage("");
     setMoreOpen(false);
     setOverviewOpen(false);
     if (next === "settings") void refreshRuntime();
@@ -486,6 +499,8 @@ export default function App() {
       drills={drills}
       refreshBusy={refreshBusy}
       refreshMessage={refreshMessage}
+      guestTrial={guestTrial}
+      guestMessage={guestMessage}
       onOpen={openGame}
       onRecent={() => setAppRoute("recent")}
       onImport={() => setImportOpen(true)}

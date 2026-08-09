@@ -1,4 +1,4 @@
-import { GUEST_TRIAL_RETENTION_MS, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis } from "../src/guest-trial";
+import { GUEST_TRIAL_RETENTION_MS, loadGuestTrial, markGuestAnalysisConsumed, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis } from "../src/guest-trial";
 
 function assert(actual: unknown, expected: unknown, label: string): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -24,6 +24,11 @@ assert(reservation.ok, true, "first analysis reserves the guest slot");
 assert(reserveGuestAnalysis("game-two", storage, start + 2).reason, "already_reserved", "concurrent second analysis is blocked");
 assert(markGuestAnalysisUsed("game-one", storage, start + 3).status, "used", "started analysis consumes the slot");
 assert(reserveGuestAnalysis("game-two", storage, start + 4).reason, "already_used", "used guest cannot start another analysis");
+
+const remoteStorage = new MemoryStorage();
+loadGuestTrial(remoteStorage, start);
+assert(markGuestAnalysisConsumed("remote-game", remoteStorage, start + 1).status, "used", "hosted quota denial is reflected locally");
+assert(reserveGuestAnalysis("another-game", remoteStorage, start + 2).reason, "already_used", "hosted quota denial blocks another local attempt");
 
 const releaseStorage = new MemoryStorage();
 const releaseStart = loadGuestTrial(releaseStorage, start);

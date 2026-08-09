@@ -110,6 +110,14 @@ export function markGuestAnalysisUsed(gameId: string, storage: StorageLike | nul
   return next;
 }
 
+/** Mirrors a hosted quota decision when another tab or device used the guest slot first. */
+export function markGuestAnalysisConsumed(gameId: string, storage: StorageLike | null = browserStorage(), now = Date.now()): GuestTrialState {
+  const current = loadGuestTrial(storage, now);
+  const next: GuestTrialState = { ...current, status: "used", gameId };
+  saveState(storage, next);
+  return next;
+}
+
 export function releaseGuestAnalysis(gameId: string, storage: StorageLike | null = browserStorage(), now = Date.now()): GuestTrialState {
   const current = loadGuestTrial(storage, now);
   if (current.gameId !== gameId || current.status !== "reserved") return current;

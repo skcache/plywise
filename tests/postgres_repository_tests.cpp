@@ -201,6 +201,17 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     review.moves.push_back(move);
     app::PostgresRepository guest(connection, app::OwnerId::guest("guest_identity"));
     CHECK(guest.add(imported) == app::AddResult::Added);
+    const auto second_imported = importer.from_pgn(
+        "[White \"Guest\"]\n[Black \"Another review\"]\n[Result \"1-0\"]\n\n1. e4 c5 1-0");
+    CHECK(guest.add(second_imported) == app::AddResult::Added);
+    identity.reserve_guest_analysis("guest_identity", imported.game.identity);
+    identity.reserve_guest_analysis("guest_identity", imported.game.identity);
+    try {
+        identity.reserve_guest_analysis("guest_identity", second_imported.game.identity);
+        CHECK(false);
+    } catch (const Error& error) {
+        CHECK(error.code() == ErrorCode::QuotaExceeded);
+    }
     guest.save_analysis(review);
     const auto guest_variation = guest.create_variation(imported.game.identity, 0, "before");
     const auto guest_branch = guest.extend_variation(guest_variation.id, 0, "e2e4");
@@ -211,7 +222,7 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     const auto receipt = identity.claim_guest("guest_identity", created.id, "claim-identity-1");
     CHECK_EQ(receipt.guest_id, "guest_identity");
     CHECK_EQ(receipt.account_id, created.id);
-    CHECK_EQ(receipt.transferred_games, 1ULL);
+    CHECK_EQ(receipt.transferred_games, 2ULL);
     CHECK(!receipt.already_claimed);
     CHECK(!identity.owner_for_guest_token(token).has_value());
     CHECK_THROWS(guest.size());

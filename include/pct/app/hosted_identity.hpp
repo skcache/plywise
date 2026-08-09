@@ -64,6 +64,9 @@ class HostedIdentityStore final {
         std::int64_t expires_at_ms);
     [[nodiscard]] std::optional<OwnerId> owner_for_guest_token(
         const std::array<unsigned char, 32>& token_hash) const;
+    // Atomically reserves the single free analysis for a guest. Repeating the same game is
+    // idempotent; a different game is rejected once the reservation exists.
+    void reserve_guest_analysis(std::string guest_id, std::string game_id);
     [[nodiscard]] GuestClaimReceipt claim_guest(std::string guest_id,
                                                 std::string account_id,
                                                 std::string idempotency_key);

@@ -14,6 +14,7 @@ enum class ErrorCode {
     NetworkError,
     EngineError,
     Timeout,
+    QuotaExceeded,
     Corruption,
     NotFound,
     Unsupported,

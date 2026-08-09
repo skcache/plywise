@@ -1396,6 +1396,50 @@ std::optional<OwnerId> HostedIdentityStore::owner_for_guest_token(
     return OwnerId::guest(value_at(result, 0, 0));
 }
 
+void HostedIdentityStore::reserve_guest_analysis(std::string guest_id, std::string game_id) {
+    validate_identity_text("guest id", guest_id, 256);
+    validate_identity_text("game id", game_id, 256);
+    std::lock_guard lock(impl_->mutex);
+    Transaction transaction(impl_->connection);
+    const Result session = execute(
+        impl_->connection,
+        "SELECT (expires_at > now()), (claimed_at IS NULL) "
+        "FROM plywise.guest_sessions WHERE id = $1 AND owner_kind = 'guest' FOR UPDATE",
+        {guest_id});
+    if (PQntuples(session.get()) != 1 || value_at(session, 0, 0) != "t" ||
+        value_at(session, 0, 1) != "t")
+        throw Error(ErrorCode::NotFound, "guest session does not exist");
+
+    const Result game = execute(
+        impl_->connection,
+        "SELECT 1 FROM plywise.game_owners "
+        "WHERE game_id = $1 AND owner_kind = 'guest' AND owner_id = $2",
+        {game_id, guest_id});
+    if (PQntuples(game.get()) != 1)
+        throw Error(ErrorCode::NotFound, "game does not exist");
+
+    const Result existing = execute(
+        impl_->connection,
+        "SELECT game_id FROM plywise.guest_analysis_reservations "
+        "WHERE guest_id = $1 FOR UPDATE",
+        {guest_id});
+    if (PQntuples(existing.get()) == 1) {
+        if (value_at(existing, 0, 0) == game_id) {
+            transaction.commit();
+            return;
+        }
+        throw Error(ErrorCode::QuotaExceeded,
+                    "this guest session has already used its free analysis");
+    }
+
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.guest_analysis_reservations "
+        "(guest_id, owner_kind, game_id) VALUES ($1, 'guest', $2)",
+        {guest_id, game_id}));
+    transaction.commit();
+}
+
 GuestClaimReceipt claim_receipt_from_json(const json::Value& value) {
     return GuestClaimReceipt{value.at("guest_id").as_string(),
                              value.at("account_id").as_string(),

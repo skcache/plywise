@@ -32,7 +32,7 @@ import {
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
 import { clearGuestSession, loadGuestSession, saveGuestSession } from "../guest-session";
-import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
+import { bindGuestSession, loadGuestTrial, markGuestAnalysisConsumed, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
 import { runGuestBrowserReview, type GuestBrowserReviewProgress } from "../guest-browser-review";
@@ -447,7 +447,10 @@ export default function App() {
       }
     } catch (analysisError) {
       const fallback = isBrowserFallback(analysisError);
-      let message = analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
+      const quotaExceeded = isGuestQuotaExceeded(analysisError);
+      let message = quotaExceeded
+        ? "Your one free guest review is complete. Sign in to keep analyzing."
+        : analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
         ? "Browser analysis cancelled. Your free review is still available."
         : analysisError instanceof ApiError &&
           analysisError.code === "invalid_argument" &&
@@ -457,16 +460,23 @@ export default function App() {
           ? "Browser analysis is unavailable here."
             : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
       let fallbackStarted = false;
-      if (fallback) {
+      if (quotaExceeded) {
+        setGuestTrial(markGuestAnalysisConsumed(gameId));
+      } else if (fallback) {
         try {
           message = await startServerFallback(gameId);
           setGuestTrial(markGuestAnalysisUsed(gameId));
           fallbackStarted = true;
         } catch (fallbackError) {
-          setGuestTrial(releaseGuestAnalysis(gameId));
-          message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
+          if (isGuestQuotaExceeded(fallbackError)) {
+            setGuestTrial(markGuestAnalysisConsumed(gameId));
+            message = "Your one free guest review is complete. Sign in to keep analyzing.";
+          } else {
+            setGuestTrial(releaseGuestAnalysis(gameId));
+            message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
+          }
         }
-      } else {
+      } else if (!quotaExceeded) {
         setGuestTrial(releaseGuestAnalysis(gameId));
       }
       setGuestMessage(message);
@@ -1190,6 +1200,10 @@ function delay(ms: number) { return new Promise((resolve) => window.setTimeout(r
 function isBrowserFallback(error: unknown): boolean {
   return (error instanceof BrowserEngineError && ["unavailable", "timeout", "failed"].includes(error.code)) ||
     (error instanceof ApiError && [404, 503].includes(error.status));
+}
+
+function isGuestQuotaExceeded(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "quota_exceeded";
 }
 
 function createClaimIdempotencyKey() {

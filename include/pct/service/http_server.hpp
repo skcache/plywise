@@ -78,6 +78,8 @@ struct AuthConfig {
     using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
     using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
     using GuestSessionCreator = std::function<std::optional<GuestSessionCredential>()>;
+    using GuestAnalysisReservation =
+        std::function<void(const app::OwnerId& guest, std::string_view game_id)>;
     using GuestClaimHandler = std::function<GuestClaimResult(
         std::string_view token, const app::OwnerId& account, std::string_view idempotency_key)>;
     using FreshTokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
@@ -95,6 +97,8 @@ struct AuthConfig {
     // These callbacks keep guest token generation and claim transactions behind the hosted
     // runtime. The API only validates the request shape and serializes typed results.
     GuestSessionCreator create_guest_session;
+    // Hosted mode atomically consumes the guest's one free analysis before work is queued.
+    GuestAnalysisReservation reserve_guest_analysis;
     GuestClaimHandler claim_guest;
     FreshTokenVerifier verify_fresh;
     AccountExportHandler export_account;

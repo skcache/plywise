@@ -214,6 +214,10 @@ TEST_CASE("hosted guest review claim survives the account API boundary") {
         return std::optional<service::GuestSessionCredential>{
             service::GuestSessionCredential{guest_id, "guest-token", expires_at}};
     };
+    auth.reserve_guest_analysis = [&](const app::OwnerId& owner, std::string_view game_id) {
+        CHECK(owner == app::OwnerId::guest(guest_id));
+        identity.reserve_guest_analysis(guest_id, std::string(game_id));
+    };
     auth.claim_guest = [&](std::string_view token, const app::OwnerId& owner,
                            std::string_view idempotency_key) {
         CHECK_EQ(token, "guest-token");
@@ -258,6 +262,39 @@ TEST_CASE("hosted guest review claim survives the account API boundary") {
     CHECK(completed_job.has_value());
     CHECK(completed_job->status == app::JobStatus::Complete);
 
+    const auto second_imported = request(
+        "POST", "/api/import",
+        json::dump(json::Value::Object{{"pgn",
+                                        "[Event \"Hosted second\"]\n[White \"Hosted user\"]\n"
+                                        "[Black \"Another review\"]\n[Result \"1-0\"]\n\n"
+                                        "1. d4 d5 2. c4 e6 1-0"}}),
+        "guest-token");
+    CHECK_EQ(second_imported.status, 202);
+    const std::string second_game_id = json::parse(second_imported.body).at("game_id").as_string();
+    const auto second_server_start = request(
+        "POST", "/api/games/" + second_game_id + "/analysis", {}, "guest-token");
+    CHECK_EQ(second_server_start.status, 429);
+    CHECK_EQ(json::parse(second_server_start.body).at("code").as_string(), "quota_exceeded");
+
+    const json::Value::Object browser_engine{
+        {"name", std::string(analysis::browser_engine_name)},
+        {"version", std::string(analysis::browser_engine_version)},
+        {"source", std::string(analysis::browser_engine_source)},
+        {"hash", std::string(analysis::browser_engine_asset_hash)},
+    };
+    const auto second_browser_start = request(
+        "POST", "/api/games/" + second_game_id + "/browser-analysis",
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", "guest-quota-browser-run"},
+            {"gameId", second_game_id},
+            {"profile", "quick"},
+            {"engine", browser_engine},
+        }),
+        "guest-token");
+    CHECK_EQ(second_browser_start.status, 429);
+    CHECK_EQ(json::parse(second_browser_start.body).at("code").as_string(), "quota_exceeded");
+
     const auto account_before_claim = request("GET", "/api/games", {}, "account-token");
     CHECK_EQ(account_before_claim.status, 200);
     CHECK(json::parse(account_before_claim.body).at("games").as_array().empty());
@@ -266,12 +303,12 @@ TEST_CASE("hosted guest review claim survives the account API boundary") {
         {"guest_token", "guest-token"}, {"idempotency_key", "guest-claim-api-1"}});
     const auto claimed = request("POST", "/api/guest/claim", claim_body, "account-token");
     CHECK_EQ(claimed.status, 200);
-    CHECK_EQ(json::parse(claimed.body).at("transferred_games").as_size(), 1ULL);
+    CHECK_EQ(json::parse(claimed.body).at("transferred_games").as_size(), 2ULL);
     CHECK(!json::parse(claimed.body).at("already_claimed").as_bool());
 
     const auto retry = request("POST", "/api/guest/claim", claim_body, "account-token");
     CHECK_EQ(retry.status, 200);
-    CHECK_EQ(json::parse(retry.body).at("transferred_games").as_size(), 1ULL);
+    CHECK_EQ(json::parse(retry.body).at("transferred_games").as_size(), 2ULL);
     CHECK(!json::parse(retry.body).at("already_claimed").as_bool());
     const auto already_claimed = request(
         "POST", "/api/guest/claim",
@@ -284,7 +321,7 @@ TEST_CASE("hosted guest review claim survives the account API boundary") {
 
     const auto account_games = request("GET", "/api/games", {}, "account-token");
     CHECK_EQ(account_games.status, 200);
-    CHECK_EQ(json::parse(account_games.body).at("games").as_array().size(), 1ULL);
+    CHECK_EQ(json::parse(account_games.body).at("games").as_array().size(), 2ULL);
     const auto account_review = request("GET", "/api/games/" + game_id + "/analysis", {}, "account-token");
     CHECK_EQ(account_review.status, 200);
     CHECK(json::parse(account_review.body).as_object().contains("moves"));

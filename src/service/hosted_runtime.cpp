@@ -197,6 +197,22 @@ struct HostedRuntime::Impl {
         }
     }
 
+    void reserve_guest_analysis(const app::OwnerId& guest, std::string_view game_id) const {
+        if (guest.kind() != app::OwnerKind::Guest)
+            throw Error(ErrorCode::InvalidArgument, "guest analysis reservation is invalid");
+        try {
+            identity->reserve_guest_analysis(std::string(guest.value()), std::string(game_id));
+        } catch (const Error& error) {
+            if (error.code() == ErrorCode::InvalidArgument ||
+                error.code() == ErrorCode::NotFound ||
+                error.code() == ErrorCode::QuotaExceeded)
+                throw;
+            throw Error(ErrorCode::IoError, "guest analysis quota is unavailable");
+        } catch (...) {
+            throw Error(ErrorCode::IoError, "guest analysis quota is unavailable");
+        }
+    }
+
     GuestClaimResult claim_guest(std::string_view token, const app::OwnerId& account,
                                  std::string_view idempotency_key) const {
         if (account.kind() != app::OwnerKind::Account || !valid_guest_token(token))
@@ -326,6 +342,17 @@ AuthConfig::GuestSessionCreator HostedRuntime::guest_session_creator() const {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
     Impl* runtime = impl_.get();
     return [runtime] { return runtime->create_guest_session(); };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::GuestAnalysisReservation HostedRuntime::guest_analysis_reservation() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& guest, std::string_view game_id) {
+        runtime->reserve_guest_analysis(guest, game_id);
+    };
 #else
     return {};
 #endif

@@ -258,6 +258,7 @@ std::string_view error_code(ErrorCode code) {
     case ErrorCode::NotFound: return "not_found";
     case ErrorCode::NetworkError: return "network_error";
     case ErrorCode::Timeout: return "timeout";
+    case ErrorCode::QuotaExceeded: return "quota_exceeded";
     case ErrorCode::EngineError: return "engine_error";
     case ErrorCode::IoError: return "io_error";
     case ErrorCode::Corruption: return "corruption";
@@ -303,6 +304,8 @@ int status_for(ErrorCode code) {
         return 502;
     case ErrorCode::Timeout:
         return 504;
+    case ErrorCode::QuotaExceeded:
+        return 429;
     case ErrorCode::EngineError:
     case ErrorCode::IoError:
     case ErrorCode::Corruption:
@@ -933,6 +936,16 @@ Response Api::handle(const Request& request) {
         // request. These locals intentionally shadow the fixed constructor members.
         app::IRepository& repository_ = *scope.repository;
         app::JobManager& jobs_ = *scope.jobs;
+        const auto enforce_guest_analysis_quota = [&](std::string_view game_id)
+            -> std::optional<Response> {
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Guest)
+                return std::nullopt;
+            if (!auth_.reserve_guest_analysis)
+                return auth_response(503, "guest analysis quota is not configured",
+                                     "guest_quota_unavailable");
+            auth_.reserve_guest_analysis(*authenticated_owner, game_id);
+            return std::nullopt;
+        };
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
             json::Value::Object health{
@@ -1370,6 +1383,8 @@ Response Api::handle(const Request& request) {
                     analysis::browser_observation_max_run_observations / 2)
                     throw Error(ErrorCode::InvalidArgument,
                                 "game is too long for the browser analysis contract");
+                if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
+                    return *quota;
                 run.expected_observations = game->imported.game.plies.size() * 2;
                 browser_observations_.begin(browser_owner_key(repository_.owner()), run);
                 return json_response(201, json::Value::Object{
@@ -1455,6 +1470,8 @@ Response Api::handle(const Request& request) {
                 if (!completed_game(*game))
                     throw Error(ErrorCode::InvalidArgument,
                                 "analysis requires a completed game");
+                if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
+                    return *quota;
                 return json_response(202, app::to_json(jobs_.start(parts[2])));
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "GET") {

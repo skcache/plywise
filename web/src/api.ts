@@ -20,7 +20,6 @@ import type {
 } from "./types";
 import { apiUrl } from "./config/runtime";
 import { accountAccessToken } from "./auth-session";
-import { loadGuestSession } from "./guest-session";
 import type { BrowserAnalysisRequest, BrowserObservationPayload } from "./browser-engine";
 
 export class ApiError extends Error {
@@ -41,9 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Authorization")) {
     const accountToken = await accountAccessToken();
-    const guestSession = loadGuestSession();
     if (accountToken) headers.set("Authorization", `Bearer ${accountToken}`);
-    else if (guestSession) headers.set("Authorization", `Bearer ${guestSession.token}`);
   }
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -55,7 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    throw new Error("Plywise API is unavailable.");
+    throw new Error("Plywise service is unavailable. Start the C++ service on port 8787, or check the hosted API origin.");
   }
   const body = (await response.json()) as T & Partial<ApiFailure>;
   if (!response.ok) {
@@ -66,30 +63,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   }
   return body;
-}
-
-export type GuestSessionResponse = {
-  guest_id: string;
-  token: string;
-  expires_at_ms: number;
-};
-
-export type GuestClaimResponse = {
-  guest_id: string;
-  account_id: string;
-  transferred_games: number;
-  already_claimed: boolean;
-};
-
-export function createGuestSession(): Promise<GuestSessionResponse> {
-  return request("/api/guest/session", { method: "POST", body: "{}" });
-}
-
-export function claimGuestReview(guestToken: string, idempotencyKey: string): Promise<GuestClaimResponse> {
-  return request("/api/guest/claim", {
-    method: "POST",
-    body: JSON.stringify({ guest_token: guestToken, idempotency_key: idempotencyKey }),
-  });
 }
 
 export async function listGames(): Promise<StoredGame[]> {

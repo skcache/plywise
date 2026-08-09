@@ -2,7 +2,7 @@ export function authRedirectMessage(errorCode: string, errorDescription: string)
   const context = `${errorCode} ${errorDescription}`;
   if (!context.trim()) return null;
   if (/cancel|denied|abort/i.test(context)) {
-    return "Sign-in was cancelled. Your guest review is still here.";
+    return "Sign-in was cancelled. Start again when you are ready.";
   }
   if (/expired|invalid|session/i.test(context)) {
     return "That account session expired. Start sign-in again when you are ready.";

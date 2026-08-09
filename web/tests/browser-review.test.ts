@@ -1,4 +1,4 @@
-import { runGuestBrowserReview, type GuestBrowserReviewApi, type GuestBrowserReviewEngine } from "../src/guest-browser-review";
+import { runBrowserReview, type BrowserReviewApi, type BrowserReviewEngine } from "../src/browser-review";
 import type { BrowserEngineObservation } from "../src/browser-engine";
 import type { StoredGame } from "../src/types";
 
@@ -8,7 +8,7 @@ function assert(condition: unknown, message: string): void {
 
 const game: StoredGame = {
   game: {
-    id: "game-guest",
+    id: "game-browser-review",
     tags: { Result: "1-0" },
     plies: [
       {
@@ -37,7 +37,7 @@ const game: StoredGame = {
   analysis: null,
 };
 
-class FakeEngine implements GuestBrowserReviewEngine {
+class FakeEngine implements BrowserReviewEngine {
   started = false;
   disposed = false;
   readonly fens: string[] = [];
@@ -65,7 +65,7 @@ class FakeEngine implements GuestBrowserReviewEngine {
 
 const startedRequests: unknown[] = [];
 const submitted: Array<{ sequence: number; ply: number; fen: string }> = [];
-const api: GuestBrowserReviewApi = {
+const api: BrowserReviewApi = {
   start: async (request) => {
     startedRequests.push(request);
     return { ...request, status: "collecting", expectedObservations: 4 };
@@ -86,25 +86,25 @@ const api: GuestBrowserReviewApi = {
 async function run() {
   const progress: string[] = [];
   const engine = new FakeEngine();
-  const result = await runGuestBrowserReview(game, {
+  const result = await runBrowserReview(game, {
     profile: "quick",
     engine,
     api,
-    runId: "guest-run-1",
+    runId: "browser-run-1",
     onProgress: (event) => progress.push(`${event.stage}:${event.complete}/${event.total}`),
   });
 
-  assert(engine.started, "the guest flow starts the browser worker");
+  assert(engine.started, "the browser flow starts the browser worker");
   assert(!engine.disposed, "an injected engine remains owned by its caller");
-  assert(startedRequests.length === 1, "the guest flow registers one run");
-  assert(submitted.length === 4, "the guest flow submits before and after evidence for every ply");
+  assert(startedRequests.length === 1, "the browser flow registers one run");
+  assert(submitted.length === 4, "the browser flow submits before and after evidence for every ply");
   assert(submitted.every((item, index) => item.sequence === index), "observations are submitted in sequence");
   assert(submitted[0]?.fen === game.game.plies[0]?.fen_before, "the first observation uses the canonical before FEN");
   assert(submitted[1]?.fen === game.game.plies[0]?.fen_after, "the second observation uses the canonical after FEN");
   assert(progress.includes("finalizing:4/4"), "progress reaches C++ finalization with real counts");
-  assert(result.status === "complete" && result.gameId === game.game.id, "the guest flow returns the completed review response");
+  assert(result.status === "complete" && result.gameId === game.game.id, "the browser flow returns the completed review response");
 
-  console.log("guest browser review tests passed");
+  console.log("browser review tests passed");
 }
 
 run().catch((error: unknown) => {

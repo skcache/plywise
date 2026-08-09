@@ -11,6 +11,7 @@ if (validatedPublicOrigins.events) {
   events.protocol = events.protocol === "https:" ? "wss:" : "ws:";
   connectSources.add(events.origin);
 }
+if (validatedPublicOrigins.supabase) connectSources.add(validatedPublicOrigins.supabase);
 
 const contentSecurityPolicy = [
   "default-src 'self'",

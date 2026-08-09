@@ -3,9 +3,7 @@ import {
   ApiError,
   analyzeVariation,
   cancelJob,
-  claimGuestReview,
   createVariation,
-  createGuestSession,
   deleteVariation,
   extendVariation,
   finalizeBrowserAnalysis,
@@ -31,11 +29,9 @@ import {
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
-import { clearGuestSession, loadGuestSession, saveGuestSession } from "../guest-session";
-import { bindGuestSession, loadGuestTrial, markGuestAnalysisConsumed, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
-import { runGuestBrowserReview, type GuestBrowserReviewProgress } from "../guest-browser-review";
+import { runBrowserReview, type BrowserReviewProgress } from "../browser-review";
 import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
@@ -100,22 +96,18 @@ export default function App() {
   const [error, setError] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
-  const [accountPromptContext, setAccountPromptContext] = useState<"landing" | "save">("landing");
   const [accountPromptOpen, setAccountPromptOpen] = useState(false);
   const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>(currentAuthSnapshot);
   const [authMessage, setAuthMessage] = useState("");
   const [authBusy, setAuthBusy] = useState<AuthProvider | null>(null);
   const [authRevision, setAuthRevision] = useState(0);
-  const [guestTrial, setGuestTrial] = useState<GuestTrialState>(() => loadGuestTrial());
-  const [guestMessage, setGuestMessage] = useState("");
-  const [browserAnalysisProgress, setBrowserAnalysisProgress] = useState<GuestBrowserReviewProgress | null>(null);
+  const [browserAnalysisProgress, setBrowserAnalysisProgress] = useState<BrowserReviewProgress | null>(null);
+  const [serviceError, setServiceError] = useState("");
   const autoplayTimer = useRef<number | null>(null);
   const browserEngineRef = useRef<ReturnType<typeof createBrowserEngine> | null>(null);
   const browserAnalysisAbort = useRef<AbortController | null>(null);
-  const pendingClaim = useRef<{ guestToken: string; idempotencyKey: string } | null>(null);
-  const pendingAccountContext = useRef<"landing" | "save">("landing");
+  const pendingAccountContext = useRef<"landing">("landing");
   const accountFlowRequested = useRef(false);
-  const claimInFlight = useRef(false);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
   const selectedMove = selectedGame?.analysis?.moves[selectedPly];
@@ -155,80 +147,32 @@ export default function App() {
       ? current
       : loaded.find((game) => game.analysis_status === "complete")?.game.id ?? loaded[0]?.game.id ?? "");
     await refreshRuntime();
+    setServiceError("");
   }, [refreshRuntime]);
-
-  const claimPendingReview = useCallback(async (): Promise<boolean> => {
-    const pending = pendingClaim.current;
-    if (!pending || claimInFlight.current || !authSnapshot.session) return false;
-    claimInFlight.current = true;
-    setAuthMessage("Keeping this review with your account…");
-    let claimed = false;
-    try {
-      const receipt = await claimGuestReview(pending.guestToken, pending.idempotencyKey);
-      pendingClaim.current = null;
-      clearAuthIntent();
-      clearGuestSession();
-      setGuestMessage(receipt.already_claimed ? "This review is already in your account." : "Review saved to your account.");
-      setAccountPromptOpen(false);
-      setRoute("recent");
-      claimed = true;
-    } catch (claimError) {
-      const message = claimError instanceof ApiError && claimError.status === 401
-        ? "Your account session expired. Sign in again to save this review."
-        : claimError instanceof ApiError && claimError.status === 404
-          ? "This guest review has expired. It cannot be saved now."
-          : claimError instanceof Error
-            ? claimError.message
-            : "Could not save this review yet.";
-      setAuthMessage(message);
-    } finally {
-      claimInFlight.current = false;
-    }
-    if (claimed) {
-      try {
-        await refreshAccountLibrary();
-      } catch (refreshError) {
-        setError(refreshError instanceof Error ? refreshError.message : "Review saved, but the account library could not refresh yet.");
-      }
-    }
-    return claimed;
-  }, [authSnapshot.session, refreshAccountLibrary]);
 
   const handleAuthenticatedSession = useCallback(async () => {
     if (!authSnapshot.session) return;
     setAuthBusy(null);
     setAuthMessage("");
-    const claimed = await claimPendingReview();
-    if (!claimed && !pendingClaim.current) {
-      try {
-        await refreshAccountLibrary();
-      } catch (refreshError) {
-        setError(refreshError instanceof Error ? refreshError.message : "Your account library could not refresh yet.");
-      }
+    try {
+      await refreshAccountLibrary();
+    } catch (refreshError) {
+      setServiceError(refreshError instanceof Error ? refreshError.message : "Plywise could not reach the account service.");
     }
-    if (!pendingClaim.current) {
-      if (accountFlowRequested.current && pendingAccountContext.current === "landing") {
-        setAccountPromptOpen(false);
-        setRoute("home");
-      }
-      if (accountFlowRequested.current) clearAuthIntent();
+    if (accountFlowRequested.current) {
+      setAccountPromptOpen(false);
+      setRoute("home");
+      setImportOpen(true);
+      clearAuthIntent();
       accountFlowRequested.current = false;
     }
-  }, [authSnapshot.session, claimPendingReview, refreshAccountLibrary]);
+  }, [authSnapshot.session, refreshAccountLibrary]);
 
   useEffect(() => {
     const intent = loadAuthIntent();
     if (intent) {
       accountFlowRequested.current = true;
-      pendingAccountContext.current = intent.context;
-      setAccountPromptContext(intent.context);
       setAccountPromptOpen(true);
-      if (intent.context === "save") {
-        const guestSession = loadGuestSession();
-        pendingClaim.current = guestSession && intent.idempotencyKey
-          ? { guestToken: guestSession.token, idempotencyKey: intent.idempotencyKey }
-          : null;
-      }
     }
     const redirectMessage = consumeAuthRedirectMessage();
     if (redirectMessage) setAuthMessage(redirectMessage);
@@ -238,7 +182,6 @@ export default function App() {
       if (snapshot.event === "SIGNED_OUT") {
         accountFlowRequested.current = false;
         clearAuthIntent();
-        pendingClaim.current = null;
         setGames([]);
         setJobs([]);
         setProfile(null);
@@ -247,8 +190,10 @@ export default function App() {
         setIdentityError("");
         setSelectedGameId("");
         setRoute("landing");
+        setImportOpen(false);
         setAccountPromptOpen(false);
         setAuthBusy(null);
+        setServiceError("");
         setAuthMessage(snapshot.message);
       }
     });
@@ -263,51 +208,11 @@ export default function App() {
 
   useEffect(() => {
     if (authSnapshot.session) void handleAuthenticatedSession();
+    else {
+      setRoute("landing");
+      setImportOpen(false);
+    }
   }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        let guestSession = loadGuestSession();
-        if (!guestSession) {
-          try {
-            const created = await createGuestSession();
-            guestSession = saveGuestSession({
-              guestId: created.guest_id,
-              token: created.token,
-              expiresAtMs: created.expires_at_ms,
-            });
-          } catch (sessionError) {
-            // The local reference runtime intentionally has no hosted session endpoint.
-            if (!(sessionError instanceof ApiError) || ![404, 503].includes(sessionError.status)) throw sessionError;
-          }
-        }
-        if (guestSession) setGuestTrial(bindGuestSession(guestSession.guestId, guestSession.expiresAtMs));
-        const [listed, jobState, nextProfile, nextDrills, chessCom] = await Promise.all([
-          listGames(),
-          loadJobs(),
-          loadProfile().catch(() => null),
-          loadDrills().catch(() => []),
-          loadChessComProfile().catch(() => null),
-        ]);
-        const loaded = await Promise.all(listed.map((game) => loadGame(game.game.id)));
-        if (cancelled) return;
-        setGames(loaded);
-        setJobs(jobState.jobs);
-        setProfile(nextProfile);
-        setDrills(nextDrills);
-        setChessComConnected(chessCom?.connected ?? false);
-        const initialGame = loaded.find((game) => game.analysis_status === "complete") ?? loaded[0];
-        setSelectedGameId((current) => current || initialGame?.game.id || "");
-        setSelectedPly(initialGame ? reviewLandingPly(initialGame) : 0);
-        await refreshRuntime();
-      } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Local service is unavailable.");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [refreshRuntime]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -330,6 +235,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!authSnapshot.session) return;
     let reconnect = 0;
     let socket: WebSocket | null = null;
     const connect = () => {
@@ -347,7 +253,7 @@ export default function App() {
     };
     connect();
     return () => { window.clearTimeout(reconnect); socket?.close(); };
-  }, [authRevision, refreshGame, refreshRuntime]);
+  }, [authSnapshot.session?.access_token, authRevision, refreshGame, refreshRuntime]);
 
   const resetTransient = useCallback((ply = selectedPly) => {
     setSelectedPly(ply);
@@ -385,31 +291,9 @@ export default function App() {
 
   const analyzeGame = useCallback(async (gameId: string) => {
     const game = games.find((item) => item.game.id === gameId);
-    if (!game) return;
+    if (!game || !authSnapshot.session) return;
     openGame(gameId, 0);
     if (game.analysis_status === "complete") return;
-    // Account reviews keep the existing hosted job path. Guests use the browser worker so the
-    // free first review does not require server Stockfish capacity.
-    if (authSnapshot.session) {
-      try {
-        const job = await startAnalysis(gameId);
-        setJobs((current) => [...current.filter((item) => item.id !== job.id), job]);
-        setGuestTrial(markGuestAnalysisUsed(gameId));
-        setGuestMessage("");
-        setError("");
-      } catch (analysisError) {
-        setGuestTrial(releaseGuestAnalysis(gameId));
-        setError(analysisError instanceof Error ? analysisError.message : "Could not start analysis.");
-      }
-      return;
-    }
-
-    const reservation = reserveGuestAnalysis(gameId);
-    setGuestTrial(reservation.state);
-    if (!reservation.ok) {
-      setGuestMessage(reservation.reason === "already_reserved" ? "Your guest review is already in progress." : "Your one free guest review is complete. Account saving is coming next.");
-      return;
-    }
 
     const abortController = new AbortController();
     const engine = createBrowserEngine();
@@ -423,10 +307,10 @@ export default function App() {
       total: Math.max(1, game.game.plies.length * 2),
       ply: 0,
       position: "before",
-      message: `Starting ${browserProfile === "balanced" ? "Balanced" : "Quick"} browser analysis`,
+      message: `Starting ${engineProfileLabel(browserProfile)} browser analysis`,
     });
     try {
-      await runGuestBrowserReview(game, {
+      await runBrowserReview(game, {
         profile: browserProfile,
         engine,
         api: {
@@ -437,8 +321,6 @@ export default function App() {
         signal: abortController.signal,
         onProgress: setBrowserAnalysisProgress,
       });
-      setGuestTrial(markGuestAnalysisUsed(gameId));
-      setGuestMessage("Your browser review is ready.");
       setError("");
       try {
         await refreshGame(gameId);
@@ -447,11 +329,8 @@ export default function App() {
       }
     } catch (analysisError) {
       const fallback = isBrowserFallback(analysisError);
-      const quotaExceeded = isGuestQuotaExceeded(analysisError);
-      let message = quotaExceeded
-        ? "Your one free guest review is complete. Sign in to keep analyzing."
-        : analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
-        ? "Browser analysis cancelled. Your free review is still available."
+      let message = analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
+        ? "Browser analysis cancelled. Nothing was changed."
         : analysisError instanceof ApiError &&
           analysisError.code === "invalid_argument" &&
           analysisError.message.toLowerCase().includes("completed game")
@@ -460,26 +339,14 @@ export default function App() {
           ? "Browser analysis is unavailable here."
             : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
       let fallbackStarted = false;
-      if (quotaExceeded) {
-        setGuestTrial(markGuestAnalysisConsumed(gameId));
-      } else if (fallback) {
+      if (fallback) {
         try {
           message = await startServerFallback(gameId);
-          setGuestTrial(markGuestAnalysisUsed(gameId));
           fallbackStarted = true;
         } catch (fallbackError) {
-          if (isGuestQuotaExceeded(fallbackError)) {
-            setGuestTrial(markGuestAnalysisConsumed(gameId));
-            message = "Your one free guest review is complete. Sign in to keep analyzing.";
-          } else {
-            setGuestTrial(releaseGuestAnalysis(gameId));
-            message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
-          }
+          message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
         }
-      } else if (!quotaExceeded) {
-        setGuestTrial(releaseGuestAnalysis(gameId));
       }
-      setGuestMessage(message);
       if (!fallbackStarted) setError(message);
     } finally {
       browserAnalysisAbort.current = null;
@@ -495,7 +362,7 @@ export default function App() {
   }, []);
 
   const refreshGames = useCallback(async () => {
-    if (refreshBusy) return;
+    if (refreshBusy || !authSnapshot.session) return;
     setRefreshBusy(true);
     setRefreshMessage("Checking your Chess.com archive…");
     try {
@@ -530,7 +397,7 @@ export default function App() {
     } finally {
       setRefreshBusy(false);
     }
-  }, [games.length, refreshBusy]);
+  }, [authSnapshot.session, games.length, refreshBusy]);
 
   const navigate = useCallback((action: "first" | "previous" | "next" | "last") => {
     const last = Math.max(0, (selectedGame?.game.plies.length ?? 1) - 1);
@@ -692,6 +559,12 @@ export default function App() {
   }, [leaveVariation, navigate, resetTransient, route, selectedMove, startVariation, togglePlayback, variation]);
 
   const runImport = useCallback(async (url: string, pgn: string) => {
+    if (!authSnapshot.session) {
+      setImportOpen(false);
+      setAccountPromptOpen(true);
+      accountFlowRequested.current = true;
+      return;
+    }
     if (!url.trim() && !pgn.trim()) { setError("Paste a Chess.com game URL or PGN."); return; }
     setImportBusy(true);
     setImportStage("Reading game");
@@ -729,7 +602,7 @@ export default function App() {
       setImportBusy(false);
       setImportStage("");
     }
-  }, [refreshGame]);
+  }, [authSnapshot.session, refreshGame]);
 
   const decideImportedIdentity = useCallback(async (decision: PlayerIdentity["decision"], playerName: string) => {
     if (!identityPrompt) return;
@@ -752,52 +625,32 @@ export default function App() {
     }
   }, [identityPrompt]);
 
+  const openAccountPrompt = useCallback(() => {
+    accountFlowRequested.current = true;
+    setAccountPromptOpen(true);
+    setAuthMessage("");
+  }, []);
+
   const setAppRoute = useCallback((next: Route) => {
+    if (!authSnapshot.session) {
+      openAccountPrompt();
+      return;
+    }
     setRoute(next);
-    setGuestMessage("");
     setMoreOpen(false);
     setOverviewOpen(false);
     if (next === "settings") void refreshRuntime();
-  }, [refreshRuntime]);
+  }, [authSnapshot.session, openAccountPrompt, refreshRuntime]);
 
   const startLandingReview = useCallback(() => {
-    setRoute("home");
-    setImportOpen(true);
-  }, []);
-
-  const canSaveGuestReview = !authSnapshot.session &&
-    guestTrial.status === "used" &&
-    guestTrial.gameId === selectedGameId &&
-    Boolean(loadGuestSession());
-
-  const openAccountPrompt = useCallback((context: "landing" | "save") => {
-    accountFlowRequested.current = true;
-    pendingAccountContext.current = context;
-    setAccountPromptContext(context);
-    setAccountPromptOpen(true);
-    if (context === "save") {
-      const guestSession = loadGuestSession();
-      pendingClaim.current = guestSession
-        ? { guestToken: guestSession.token, idempotencyKey: createClaimIdempotencyKey() }
-        : null;
-      if (!guestSession) {
-        setAuthMessage("This guest review expired on this device. It cannot be saved now.");
-      } else {
-        setAuthMessage("");
-      }
-      if (authSnapshot.session) void claimPendingReview();
-    } else {
-      pendingClaim.current = null;
-      setAuthMessage("");
-    }
-  }, [authSnapshot.session, claimPendingReview]);
+    openAccountPrompt();
+  }, [openAccountPrompt]);
 
   const startProviderSignIn = useCallback(async (provider: AuthProvider) => {
     setAuthBusy(provider);
     setAuthMessage(`Connecting to ${authProviderLabel(provider)}…`);
     saveAuthIntent({
       context: pendingAccountContext.current,
-      idempotencyKey: pendingClaim.current?.idempotencyKey,
     });
     const result = await signInWithProvider(provider);
     setAuthMessage(result.message);
@@ -815,16 +668,12 @@ export default function App() {
   }, []);
 
   const closeAccountPrompt = useCallback(() => {
-    if (!claimInFlight.current) {
-      pendingClaim.current = null;
-      accountFlowRequested.current = false;
-      clearAuthIntent();
-    }
+    accountFlowRequested.current = false;
+    clearAuthIntent();
     setAccountPromptOpen(false);
   }, []);
 
   const accountPrompt = accountPromptOpen && <AccountPrompt
-    context={accountPromptContext}
     auth={authSnapshot}
     busyProvider={authBusy}
     message={authMessage}
@@ -833,8 +682,16 @@ export default function App() {
     onClose={closeAccountPrompt}
   />;
 
+  if (!authSnapshot.session) {
+    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
+  }
+
+  if (serviceError) {
+    return <><ServiceUnavailableView message={serviceError} onRetry={() => { setServiceError(""); void handleAuthenticatedSession(); }} onSignOut={() => void handleSignOut()}/>{accountPrompt}</>;
+  }
+
   if (route === "landing") {
-    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("landing")}/>{accountPrompt}</>;
+    return <><LandingView onStart={startLandingReview} onSignIn={openAccountPrompt}/>{accountPrompt}</>;
   }
 
   const shared = { games, profile, selectedGame, selectedPly, selectedMove, jobs, selectedJob };
@@ -860,13 +717,10 @@ export default function App() {
       drills={drills}
       refreshBusy={refreshBusy}
       refreshMessage={refreshMessage}
-      guestTrial={guestTrial}
-      guestMessage={guestMessage}
       onOpen={openGame}
       onRecent={() => setAppRoute("recent")}
       onImport={() => setImportOpen(true)}
       onPractice={(drill) => openGame(drill.source_game_id, drill.source_ply)}
-      onSave={() => openAccountPrompt("save")}
     />;
   } else if (route === "recent") {
     header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} actions={<SoftButton icon="import" onClick={() => setImportOpen(true)}>Import game</SoftButton>}/>;
@@ -888,7 +742,6 @@ export default function App() {
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
     header = <TopBar title={gameName} detail={opening} meta={selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
-      {canSaveGuestReview && <SoftButton icon="book" onClick={() => openAccountPrompt("save")}>Save review</SoftButton>}
       {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? `${activeBrowserProgress.complete}/${activeBrowserProgress.total}` : selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => setOverviewOpen((value) => !value)}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
@@ -1009,7 +862,7 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
 type AnalysisProps = {
   games: StoredGame[]; profile: Profile | null; selectedGame: StoredGame | null; selectedPly: number; selectedMove?: MoveAssessment; jobs: Job[]; selectedJob: Job | null;
   orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; tryMessage: string; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
-  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string; browserProgress: GuestBrowserReviewProgress | null;
+  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string; browserProgress: BrowserReviewProgress | null;
   onSelectPly: (ply: number) => void; onNavigate: (action: "first" | "previous" | "next" | "last") => void; onTogglePlayback: () => void; onFlip: () => void; onSquare: (square: string) => void;
   onRetry: () => void; onRetrySubmit: (uci: string) => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
   onToggleMoves: () => void; onCloseOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void;
@@ -1121,7 +974,7 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
         <label className="switch-control"><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/><span/><strong>{engineLinesDefault ? "Shown first" : "Summary first"}</strong></label>
       </section>
       <section>
-        <div><h2>Browser engine</h2><p>Choose the free analysis pass. Quick is the safe default; Balanced searches deeper and can use more battery on smaller devices.</p><small className="settings-inline-note">Saved on this device for now. Completed reviews keep the requested and actual profile plus engine source for later reference.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
+        <div><h2>Browser engine</h2><p>Pick the pass that fits the moment. Quick is a fast read, Balanced goes deeper, and Aggressive spends up to a minute on each position.</p><small className="settings-inline-note">Saved on this device for now. Completed reviews keep the requested and actual profile plus engine source for later reference.</small><div className="settings-notices"><a href="/engine/SOURCE.stockfish.txt" target="_blank" rel="noreferrer">Source record ↗</a><a href="/engine/COPYING.stockfish.txt" target="_blank" rel="noreferrer">GPL-3.0 license ↗</a></div></div>
         <fieldset className="engine-profile-options">
           <legend className="sr-only">Browser analysis profile</legend>
           {browserEngineProfiles().map((profile) => <label key={profile.id} className={`engine-profile-option ${browserProfile === profile.id ? "active" : ""}`}>
@@ -1142,7 +995,7 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
 function ImportModal({ busy, stage, error, onClose, onSubmit }: { busy: boolean; stage: string; error: string; onClose: () => void; onSubmit: (url: string, pgn: string) => void }) {
   const [url, setUrl] = useState("");
   const [pgn, setPgn] = useState("");
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p>Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose}><Icon name="close"/></button></header><label><span>Chess.com game link</span><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label><span>PGN</span><textarea value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'}/></label>{error && <p className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
+  return <div className="modal-backdrop" role="presentation"><form className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p>Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose} disabled={busy}><Icon name="close"/></button></header><label htmlFor="chesscom-url"><span>Chess.com game link</span><input id="chesscom-url" name="url" autoComplete="url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label htmlFor="game-pgn"><span>PGN</span><textarea id="game-pgn" name="pgn" value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'}/></label>{error && <p id="import-error" className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button type="submit" disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
 }
 
 function PlayerIdentityPrompt({ prompt, busy, error, onClose, onDecision }: {
@@ -1164,6 +1017,25 @@ function PlayerIdentityPrompt({ prompt, busy, error, onClose, onDecision }: {
       </>}
     </section>
   </div>;
+}
+
+function ServiceUnavailableView({ message, onRetry, onSignOut }: {
+  message: string;
+  onRetry: () => void;
+  onSignOut: () => void;
+}) {
+  return <main className="service-unavailable" aria-labelledby="service-unavailable-title">
+    <section className="service-unavailable-panel">
+      <span className="service-unavailable-kicker">Plywise service</span>
+      <h1 id="service-unavailable-title">Your account is signed in, but the chess service is not reachable.</h1>
+      <p>{message}</p>
+      <div className="service-unavailable-actions">
+        <button className="landing-primary" type="button" onClick={onRetry}>Try again</button>
+        <button className="landing-secondary" type="button" onClick={onSignOut}>Sign out</button>
+      </div>
+      <small>For local development, start the C++ service on port 8787. For a hosted build, check the public API origin.</small>
+    </section>
+  </main>;
 }
 
 function gameDate(tags: Record<string, string>) {
@@ -1200,16 +1072,6 @@ function delay(ms: number) { return new Promise((resolve) => window.setTimeout(r
 function isBrowserFallback(error: unknown): boolean {
   return (error instanceof BrowserEngineError && ["unavailable", "timeout", "failed"].includes(error.code)) ||
     (error instanceof ApiError && [404, 503].includes(error.status));
-}
-
-function isGuestQuotaExceeded(error: unknown): error is ApiError {
-  return error instanceof ApiError && error.code === "quota_exceeded";
-}
-
-function createClaimIdempotencyKey() {
-  return typeof crypto.randomUUID === "function"
-    ? `guest-claim-${crypto.randomUUID()}`
-    : `guest-claim-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function dayGreeting(date: Date) {

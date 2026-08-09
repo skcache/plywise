@@ -17,8 +17,7 @@ export type AuthSnapshot = {
 
 export type AuthListener = (snapshot: AuthSnapshot) => void;
 export type AuthIntent = {
-  context: "landing" | "save";
-  idempotencyKey?: string;
+  context: "landing";
 };
 
 const providerLabels: Record<AuthProvider, string> = {
@@ -50,7 +49,7 @@ const listeners = new Set<AuthListener>();
 if (client) {
   client.auth.onAuthStateChange((event, session) => {
     currentSession = session;
-    if (event === "SIGNED_OUT") currentMessage = "You are signed out. Guest review remains available.";
+    if (event === "SIGNED_OUT") currentMessage = "You are signed out.";
     else if (event === "TOKEN_REFRESHED") currentMessage = "";
     notify({ configured: true, session, event, message: currentMessage });
   });
@@ -141,7 +140,7 @@ export async function signOut(): Promise<{ ok: boolean; message: string }> {
   try {
     const { error } = await client.auth.signOut();
     if (error) return { ok: false, message: "Sign out could not complete. Try again." };
-    return { ok: true, message: "You are signed out. Guest review remains available." };
+    return { ok: true, message: "You are signed out." };
   } catch {
     return { ok: false, message: "Sign out could not complete. Try again." };
   }
@@ -176,10 +175,8 @@ export function loadAuthIntent(): AuthIntent | null {
   if (typeof window === "undefined") return null;
   try {
     const value = JSON.parse(window.sessionStorage.getItem("plywise-auth-intent-v1") ?? "null") as Partial<AuthIntent> | null;
-    if (!value || (value.context !== "landing" && value.context !== "save")) return null;
-    if (value.idempotencyKey !== undefined &&
-        (typeof value.idempotencyKey !== "string" || value.idempotencyKey.length > 128)) return null;
-    return { context: value.context, idempotencyKey: value.idempotencyKey };
+    if (!value || value.context !== "landing") return null;
+    return { context: "landing" };
   } catch {
     return null;
   }

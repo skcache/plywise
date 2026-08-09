@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -133,6 +134,7 @@ struct HostedRuntime::Impl {
     struct OwnerResources {
         std::unique_ptr<app::PostgresRepository> repository;
         std::unique_ptr<app::JobManager> jobs;
+        bool retired{false};
     };
 
     Impl(HostedRuntimeOptions input, analysis::Analyzer& input_analyzer,
@@ -290,16 +292,22 @@ struct HostedRuntime::Impl {
         const std::string key =
             (owner.kind() == app::OwnerKind::Account ? "account:" : "guest:") +
             std::string(owner.value());
-        if (const auto existing = resources.find(key); existing != resources.end())
-            return ApiScope{existing->second.repository.get(), existing->second.jobs.get()};
+        if (const auto existing = resources.find(key); existing != resources.end()) {
+            if (existing->second->retired)
+                return std::nullopt;
+            const auto& owner_resources = existing->second;
+            return ApiScope{owner_resources->repository.get(), owner_resources->jobs.get(),
+                            owner_resources};
+        }
 
-        OwnerResources created{
-            std::make_unique<app::PostgresRepository>(options.postgres_connection, owner),
-            nullptr,
-        };
-        created.jobs = std::make_unique<app::JobManager>(*created.repository, analyzer, job_options);
+        auto created = std::make_shared<OwnerResources>();
+        created->repository =
+            std::make_unique<app::PostgresRepository>(options.postgres_connection, owner);
+        created->jobs = std::make_unique<app::JobManager>(*created->repository, analyzer,
+                                                          job_options);
         const auto [inserted, _] = resources.emplace(key, std::move(created));
-        return ApiScope{inserted->second.repository.get(), inserted->second.jobs.get()};
+        return ApiScope{inserted->second->repository.get(), inserted->second->jobs.get(),
+                        inserted->second};
     }
 
     AccountExportResult export_account(const app::OwnerId& owner,
@@ -318,23 +326,24 @@ struct HostedRuntime::Impl {
             throw Error(ErrorCode::InvalidArgument, "account deletion requires an account owner");
 
         const std::string key = "account:" + std::string(owner.value());
-        std::optional<OwnerResources> retired;
+        std::shared_ptr<OwnerResources> retired;
         {
             std::lock_guard lock(resources_mutex);
             const auto found = resources.find(key);
             if (found != resources.end()) {
-                for (const auto& job : found->second.jobs->list()) {
+                retired = found->second;
+                retired->retired = true;
+                for (const auto& job : retired->jobs->list()) {
                     if (job.status == app::JobStatus::Queued ||
                         job.status == app::JobStatus::Running)
-                        static_cast<void>(found->second.jobs->cancel(job.id));
+                        static_cast<void>(retired->jobs->cancel(job.id));
                 }
-                retired.emplace(std::move(found->second));
                 resources.erase(found);
             }
         }
-        // Joining the owner workers before the database cascade prevents a cancelled task from
-        // racing a deletion and writing a late review back into a removed account.
-        retired.reset();
+        // The shared scope lifetime keeps in-flight API requests and websocket observers safe
+        // while cancellation drains. The database cascade can proceed without destroying the
+        // owner JobManager out from underneath a request thread.
         const auto result = identity->delete_account(std::string(owner.value()),
                                                       std::string(idempotency_key));
         return AccountDeletionResult{result.request_id, result.receipt_token,
@@ -348,7 +357,7 @@ struct HostedRuntime::Impl {
     std::unique_ptr<app::HostedBrowserObservationStore> browser_observations;
     std::unique_ptr<OidcTokenVerifier> verifier;
     std::mutex resources_mutex;
-    std::map<std::string, OwnerResources> resources;
+    std::map<std::string, std::shared_ptr<OwnerResources>> resources;
 #else
     explicit Impl(HostedRuntimeOptions, analysis::Analyzer&, app::JobManagerOptions) {
         throw Error(ErrorCode::Unsupported,

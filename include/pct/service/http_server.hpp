@@ -8,9 +8,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -46,6 +48,9 @@ struct Readiness {
 struct ApiScope {
     app::IRepository* repository{nullptr};
     app::JobManager* jobs{nullptr};
+    // Hosted scopes pin their owner resources while request or websocket code uses these
+    // pointers. Local and test scopes leave the lifetime empty.
+    std::shared_ptr<void> lifetime;
 };
 
 struct GuestSessionCredential {
@@ -115,6 +120,13 @@ struct AuthConfig {
     FreshTokenVerifier verify_fresh;
     AccountExportHandler export_account;
     AccountDeletionHandler delete_account;
+    // Guest review is retained for local compatibility tests, but hosted deployments disable it
+    // explicitly so every public product flow starts behind account authentication.
+    bool allow_guest_access{true};
+    // The current ingest manager is process-scoped. Hosted accounts must not share it until an
+    // owner-scoped persistent adapter is wired, so hosted main disables the async profile/sync
+    // routes while direct single-game imports remain available through the scoped repository.
+    bool allow_shared_ingest{false};
 };
 
 class Api {
@@ -198,13 +210,20 @@ class HttpServer {
     };
     std::vector<WebSocketClient> websocket_clients_;
     std::mutex scoped_observers_mutex_;
-    std::map<app::JobManager*, app::JobManager::ObserverId> scoped_observers_;
+    struct ScopedObserver {
+        app::JobManager::ObserverId observer_id{0};
+        std::shared_ptr<void> lifetime;
+    };
+    std::map<app::JobManager*, ScopedObserver> scoped_observers_;
     std::mutex client_threads_mutex_;
-    std::vector<std::thread> client_threads_;
+    std::condition_variable client_threads_cv_;
+    std::size_t active_client_threads_{0};
+    static constexpr std::size_t max_active_client_threads_{128};
 
     void handle_client(int client_fd);
     void handle_websocket(int client_fd, const Request& request);
-    void subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner);
+    void subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,
+                                    std::shared_ptr<void> lifetime = {});
     void remove_scoped_observers() noexcept;
     [[nodiscard]] Response static_file(std::string_view path) const;
     [[nodiscard]] bool host_allowed(std::string_view host) const;

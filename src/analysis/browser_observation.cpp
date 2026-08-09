@@ -25,6 +25,8 @@ ProfileLimits profile_limits(std::string_view profile) {
         return ProfileLimits{10, 15'000};
     if (profile == "balanced")
         return ProfileLimits{14, 30'000};
+    if (profile == "aggressive")
+        return ProfileLimits{18, 60'000};
     throw Error(ErrorCode::InvalidArgument, "browser observation profile is unsupported");
 }
 

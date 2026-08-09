@@ -1,6 +1,6 @@
 import { authRedirectMessage } from "../src/auth-redirect";
 
-if (authRedirectMessage("access_denied", "user cancelled") !== "Sign-in was cancelled. Your guest review is still here.") {
+if (authRedirectMessage("access_denied", "user cancelled") !== "Sign-in was cancelled. Start again when you are ready.") {
   throw new Error("cancelled provider sign-in should have an honest message");
 }
 if (authRedirectMessage("session_expired", "") !== "That account session expired. Start sign-in again when you are ready.") {

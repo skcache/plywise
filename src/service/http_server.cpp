@@ -31,6 +31,7 @@ namespace {
 
 constexpr std::size_t max_header_size = 64 * 1024;
 constexpr std::size_t max_body_size = 10 * 1024 * 1024;
+constexpr timeval client_io_timeout{10, 0};
 constexpr std::string_view websocket_auth_protocol = "plywise-auth";
 
 std::int64_t now_ms() {
@@ -692,7 +693,9 @@ std::string mime_type(const std::filesystem::path& path) {
 } // namespace
 
 Api::Authentication Api::authenticate(const Request& request) const {
-    if (!auth_.required)
+    // A scoped resolver is an authorization boundary even when a caller forgot to set the
+    // legacy `required` flag. Never fall back to the default owner's data in that case.
+    if (!auth_.required && !auth_.resolve_scope)
         return {};
 
     if (!auth_.verify)
@@ -728,6 +731,9 @@ Api::Authentication Api::authenticate(const Request& request) const {
     }
     if (!owner)
         return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
+    if (owner->kind() == app::OwnerKind::Guest && !auth_.allow_guest_access)
+        return Authentication{{}, auth_response(410, "guest analysis is disabled; sign in to continue",
+                                                 "guest_analysis_disabled")};
     return Authentication{std::move(owner), {}};
 }
 
@@ -749,7 +755,7 @@ std::optional<Response> Api::authorize(
 std::optional<ApiScope> Api::scope_for_owner(const app::OwnerId& owner) const {
     if (!auth_.resolve_scope) {
         if (owner == default_repository_.owner())
-            return ApiScope{&default_repository_, &default_jobs_};
+            return ApiScope{&default_repository_, &default_jobs_, {}};
         return std::nullopt;
     }
     try {
@@ -776,11 +782,12 @@ Response Api::handle(const Request& request) {
         const bool account_delete_route =
             request.method == "POST" &&
             parts == std::vector<std::string>{"api", "account", "delete"};
+        const bool shared_ingest_forbidden = auth_.resolve_scope && !auth_.allow_shared_ingest;
         const bool public_route = guest_session_route ||
                                   (request.method == "GET" &&
                                    (parts == std::vector<std::string>{"api", "health"} ||
                                     parts == std::vector<std::string>{"api", "ready"}));
-        ApiScope scope{&default_repository_, &default_jobs_};
+        ApiScope scope{&default_repository_, &default_jobs_, {}};
         std::optional<app::OwnerId> authenticated_owner;
         if (!public_route) {
             const Authentication authentication = authenticate(request);
@@ -811,6 +818,9 @@ Response Api::handle(const Request& request) {
             return error_response(500, "request scope is unavailable");
 
         if (guest_session_route) {
+            if (!auth_.allow_guest_access)
+                return auth_response(410, "guest analysis is disabled; sign in to continue",
+                                     "guest_analysis_disabled");
             if (!auth_.create_guest_session)
                 return auth_response(503, "guest sessions are not configured",
                                      "guest_sessions_unavailable");
@@ -826,6 +836,9 @@ Response Api::handle(const Request& request) {
         }
 
         if (guest_claim_route) {
+            if (!auth_.allow_guest_access)
+                return auth_response(410, "guest analysis is disabled; sign in to continue",
+                                     "guest_analysis_disabled");
             if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Account)
                 return auth_response(403, "account authentication is required", "account_required");
             if (!auth_.claim_guest)
@@ -986,7 +999,6 @@ Response Api::handle(const Request& request) {
                          {"storage", state.storage_ready ? "ready" : "unavailable"},
                          {"engine", state.engine_ready ? "ready" : "unavailable"},
                      }},
-                    {"engine", state.engine},
                 });
         }
         if (request.method == "GET" &&
@@ -1130,6 +1142,9 @@ Response Api::handle(const Request& request) {
                                                         {"profile", nullptr}});
             }
             if (request.method == "PUT") {
+                if (shared_ingest_forbidden)
+                    return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                        "ingest_unavailable", {"paste_pgn"});
                 if (!ingest_)
                     return ingest_error(503, "Chess.com ingest is unavailable",
                                         "ingest_unavailable", {"retry"});
@@ -1153,6 +1168,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "chesscom", "sync"} &&
             request.method == "POST") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -1172,6 +1190,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "chesscom" &&
             parts[2] == "sync") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -1253,7 +1274,7 @@ Response Api::handle(const Request& request) {
                     if (!imported_game_matches(imported, parsed.game_id))
                         throw Error(ErrorCode::Corruption,
                                     "local archive PGN did not match its exact game identifier");
-                } else if (ingest_) {
+                } else if (ingest_ && !shared_ingest_forbidden) {
                     const auto resolution = ingest_->resolve(
                         body.at("url").as_string(), body.get("username", "").as_string());
                     return json_response(202, json::Value::Object{
@@ -1278,6 +1299,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "import", "resolve"} &&
             request.method == "POST") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry", "paste_pgn"});
@@ -1293,6 +1317,9 @@ Response Api::handle(const Request& request) {
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "import" &&
             parts[2] == "resolutions") {
+            if (shared_ingest_forbidden)
+                return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
+                                    "ingest_unavailable", {"paste_pgn"});
             if (!ingest_)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
@@ -1672,19 +1699,13 @@ HttpServer::HttpServer(Api& api, app::JobManager& jobs, ServerOptions options,
 }
 
 HttpServer::~HttpServer() {
+    stop();
+    std::unique_lock lock(client_threads_mutex_);
+    client_threads_cv_.wait(lock, [this] { return active_client_threads_ == 0; });
     jobs_.set_observer({});
     if (ingest_)
         ingest_->set_observer({});
     remove_scoped_observers();
-    stop();
-    std::vector<std::thread> client_threads;
-    {
-        std::lock_guard lock(client_threads_mutex_);
-        client_threads.swap(client_threads_);
-    }
-    for (auto& thread : client_threads)
-        if (thread.joinable())
-            thread.join();
 }
 
 void HttpServer::run() {
@@ -1744,8 +1765,27 @@ void HttpServer::run() {
             log(LogLevel::Warning, "http", std::string("accept failed: ") + std::strerror(errno));
             continue;
         }
-        std::lock_guard lock(client_threads_mutex_);
-        client_threads_.emplace_back([this, client] { handle_client(client); });
+        {
+            std::lock_guard lock(client_threads_mutex_);
+            if (active_client_threads_ >= max_active_client_threads_) {
+                constexpr std::string_view busy =
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                static_cast<void>(send_all(client, busy.data(), busy.size()));
+                close(client);
+                continue;
+            }
+            ++active_client_threads_;
+        }
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &client_io_timeout,
+                   sizeof(client_io_timeout));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &client_io_timeout,
+                   sizeof(client_io_timeout));
+        std::thread([this, client] {
+            handle_client(client);
+            std::lock_guard lock(client_threads_mutex_);
+            --active_client_threads_;
+            client_threads_cv_.notify_all();
+        }).detach();
     }
     close_listener();
 }
@@ -1792,7 +1832,7 @@ void HttpServer::handle_client(int client_fd) {
                                               "GET, POST, PUT, DELETE, OPTIONS");
             response.headers.insert_or_assign(
                 "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Idempotency-Key");
+                "Authorization, Content-Type, Idempotency-Key, X-Plywise-Reauth-Token");
             response.headers.insert_or_assign("Access-Control-Max-Age", "600");
         } else {
             response = request->path.starts_with("/api/") ? api_.handle(*request)
@@ -1873,6 +1913,7 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     }
 
     app::JobManager* event_jobs = &jobs_;
+    std::shared_ptr<void> scope_lifetime;
     if (owner) {
         const auto scope = api_.scope_for_owner(*owner);
         if (!scope) {
@@ -1883,6 +1924,7 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
             return;
         }
         event_jobs = scope->jobs;
+        scope_lifetime = scope->lifetime;
     }
 
     const auto origin = request.headers.find("origin");
@@ -1913,7 +1955,7 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
         return;
     }
     if (owner)
-        subscribe_to_owner_events(*event_jobs, *owner);
+        subscribe_to_owner_events(*event_jobs, *owner, std::move(scope_lifetime));
     {
         std::lock_guard lock(clients_mutex_);
         websocket_clients_.push_back(WebSocketClient{client_fd, owner});
@@ -1987,7 +2029,8 @@ void HttpServer::broadcast_to_owner(const app::OwnerId& owner, std::string_view 
     });
 }
 
-void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner) {
+void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,
+                                           std::shared_ptr<void> lifetime) {
     std::lock_guard lock(scoped_observers_mutex_);
     if (scoped_observers_.contains(&jobs))
         return;
@@ -1998,18 +2041,18 @@ void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::Own
                                                        {"job", app::to_json(job)}}));
         });
     if (observer_id != 0)
-        scoped_observers_.emplace(&jobs, observer_id);
+        scoped_observers_.emplace(&jobs, ScopedObserver{observer_id, std::move(lifetime)});
 }
 
 void HttpServer::remove_scoped_observers() noexcept {
-    std::map<app::JobManager*, app::JobManager::ObserverId> observers;
+    std::map<app::JobManager*, ScopedObserver> observers;
     {
         std::lock_guard lock(scoped_observers_mutex_);
         observers.swap(scoped_observers_);
     }
-    for (const auto& [jobs, observer_id] : observers) {
+    for (const auto& [jobs, observer] : observers) {
         if (jobs)
-            jobs->remove_observer(observer_id);
+            jobs->remove_observer(observer.observer_id);
     }
 }
 

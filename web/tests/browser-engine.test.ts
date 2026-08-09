@@ -59,6 +59,9 @@ async function expectRejected(promise: Promise<unknown>, code: BrowserEngineErro
 async function run() {
   expect(browserEngineProfile("quick").depth === 10, "quick should use the pinned shallow depth");
   expect(browserEngineProfile("balanced").depth === 14, "balanced should use the pinned deeper depth");
+  expect(browserEngineProfile("aggressive").depth === 18, "aggressive should use the explicit longest browser depth");
+  expect(browserEngineProfile("aggressive").maxAnalysisMs === 60_000, "aggressive should carry its battery-aware time budget");
+  expect(normalizeBrowserEngineProfile("aggressive") === "aggressive", "aggressive should survive profile normalization");
   expect(normalizeBrowserEngineProfile("unexpected") === "quick", "unknown profiles should fail closed to quick");
   expect(validateBrowserEngineRequest({ fen: startFen }).ply === 0, "missing ply should default to zero");
   await expectRejected(Promise.resolve().then(() => validateBrowserEngineRequest({ fen: `${startFen}\nuci` })), "invalid_request", "newline injection must be rejected");

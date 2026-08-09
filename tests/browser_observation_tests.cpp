@@ -14,7 +14,10 @@ constexpr std::string_view initial_fen =
 
 analysis::BrowserEngineObservation valid_observation(std::string fen, std::string best_move,
                                                      std::size_t ply, std::size_t sequence,
-                                                     std::vector<std::string> moves = {}) {
+                                                     std::vector<std::string> moves = {},
+                                                     std::string profile = "quick",
+                                                     int depth = 10,
+                                                     std::uint64_t time_ms = 120) {
     if (moves.empty())
         moves.push_back(best_move);
     return analysis::BrowserEngineObservation{
@@ -24,22 +27,22 @@ analysis::BrowserEngineObservation valid_observation(std::string fen, std::strin
         ply,
         sequence,
         std::move(fen),
-        "quick",
+        std::move(profile),
         std::string(analysis::browser_engine_name),
         std::string(analysis::browser_engine_version),
         std::string(analysis::browser_engine_source),
         std::string(analysis::browser_engine_asset_hash),
-        10,
+        depth,
         12'345,
-        120,
+        time_ms,
         1,
         std::move(best_move),
         {analysis::BrowserObservationLine{1, 34, std::nullopt, std::move(moves)}},
     };
 }
-analysis::BrowserObservationContext position_context(std::string fen) {
+analysis::BrowserObservationContext position_context(std::string fen, std::string profile = "quick") {
     return analysis::BrowserObservationContext{
-        "game-1", "run-1", "quick", std::move(fen)};
+        "game-1", "run-1", std::move(profile), std::move(fen)};
 }
 
 } // namespace
@@ -55,6 +58,18 @@ TEST_CASE("browser observations validate the pinned engine and legal principal v
     observation.engine_hash = "different-build";
     CHECK_THROWS(analysis::validate_browser_observation(
         position_context(std::string(initial_fen)), observation));
+}
+
+TEST_CASE("browser observations accept the aggressive profile within its explicit budget") {
+    auto observation = valid_observation(std::string(initial_fen), "e2e4", 0, 0, {},
+                                         "aggressive", 18, 60'000);
+    const auto result = analysis::validate_browser_observation(
+        position_context(std::string(initial_fen), "aggressive"), observation);
+    CHECK(result.disposition == analysis::BrowserObservationDisposition::Accepted);
+
+    observation.time_ms = 60'001;
+    CHECK_THROWS(analysis::validate_browser_observation(
+        position_context(std::string(initial_fen), "aggressive"), observation));
 }
 
 TEST_CASE("browser observations round trip through the hosted staging JSON contract") {

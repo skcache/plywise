@@ -280,6 +280,8 @@ int main(int argc, char** argv) {
                 pct::app::JobManagerOptions{options.workers, options.max_pending,
                                             options.retry_limit});
             auth.required = true;
+            auth.allow_guest_access = false;
+            auth.allow_shared_ingest = false;
             auth.verify = hosted_runtime->token_verifier();
             auth.resolve_scope = hosted_runtime->scope_resolver();
             auth.create_guest_session = hosted_runtime->guest_session_creator();

@@ -644,6 +644,30 @@ TEST_CASE("API exposes a public guest session and account-only claim contract") 
     CHECK_EQ(account_auth.status, 200);
     CHECK(claimed);
     CHECK_EQ(json::parse(account_auth.body).at("transferred_games").as_size(), 1ULL);
+
+    auth.allow_guest_access = false;
+    service::Api account_only(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {},
+                              auth);
+    const auto disabled_session = account_only.handle(
+        service::Request{"POST", "/api/guest/session", {}, "{}"});
+    CHECK_EQ(disabled_session.status, 410);
+    CHECK_EQ(json::parse(disabled_session.body).at("code").as_string(),
+             "guest_analysis_disabled");
+    const auto disabled_existing_guest = account_only.handle(service::Request{
+        "GET", "/api/games", {{"authorization", "Bearer guest-token"}}, {}});
+    CHECK_EQ(disabled_existing_guest.status, 410);
+}
+
+TEST_CASE("API never treats a scoped resolver as optional authentication") {
+    ApiFixture fixture;
+    service::AuthConfig auth;
+    auth.resolve_scope = [&](const app::OwnerId&) -> std::optional<service::ApiScope> {
+        return service::ApiScope{&fixture.repository, &fixture.jobs};
+    };
+    service::Api scoped(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {}, auth);
+    const auto response = scoped.handle(service::Request{"GET", "/api/games", {}, {}});
+    CHECK_EQ(response.status, 503);
+    CHECK_EQ(json::parse(response.body).at("code").as_string(), "auth_unavailable");
 }
 
 TEST_CASE("API scoped auth routes each request through its resolved owner resources") {

@@ -11,29 +11,29 @@ import {
 import type { BrowserEngineProfile } from "./engine-profile";
 import type { StoredGame } from "./types";
 
-export type GuestBrowserReviewPosition = "before" | "after";
+export type BrowserReviewPosition = "before" | "after";
 
-export type GuestBrowserReviewProgress = {
+export type BrowserReviewProgress = {
   readonly gameId: string;
   readonly profile: BrowserEngineProfile;
   readonly stage: "starting" | "analyzing" | "submitting" | "finalizing";
   readonly complete: number;
   readonly total: number;
   readonly ply: number;
-  readonly position: GuestBrowserReviewPosition;
+  readonly position: BrowserReviewPosition;
   readonly depth?: number;
   readonly targetDepth?: number;
   readonly message: string;
 };
 
-export type GuestBrowserReviewEngine = Pick<BrowserEngine, "start" | "analyze" | "cancel" | "dispose">;
+export type BrowserReviewEngine = Pick<BrowserEngine, "start" | "analyze" | "cancel" | "dispose">;
 
-export type GuestBrowserReviewStartResponse = BrowserAnalysisRequest & {
+export type BrowserReviewStartResponse = BrowserAnalysisRequest & {
   readonly status: "collecting";
   readonly expectedObservations: number;
 };
 
-export type GuestBrowserReviewObservationResponse = {
+export type BrowserReviewObservationResponse = {
   readonly status: "accepted" | "duplicate";
   readonly staging: true;
   readonly analysisRunId: string;
@@ -42,7 +42,7 @@ export type GuestBrowserReviewObservationResponse = {
   readonly sequence: number;
 };
 
-export type GuestBrowserReviewFinalizationResponse = {
+export type BrowserReviewFinalizationResponse = {
   readonly status: "complete";
   readonly staging: false;
   readonly analysisRunId: string;
@@ -50,29 +50,29 @@ export type GuestBrowserReviewFinalizationResponse = {
   readonly analysis: NonNullable<StoredGame["analysis"]>;
 };
 
-export type GuestBrowserReviewApi = {
-  readonly start: (request: BrowserAnalysisRequest) => Promise<GuestBrowserReviewStartResponse>;
-  readonly submit: (payload: BrowserObservationPayload) => Promise<GuestBrowserReviewObservationResponse>;
-  readonly finalize: (gameId: string, analysisRunId: string) => Promise<GuestBrowserReviewFinalizationResponse>;
+export type BrowserReviewApi = {
+  readonly start: (request: BrowserAnalysisRequest) => Promise<BrowserReviewStartResponse>;
+  readonly submit: (payload: BrowserObservationPayload) => Promise<BrowserReviewObservationResponse>;
+  readonly finalize: (gameId: string, analysisRunId: string) => Promise<BrowserReviewFinalizationResponse>;
 };
 
-export type GuestBrowserReviewOptions = {
+export type BrowserReviewOptions = {
   readonly profile: BrowserEngineProfile;
-  readonly engine: GuestBrowserReviewEngine;
-  readonly api: GuestBrowserReviewApi;
+  readonly engine: BrowserReviewEngine;
+  readonly api: BrowserReviewApi;
   readonly runId?: string;
   readonly signal?: AbortSignal;
-  readonly onProgress?: (progress: GuestBrowserReviewProgress) => void;
+  readonly onProgress?: (progress: BrowserReviewProgress) => void;
 };
 
 /**
- * Runs one guest review through the browser worker and C++ observation boundary.
+ * Runs one account review through the browser worker and C++ observation boundary.
  * The worker only supplies evidence; final classifications come back from C++.
  */
-export async function runGuestBrowserReview(
+export async function runBrowserReview(
   stored: StoredGame,
-  options: GuestBrowserReviewOptions,
-): Promise<GuestBrowserReviewFinalizationResponse> {
+  options: BrowserReviewOptions,
+): Promise<BrowserReviewFinalizationResponse> {
   const gameId = stored.game.id;
   const plies = stored.game.plies;
   if (plies.length === 0) throw new BrowserEngineError("invalid_request", "This game has no moves to analyze.");
@@ -84,10 +84,10 @@ export async function runGuestBrowserReview(
   const expectedObservations = plies.length * 2;
   let sequence = 0;
   let currentPly = 0;
-  let currentPosition: GuestBrowserReviewPosition = "before";
+  let currentPosition: BrowserReviewPosition = "before";
   let abortListener: (() => void) | null = null;
 
-  const report = (progress: Omit<GuestBrowserReviewProgress, "gameId" | "profile">) => {
+  const report = (progress: Omit<BrowserReviewProgress, "gameId" | "profile">) => {
     options.onProgress?.({ ...progress, gameId, profile: options.profile });
   };
   const throwIfAborted = () => {
@@ -116,7 +116,7 @@ export async function runGuestBrowserReview(
       total: expectedObservations,
       ply: 0,
       position: "before",
-      message: `Starting ${options.profile === "balanced" ? "Balanced" : "Quick"} browser analysis`,
+      message: `Starting ${profileLabel(options.profile)} browser analysis`,
     });
     const started = await api.start(request);
     if (started.expectedObservations !== expectedObservations) {
@@ -175,10 +175,10 @@ export async function runGuestBrowserReview(
 }
 
 async function submitObservation(
-  api: GuestBrowserReviewApi,
+  api: BrowserReviewApi,
   observation: BrowserEngineObservation,
   context: { analysisRunId: string; gameId: string; ply: number; sequence: number; fen: string },
-): Promise<GuestBrowserReviewObservationResponse> {
+): Promise<BrowserReviewObservationResponse> {
   return api.submit(createBrowserObservationPayload(observation, context));
 }
 
@@ -186,5 +186,9 @@ function createRunId(): string {
   const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `guest-browser-${suffix}`;
+  return `browser-${suffix}`;
+}
+
+function profileLabel(profile: BrowserEngineProfile): string {
+  return profile[0].toUpperCase() + profile.slice(1);
 }

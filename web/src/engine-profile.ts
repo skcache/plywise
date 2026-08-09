@@ -1,4 +1,4 @@
-export type BrowserEngineProfile = "quick" | "balanced";
+export type BrowserEngineProfile = "quick" | "balanced" | "aggressive";
 
 export const BROWSER_OBSERVATION_CONTRACT_VERSION = "browser-observation-v1";
 export const BROWSER_ENGINE_NAME = "Stockfish";
@@ -37,6 +37,15 @@ const profiles: Record<BrowserEngineProfile, BrowserEngineProfileConfig> = {
     hashMb: 16,
     threads: 1,
   },
+  aggressive: {
+    id: "aggressive",
+    label: "Aggressive",
+    description: "The longest browser pass. More detail, more time, and more battery.",
+    depth: 18,
+    maxAnalysisMs: 60_000,
+    hashMb: 16,
+    threads: 1,
+  },
 };
 
 export function browserEngineProfile(profile: BrowserEngineProfile): BrowserEngineProfileConfig {
@@ -44,9 +53,9 @@ export function browserEngineProfile(profile: BrowserEngineProfile): BrowserEngi
 }
 
 export function normalizeBrowserEngineProfile(value: unknown): BrowserEngineProfile {
-  return value === "balanced" ? "balanced" : "quick";
+  return value === "balanced" || value === "aggressive" ? value : "quick";
 }
 
 export function browserEngineProfiles(): readonly BrowserEngineProfileConfig[] {
-  return [profiles.quick, profiles.balanced];
+  return [profiles.quick, profiles.balanced, profiles.aggressive];
 }

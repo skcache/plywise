@@ -19,8 +19,8 @@ export function AppShell({ route, onRoute, header, children }: {
 }) {
   return <div className="app-frame">
     <aside className="side-rail" aria-label="Primary navigation">
-      <button className="brand-orb" aria-label="Personal Chess Tutor" onClick={() => onRoute("home")}>
-        <img src="/pieces/lasker/white_knight.svg" alt="" />
+      <button className="brand-orb" aria-label="Plywise home" onClick={() => onRoute("home")}>
+        <img src="/pieces/lasker/white_knight.svg" alt="" width={34} height={34} />
       </button>
       <nav>
         {navigation.map((item) => <button

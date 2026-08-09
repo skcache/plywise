@@ -133,7 +133,110 @@ engine::AnalysisResult engine_result(const BrowserEngineObservation& observation
     return engine::AnalysisResult{{std::move(line)}, observation.best_move, {}};
 }
 
+void require_json_object_keys(const json::Value& value,
+                              std::initializer_list<std::string_view> required,
+                              std::initializer_list<std::string_view> optional,
+                              std::string_view name) {
+    const auto& object = value.as_object();
+    for (const auto& [key, _] : object) {
+        const auto listed = [&](std::string_view candidate) {
+            return std::find(required.begin(), required.end(), candidate) != required.end() ||
+                   std::find(optional.begin(), optional.end(), candidate) != optional.end();
+        };
+        if (!listed(key))
+            throw Error(ErrorCode::Corruption,
+                        std::string(name) + " contains an unsupported field");
+    }
+    for (const std::string_view key : required) {
+        if (!object.contains(std::string(key)))
+            throw Error(ErrorCode::Corruption,
+                        std::string(name) + " is missing " + std::string(key));
+    }
+}
+
 } // namespace
+
+json::Value browser_observation_to_json(const BrowserEngineObservation& observation) {
+    json::Value::Array lines;
+    lines.reserve(observation.lines.size());
+    for (const auto& line : observation.lines) {
+        json::Value::Array moves;
+        moves.reserve(line.moves.size());
+        for (const auto& move : line.moves)
+            moves.emplace_back(move);
+        lines.emplace_back(json::Value::Object{
+            {"rank", line.rank},
+            {"centipawns", line.centipawns ? json::Value(*line.centipawns) : json::Value{}},
+            {"mate", line.mate ? json::Value(*line.mate) : json::Value{}},
+            {"moves", std::move(moves)},
+        });
+    }
+    return json::Value::Object{
+        {"contractVersion", observation.contract_version},
+        {"analysisRunId", observation.analysis_run_id},
+        {"gameId", observation.game_id},
+        {"ply", observation.ply},
+        {"sequence", observation.sequence},
+        {"fen", observation.fen},
+        {"profile", observation.profile},
+        {"engineName", observation.engine_name},
+        {"engineVersion", observation.engine_version},
+        {"engineSource", observation.engine_source},
+        {"engineHash", observation.engine_hash},
+        {"depth", observation.depth},
+        {"nodes", static_cast<double>(observation.nodes)},
+        {"timeMs", static_cast<double>(observation.time_ms)},
+        {"multipv", observation.multipv},
+        {"bestMove", observation.best_move},
+        {"lines", std::move(lines)},
+    };
+}
+
+BrowserEngineObservation browser_observation_from_json(const json::Value& value) {
+    try {
+        require_json_object_keys(
+            value,
+            {"contractVersion", "analysisRunId", "gameId", "ply", "sequence", "fen",
+             "profile", "engineName", "engineVersion", "engineSource", "engineHash", "depth",
+             "nodes", "timeMs", "multipv", "bestMove", "lines"},
+            {}, "browser observation");
+        BrowserEngineObservation observation;
+        observation.contract_version = value.at("contractVersion").as_string();
+        observation.analysis_run_id = value.at("analysisRunId").as_string();
+        observation.game_id = value.at("gameId").as_string();
+        observation.ply = value.at("ply").as_size();
+        observation.sequence = value.at("sequence").as_size();
+        observation.fen = value.at("fen").as_string();
+        observation.profile = value.at("profile").as_string();
+        observation.engine_name = value.at("engineName").as_string();
+        observation.engine_version = value.at("engineVersion").as_string();
+        observation.engine_source = value.at("engineSource").as_string();
+        observation.engine_hash = value.at("engineHash").as_string();
+        observation.depth = value.at("depth").as_int();
+        observation.nodes = static_cast<std::uint64_t>(value.at("nodes").as_size());
+        observation.time_ms = static_cast<std::uint64_t>(value.at("timeMs").as_size());
+        observation.multipv = value.at("multipv").as_int();
+        observation.best_move = value.at("bestMove").as_string();
+        for (const auto& encoded : value.at("lines").as_array()) {
+            require_json_object_keys(encoded, {"rank", "centipawns", "mate", "moves"}, {},
+                                     "browser observation line");
+            BrowserObservationLine line;
+            line.rank = encoded.at("rank").as_int();
+            if (!encoded.at("centipawns").is_null())
+                line.centipawns = encoded.at("centipawns").as_int();
+            if (!encoded.at("mate").is_null())
+                line.mate = encoded.at("mate").as_int();
+            for (const auto& move : encoded.at("moves").as_array())
+                line.moves.push_back(move.as_string());
+            observation.lines.push_back(std::move(line));
+        }
+        return observation;
+    } catch (const Error&) {
+        throw;
+    } catch (...) {
+        throw Error(ErrorCode::Corruption, "PostgreSQL browser observation is invalid");
+    }
+}
 
 BrowserObservationReceipt
 validate_browser_observation(const BrowserObservationContext& context,

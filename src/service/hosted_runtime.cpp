@@ -3,6 +3,7 @@
 #include "pct/common/error.hpp"
 
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+#include "pct/app/hosted_browser_observations.hpp"
 #include "pct/app/hosted_identity.hpp"
 #include "pct/app/postgres_repository.hpp"
 #include "pct/service/oidc_token_verifier.hpp"
@@ -143,6 +144,8 @@ struct HostedRuntime::Impl {
             !valid_jwks_url(options.oidc_jwks_url))
             throw Error(ErrorCode::InvalidArgument, "hosted runtime configuration is invalid");
         identity = std::make_unique<app::HostedIdentityStore>(options.postgres_connection);
+        browser_observations =
+            std::make_unique<app::HostedBrowserObservationStore>(options.postgres_connection);
         verifier = std::make_unique<OidcTokenVerifier>(OidcTokenVerifierOptions{
             options.oidc_issuer,
             options.oidc_audience,
@@ -210,6 +213,50 @@ struct HostedRuntime::Impl {
             throw Error(ErrorCode::IoError, "guest analysis quota is unavailable");
         } catch (...) {
             throw Error(ErrorCode::IoError, "guest analysis quota is unavailable");
+        }
+    }
+
+    void begin_browser_observation(
+        const app::OwnerId& owner, const analysis::BrowserObservationRunContext& context) const {
+        try {
+            browser_observations->begin(owner, context);
+        } catch (const Error& error) {
+            if (error.code() == ErrorCode::InvalidArgument ||
+                error.code() == ErrorCode::NotFound)
+                throw;
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
+        } catch (...) {
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
+        }
+    }
+
+    analysis::BrowserObservationReceipt submit_browser_observation(
+        const app::OwnerId& owner, const analysis::BrowserObservationContext& context,
+        const analysis::BrowserEngineObservation& observation) const {
+        try {
+            return browser_observations->submit(owner, context, observation);
+        } catch (const Error& error) {
+            if (error.code() == ErrorCode::InvalidArgument ||
+                error.code() == ErrorCode::NotFound)
+                throw;
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
+        } catch (...) {
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
+        }
+    }
+
+    analysis::BrowserObservationBundle finalize_browser_observation(
+        const app::OwnerId& owner, std::string_view game_id,
+        std::string_view analysis_run_id) const {
+        try {
+            return browser_observations->finalize(owner, game_id, analysis_run_id);
+        } catch (const Error& error) {
+            if (error.code() == ErrorCode::InvalidArgument ||
+                error.code() == ErrorCode::NotFound || error.code() == ErrorCode::Corruption)
+                throw;
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
+        } catch (...) {
+            throw Error(ErrorCode::IoError, "browser analysis staging is unavailable");
         }
     }
 
@@ -298,6 +345,7 @@ struct HostedRuntime::Impl {
     analysis::Analyzer& analyzer;
     app::JobManagerOptions job_options;
     std::unique_ptr<app::HostedIdentityStore> identity;
+    std::unique_ptr<app::HostedBrowserObservationStore> browser_observations;
     std::unique_ptr<OidcTokenVerifier> verifier;
     std::mutex resources_mutex;
     std::map<std::string, OwnerResources> resources;
@@ -352,6 +400,42 @@ AuthConfig::GuestAnalysisReservation HostedRuntime::guest_analysis_reservation()
     Impl* runtime = impl_.get();
     return [runtime](const app::OwnerId& guest, std::string_view game_id) {
         runtime->reserve_guest_analysis(guest, game_id);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::BrowserObservationBegin HostedRuntime::browser_observation_begin() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner,
+                     const analysis::BrowserObservationRunContext& context) {
+        runtime->begin_browser_observation(owner, context);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::BrowserObservationSubmit HostedRuntime::browser_observation_submit() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner, const analysis::BrowserObservationContext& context,
+                     const analysis::BrowserEngineObservation& observation) {
+        return runtime->submit_browser_observation(owner, context, observation);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::BrowserObservationFinalize HostedRuntime::browser_observation_finalize() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner, std::string_view game_id,
+                     std::string_view analysis_run_id) {
+        return runtime->finalize_browser_observation(owner, game_id, analysis_run_id);
     };
 #else
     return {};

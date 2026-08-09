@@ -57,6 +57,16 @@ TEST_CASE("browser observations validate the pinned engine and legal principal v
         position_context(std::string(initial_fen)), observation));
 }
 
+TEST_CASE("browser observations round trip through the hosted staging JSON contract") {
+    auto original = valid_observation(std::string(initial_fen), "e2e4", 0, 0,
+                                      {"e2e4", "e7e5"});
+    original.lines.front().centipawns.reset();
+    original.lines.front().mate = 3;
+    const auto encoded = analysis::browser_observation_to_json(original);
+    const auto restored = analysis::browser_observation_from_json(encoded);
+    CHECK(restored == original);
+}
+
 TEST_CASE("browser observations preserve terminal positions without inventing a move") {
     const auto game = chess::parse_pgn(R"pgn(
 [White "A"]

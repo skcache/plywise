@@ -2,6 +2,7 @@
 
 #include "pct/analysis/analyzer.hpp"
 #include "pct/chess/board.hpp"
+#include "pct/common/json.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -84,6 +85,11 @@ struct BrowserObservationBundle {
     BrowserObservationRunContext context;
     std::vector<BrowserEngineObservation> observations;
 };
+
+// Stable JSON used by hosted staging. This is a transport representation only; observations
+// remain untrusted until validate_browser_observation and assemble_browser_review run.
+[[nodiscard]] json::Value browser_observation_to_json(const BrowserEngineObservation& observation);
+[[nodiscard]] BrowserEngineObservation browser_observation_from_json(const json::Value& value);
 
 // Reconstruct a canonical review only after every position has a validated before/after
 // observation. The returned review is assembled by the shared C++ classifiers.

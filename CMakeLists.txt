@@ -65,7 +65,9 @@ endif()
 if(PCT_ENABLE_POSTGRES_ADAPTER)
     find_package(PostgreSQL QUIET)
     if(PostgreSQL_FOUND)
-        target_sources(pct_core PRIVATE src/app/postgres_repository.cpp)
+        target_sources(pct_core PRIVATE
+            src/app/postgres_repository.cpp
+            src/app/hosted_browser_observations.cpp)
         target_include_directories(pct_core PRIVATE ${PostgreSQL_INCLUDE_DIRS})
         target_link_libraries(pct_core PUBLIC ${PostgreSQL_LIBRARIES} OpenSSL::Crypto)
         target_compile_definitions(pct_core PUBLIC PCT_HAS_POSTGRES=1)

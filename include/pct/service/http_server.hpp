@@ -80,6 +80,14 @@ struct AuthConfig {
     using GuestSessionCreator = std::function<std::optional<GuestSessionCredential>()>;
     using GuestAnalysisReservation =
         std::function<void(const app::OwnerId& guest, std::string_view game_id)>;
+    using BrowserObservationBegin =
+        std::function<void(const app::OwnerId& owner,
+                           const analysis::BrowserObservationRunContext& context)>;
+    using BrowserObservationSubmit = std::function<analysis::BrowserObservationReceipt(
+        const app::OwnerId& owner, const analysis::BrowserObservationContext& context,
+        const analysis::BrowserEngineObservation& observation)>;
+    using BrowserObservationFinalize = std::function<analysis::BrowserObservationBundle(
+        const app::OwnerId& owner, std::string_view game_id, std::string_view analysis_run_id)>;
     using GuestClaimHandler = std::function<GuestClaimResult(
         std::string_view token, const app::OwnerId& account, std::string_view idempotency_key)>;
     using FreshTokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
@@ -99,6 +107,10 @@ struct AuthConfig {
     GuestSessionCreator create_guest_session;
     // Hosted mode atomically consumes the guest's one free analysis before work is queued.
     GuestAnalysisReservation reserve_guest_analysis;
+    // Hosted mode persists browser observations so an interrupted run can resume after restart.
+    BrowserObservationBegin begin_browser_observation;
+    BrowserObservationSubmit submit_browser_observation;
+    BrowserObservationFinalize finalize_browser_observation;
     GuestClaimHandler claim_guest;
     FreshTokenVerifier verify_fresh;
     AccountExportHandler export_account;

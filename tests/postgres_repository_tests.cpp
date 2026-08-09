@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "pct/app/hosted_identity.hpp"
+#include "pct/app/hosted_browser_observations.hpp"
 #include "pct/app/postgres_repository.hpp"
 #include "pct/import/import_service.hpp"
 #include "pct/service/hosted_runtime.hpp"
@@ -249,6 +250,89 @@ TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews"
     CHECK_THROWS(identity.claim_guest("guest_identity", "account_test_b", "claim-other-1"));
 }
 
+TEST_CASE("Hosted browser observations resume durably after a store restart") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    app::HostedIdentityStore identity(connection);
+    std::array<unsigned char, 32> token{};
+    token.fill(0x55);
+    const auto expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count() +
+                            60 * 60 * 1000;
+    static_cast<void>(identity.create_guest_session("guest_browser_stage", token, expires_at));
+    const auto owner = app::OwnerId::guest("guest_browser_stage");
+
+    import::ImportService importer;
+    const auto imported = importer.from_pgn(
+        "[White \"Browser\"]\n[Black \"Staging\"]\n[Result \"1-0\"]\n\n"
+        "1. e4 e5 1-0");
+    app::PostgresRepository repository(connection, owner);
+    CHECK(repository.add(imported) == app::AddResult::Added);
+
+    const analysis::BrowserObservationRunContext run{
+        imported.game.identity, "browser-stage-run", "quick", imported.game.plies.size() * 2};
+    const auto observation_for = [&](std::size_t ply, std::size_t sequence, bool after,
+                                     std::string best_move) {
+        const auto& canonical = imported.game.plies[ply];
+        const std::string fen = after ? canonical.fen_after : canonical.fen_before;
+        return analysis::BrowserEngineObservation{
+            std::string(analysis::browser_observation_contract_version), run.analysis_run_id,
+            run.game_id, ply, sequence, fen, run.profile,
+            std::string(analysis::browser_engine_name),
+            std::string(analysis::browser_engine_version),
+            std::string(analysis::browser_engine_source),
+            std::string(analysis::browser_engine_asset_hash), 10, 1'000, 100, 1,
+            best_move, {analysis::BrowserObservationLine{1, 24, std::nullopt, {best_move}}}};
+    };
+    const std::vector<analysis::BrowserEngineObservation> observations{
+        observation_for(0, 0, false, "e2e4"), observation_for(0, 1, true, "e7e5"),
+        observation_for(1, 2, false, "e7e5"), observation_for(1, 3, true, "g1f3")};
+
+    {
+        app::HostedBrowserObservationStore first(connection);
+        first.begin(owner, run);
+        first.begin(owner, run);
+        for (std::size_t index = 0; index < 2; ++index) {
+            const auto& observation = observations[index];
+            const analysis::BrowserObservationContext context{
+                run.game_id, run.analysis_run_id, run.profile, observation.fen};
+            CHECK(first.submit(owner, context, observation).disposition ==
+                  analysis::BrowserObservationDisposition::Accepted);
+        }
+        const auto duplicate_context = analysis::BrowserObservationContext{
+            run.game_id, run.analysis_run_id, run.profile, observations[0].fen};
+        CHECK(first.submit(owner, duplicate_context, observations[0]).disposition ==
+              analysis::BrowserObservationDisposition::Duplicate);
+    }
+
+    {
+        app::HostedBrowserObservationStore resumed(connection);
+        resumed.begin(owner, run);
+        for (std::size_t index = 2; index < observations.size(); ++index) {
+            const auto& observation = observations[index];
+            const analysis::BrowserObservationContext context{
+                run.game_id, run.analysis_run_id, run.profile, observation.fen};
+            CHECK(resumed.submit(owner, context, observation).disposition ==
+                  analysis::BrowserObservationDisposition::Accepted);
+        }
+        const auto bundle = resumed.finalize(owner, run.game_id, run.analysis_run_id);
+        CHECK_EQ(bundle.observations.size(), observations.size());
+        CHECK(bundle.observations == observations);
+        const auto retry = resumed.finalize(owner, run.game_id, run.analysis_run_id);
+        CHECK(retry.observations == observations);
+    }
+
+    std::array<unsigned char, 32> other_token{};
+    other_token.fill(0x56);
+    static_cast<void>(identity.create_guest_session("guest_browser_other", other_token, expires_at));
+    app::HostedBrowserObservationStore other(connection);
+    CHECK_THROWS(other.finalize(app::OwnerId::guest("guest_browser_other"), run.game_id,
+                                run.analysis_run_id));
+}
+
 TEST_CASE("PostgreSQL repository persists legal variations and review attempts") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
     if (connection == nullptr || connection[0] == '\0')
@@ -359,6 +443,9 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
         app::JobManagerOptions{1, 8, 0});
 
     const auto resolve = runtime.scope_resolver();
+    CHECK(static_cast<bool>(runtime.browser_observation_begin()));
+    CHECK(static_cast<bool>(runtime.browser_observation_submit()));
+    CHECK(static_cast<bool>(runtime.browser_observation_finalize()));
     const auto first = resolve(app::OwnerId::account("account_test_a"));
     CHECK(first.has_value());
     CHECK(first->repository != nullptr);

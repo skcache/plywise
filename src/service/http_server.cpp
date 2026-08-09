@@ -946,6 +946,20 @@ Response Api::handle(const Request& request) {
             auth_.reserve_guest_analysis(*authenticated_owner, game_id);
             return std::nullopt;
         };
+        const bool durable_browser_staging =
+            static_cast<bool>(auth_.begin_browser_observation) &&
+            static_cast<bool>(auth_.submit_browser_observation) &&
+            static_cast<bool>(auth_.finalize_browser_observation);
+        const bool partial_browser_staging =
+            static_cast<bool>(auth_.begin_browser_observation) ||
+            static_cast<bool>(auth_.submit_browser_observation) ||
+            static_cast<bool>(auth_.finalize_browser_observation);
+        const auto require_browser_staging = [&]() -> std::optional<Response> {
+            if (partial_browser_staging && !durable_browser_staging)
+                return auth_response(503, "browser analysis staging is not configured",
+                                     "browser_staging_unavailable");
+            return std::nullopt;
+        };
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
             json::Value::Object health{
@@ -1386,7 +1400,12 @@ Response Api::handle(const Request& request) {
                 if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
                     return *quota;
                 run.expected_observations = game->imported.game.plies.size() * 2;
-                browser_observations_.begin(browser_owner_key(repository_.owner()), run);
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                if (durable_browser_staging)
+                    auth_.begin_browser_observation(repository_.owner(), run);
+                else
+                    browser_observations_.begin(browser_owner_key(repository_.owner()), run);
                 return json_response(201, json::Value::Object{
                                              {"status", "collecting"},
                                              {"contractVersion",
@@ -1421,8 +1440,14 @@ Response Api::handle(const Request& request) {
                     parts[2], observation.analysis_run_id, observation.profile,
                     observation.fen,
                 };
-                const auto receipt = browser_observations_.submit(
-                    browser_owner_key(repository_.owner()), context, observation);
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                const auto receipt = durable_browser_staging
+                                         ? auth_.submit_browser_observation(repository_.owner(),
+                                                                            context, observation)
+                                         : browser_observations_.submit(
+                                               browser_owner_key(repository_.owner()), context,
+                                               observation);
                 const bool duplicate = receipt.disposition ==
                                        analysis::BrowserObservationDisposition::Duplicate;
                 return json_response(duplicate ? 200 : 202, json::Value::Object{
@@ -1444,8 +1469,13 @@ Response Api::handle(const Request& request) {
                 const std::string run_id = bounded_text(
                     body.at("analysisRunId"), analysis::browser_observation_max_id_length,
                     "analysis run id");
-                const auto bundle = browser_observations_.finalize(
-                    browser_owner_key(repository_.owner()), parts[2], run_id);
+                if (const auto staging = require_browser_staging(); staging)
+                    return *staging;
+                const auto bundle = durable_browser_staging
+                                        ? auth_.finalize_browser_observation(
+                                              repository_.owner(), parts[2], run_id)
+                                        : browser_observations_.finalize(
+                                              browser_owner_key(repository_.owner()), parts[2], run_id);
                 if (game->analysis) {
                     return json_response(200, json::Value::Object{
                                                  {"status", "complete"},

@@ -429,6 +429,99 @@ TEST_CASE("API finalizes a complete browser run through the C++ review pipeline"
     CHECK_EQ(json::parse(retry.body).at("analysis").at("moves").as_array().size(), 2ULL);
 }
 
+TEST_CASE("API routes browser staging through the configured durable callbacks") {
+    ApiFixture fixture;
+    analysis::BrowserObservationLedger staged;
+    std::size_t begin_calls = 0;
+    std::size_t submit_calls = 0;
+    std::size_t finalize_calls = 0;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        return token == "local-token" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                       : std::nullopt;
+    };
+    auth.begin_browser_observation = [&](const app::OwnerId& owner,
+                                        const analysis::BrowserObservationRunContext& context) {
+        CHECK(owner == app::OwnerId::local());
+        ++begin_calls;
+        staged.begin("durable-local", context);
+    };
+    auth.submit_browser_observation = [&](
+        const app::OwnerId& owner, const analysis::BrowserObservationContext& context,
+        const analysis::BrowserEngineObservation& observation) {
+        CHECK(owner == app::OwnerId::local());
+        ++submit_calls;
+        return staged.submit("durable-local", context, observation);
+    };
+    auth.finalize_browser_observation = [&](const app::OwnerId& owner, std::string_view game_id,
+                                            std::string_view run_id) {
+        CHECK(owner == app::OwnerId::local());
+        ++finalize_calls;
+        return staged.finalize("durable-local", game_id, run_id);
+    };
+    service::Api hosted(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {},
+                        auth);
+    const auto request = [&](std::string method, std::string path, std::string body = {}) {
+        return hosted.handle(service::Request{
+            std::move(method), std::move(path), {{"authorization", "Bearer local-token"}},
+            std::move(body)});
+    };
+    const auto imported = request(
+        "POST", "/api/import",
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 1-0"},
+        }));
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const auto stored = fixture.repository.get(game_id);
+    CHECK(stored.has_value());
+    const std::string run_id = "durable-callback-run";
+    const json::Value::Object engine{
+        {"name", std::string(analysis::browser_engine_name)},
+        {"version", std::string(analysis::browser_engine_version)},
+        {"source", std::string(analysis::browser_engine_source)},
+        {"hash", std::string(analysis::browser_engine_asset_hash)},
+    };
+    const auto started = request(
+        "POST", "/api/games/" + game_id + "/browser-analysis",
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id}, {"gameId", game_id}, {"profile", "quick"},
+            {"engine", engine},
+        }));
+    CHECK_EQ(started.status, 201);
+    CHECK_EQ(begin_calls, 1ULL);
+
+    const auto observation_body = [&](std::size_t sequence, std::string fen,
+                                      std::string best_move) {
+        return json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id}, {"gameId", game_id}, {"ply", 0},
+            {"sequence", sequence}, {"fen", std::move(fen)}, {"profile", "quick"},
+            {"engine", engine}, {"depth", 10}, {"nodes", 1'000}, {"timeMs", 100},
+            {"multipv", 1}, {"bestMove", best_move},
+            {"lines", json::Value::Array{json::Value::Object{
+                           {"rank", 1}, {"centipawns", 24}, {"mate", json::Value{}},
+                           {"moves", json::Value::Array{best_move}},
+                       }}}};
+    };
+    const auto first = request(
+        "POST", "/api/games/" + game_id + "/browser-observations",
+        json::dump(observation_body(0, stored->imported.game.plies[0].fen_before, "e2e4")));
+    CHECK_EQ(first.status, 202);
+    const auto second = request(
+        "POST", "/api/games/" + game_id + "/browser-observations",
+        json::dump(observation_body(1, stored->imported.game.plies[0].fen_after, "e7e5")));
+    CHECK_EQ(second.status, 202);
+    CHECK_EQ(submit_calls, 2ULL);
+    const auto finalized = request(
+        "POST", "/api/games/" + game_id + "/browser-observations/finalize",
+        json::dump(json::Value::Object{{"analysisRunId", run_id}}));
+    CHECK_EQ(finalized.status, 200);
+    CHECK_EQ(finalize_calls, 1ULL);
+    CHECK_EQ(json::parse(finalized.body).at("status").as_string(), "complete");
+}
+
 TEST_CASE("API distinguishes liveness from engine readiness") {
     ApiFixture fixture;
     service::Api degraded(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, [] {

@@ -284,6 +284,9 @@ int main(int argc, char** argv) {
             auth.resolve_scope = hosted_runtime->scope_resolver();
             auth.create_guest_session = hosted_runtime->guest_session_creator();
             auth.reserve_guest_analysis = hosted_runtime->guest_analysis_reservation();
+            auth.begin_browser_observation = hosted_runtime->browser_observation_begin();
+            auth.submit_browser_observation = hosted_runtime->browser_observation_submit();
+            auth.finalize_browser_observation = hosted_runtime->browser_observation_finalize();
             auth.claim_guest = hosted_runtime->guest_claim_handler();
             auth.verify_fresh = hosted_runtime->fresh_token_verifier();
             auth.export_account = hosted_runtime->account_export_handler();

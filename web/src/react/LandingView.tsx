@@ -1,7 +1,25 @@
+import { type PointerEvent } from "react";
 import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
 const previewFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
+  const preview = event.currentTarget;
+  if (reset) {
+    preview.style.setProperty("--preview-tilt-x", "0deg");
+    preview.style.setProperty("--preview-tilt-y", "0deg");
+    preview.style.setProperty("--preview-lift", "0px");
+    return;
+  }
+
+  const bounds = preview.getBoundingClientRect();
+  const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 2;
+  const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 2;
+  preview.style.setProperty("--preview-tilt-x", `${(-y * 2.8).toFixed(2)}deg`);
+  preview.style.setProperty("--preview-tilt-y", `${(x * 2.8).toFixed(2)}deg`);
+  preview.style.setProperty("--preview-lift", `${(1.5 - y * 1.5).toFixed(2)}px`);
+}
 
 export function LandingView({ onStart, onSignIn }: {
   onStart: () => void;
@@ -18,32 +36,35 @@ export function LandingView({ onStart, onSignIn }: {
         </button>
         <nav className="landing-nav" aria-label="Landing page">
           <button onClick={() => scrollTo("landing-flow")}>How it works</button>
-          <button onClick={() => scrollTo("landing-intelligence")}>What’s next</button>
         </nav>
         <button className="landing-signin" onClick={onSignIn}>Sign in</button>
       </header>
 
       <section className="landing-hero" aria-labelledby="landing-title">
         <div className="landing-copy">
-          <p className="landing-eyebrow">Open-source game analysis</p>
-          <h1 id="landing-title">See what changed in your game.</h1>
-          <p className="landing-lede">Plywise gives you a calm, board-first review of a finished chess game. Bring a public link or PGN, then follow the moments worth another look.</p>
+          <p className="landing-eyebrow">Open-source chess analysis</p>
+          <h1 id="landing-title">Free chess analysis, without the fuss.</h1>
+          <p className="landing-lede">Bring a public game link or PGN, create an account, and follow the analysis.</p>
           <div className="landing-actions">
-            <button className="landing-primary" onClick={onStart}>Sign in to analyze <Icon name="analysis" /></button>
-            <button className="landing-secondary" onClick={onSignIn}>Already have an account? Sign in <span aria-hidden="true">→</span></button>
+            <button className="landing-primary" onClick={onStart}>Sign up to analyze <Icon name="analysis" /></button>
+            <button className="landing-secondary" onClick={onSignIn}>Already have an account? Sign in</button>
           </div>
-          <p className="landing-note"><Icon name="check" /> One finished game at a time · no subscription · no Chess.com password</p>
         </div>
 
-        <section className="landing-preview" aria-label="Board-first review preview">
-          <span className="landing-preview-header"><span>Board-first review</span><small>Built for finished games</small></span>
+        <section
+          className="landing-preview"
+          aria-label="Game analysis preview"
+          onPointerMove={setPreviewTilt}
+          onPointerLeave={(event) => setPreviewTilt(event, true)}
+        >
+          <span className="landing-preview-header"><span>A game, reviewed</span><small>Open source</small></span>
           <div className="landing-preview-body">
             <div className="landing-preview-board"><ChessBoard fen={previewFen} orientation="white" compact={false} interactive onSquare={onStart} /></div>
             <div className="landing-preview-copy">
-              <span>Review, not noise</span>
-              <strong>Start with the position.</strong>
-              <p>See the verdict first. Open the engine line when you want the detail.</p>
-              <div className="landing-preview-rule"><Icon name="analysis" /><span>Analysis starts when you choose a game.</span></div>
+              <span>Follow the moments</span>
+              <strong>See what changed.</strong>
+              <p>Start with the position, then open the engine line when you want more detail.</p>
+              <div className="landing-preview-rule"><Icon name="analysis" /><span>Analysis starts after you choose a game.</span></div>
             </div>
           </div>
         </section>
@@ -51,22 +72,35 @@ export function LandingView({ onStart, onSignIn }: {
 
       <section className="landing-flow" id="landing-flow" aria-labelledby="landing-flow-title">
         <div className="landing-section-heading">
-          <p className="landing-eyebrow">The flow</p>
-          <h2 id="landing-flow-title">Three steps. No clutter.</h2>
+          <p className="landing-eyebrow">How it works</p>
+          <h2 id="landing-flow-title">From game link to useful review.</h2>
         </div>
-        <ol className="landing-steps">
-          <li><span>1</span><div><h3>Sign in</h3><p>Your reviews belong to your account, so they are still there when you come back.</p></div></li>
-          <li><span>2</span><div><h3>Add a finished game</h3><p>Paste a public Chess.com link or drop in a PGN. Live games stay out of scope.</p></div></li>
-          <li><span>3</span><div><h3>Review the important moments</h3><p>Move through the board, compare the engine’s line, and try a better idea.</p></div></li>
-        </ol>
+        <div className="landing-visual-flow">
+          <article className="landing-flow-stage">
+            <div className="landing-stage-heading"><span>01</span><strong>Bring a game</strong></div>
+            <div className="landing-stage-input" role="img" aria-label="Paste a public game link or PGN">
+              <span>chess.com/game/...</span><b>Analyze</b>
+            </div>
+            <p>Paste a public link or PGN.</p>
+          </article>
+          <article className="landing-flow-stage">
+            <div className="landing-stage-heading"><span>02</span><strong>Analysis loading</strong></div>
+            <div className="landing-stage-loading" role="img" aria-label="Analysis loading">
+              <span className="landing-stage-spinner" aria-hidden="true" />
+              <span>Reviewing the game</span>
+            </div>
+            <p>Let the review run when you are ready.</p>
+          </article>
+          <article className="landing-flow-stage landing-flow-stage-board">
+            <div className="landing-stage-heading"><span>03</span><strong>Follow the review</strong></div>
+            <div className="landing-stage-board" role="img" aria-label="Chess analysis board with a suggested move">
+              <ChessBoard fen={previewFen} orientation="white" activeUci="e2e4" showArrow />
+              <span>Analysis ready</span>
+            </div>
+            <p>See the position and the move worth another look.</p>
+          </article>
+        </div>
       </section>
-
-      <section className="landing-intelligence" id="landing-intelligence" aria-labelledby="landing-intelligence-title">
-        <div><p className="landing-eyebrow">Coming later</p><h2 id="landing-intelligence-title">Your games will teach the system what to look for.</h2></div>
-        <p>Personal patterns, practice positions, and progress are on the roadmap. They will be tied to real games and positions, not made-up scores.</p>
-      </section>
-
-      <footer className="landing-footer"><span>Plywise</span><span>Free finished-game analysis · open source · independent from Chess.com</span></footer>
     </div>
   </main>;
 }

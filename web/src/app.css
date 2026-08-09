@@ -746,6 +746,10 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .account-entry-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .account-entry-actions .account-mode-switch { min-height: 32px; padding: 0 3px; border: 0; color: var(--text-soft); background: transparent; box-shadow: none; font-size: 10px; }
 .account-entry-actions .account-mode-switch:hover { color: var(--text); }
+.account-page { min-height: 100dvh; display: grid; place-items: center; padding: 28px; background: var(--canvas); }
+.account-page-shell { display: grid; gap: 16px; width: min(560px, 100%); }
+.account-page-brand { justify-self: start; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 18px; font-weight: 650; letter-spacing: -.05em; }
+.account-page .account-modal { width: 100%; box-shadow: 12px 15px 30px var(--shadow-dark), -5px -5px 14px var(--shadow-light), inset 1px 1px var(--shadow-light); }
 
 @media (max-width: 1270px) {
   .app-frame { grid-template-columns: 104px minmax(0, 1fr); }
@@ -800,6 +804,8 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
   .account-modal { padding: 22px; border-radius: 25px; }
   .account-modal footer { align-items: flex-start; flex-direction: column; }
   .account-modal footer button { width: 100%; }
+  .account-page { align-items: start; padding: 18px 16px; }
+  .account-page-shell { padding-top: 10px; }
   .engine-profile-options { grid-template-columns: 1fr; }
 }
 

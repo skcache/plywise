@@ -681,6 +681,7 @@ export default function App() {
   const accountPrompt = accountPromptOpen && <AccountPrompt
     auth={authSnapshot}
     mode={accountEntryMode}
+    presentation={authSnapshot.session ? "modal" : "page"}
     busyProvider={authBusy}
     message={authMessage}
     onProvider={(provider) => void startProviderSignIn(provider)}
@@ -690,7 +691,9 @@ export default function App() {
   />;
 
   if (!authSnapshot.session) {
-    return <><LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("sign-in")}/>{accountPrompt}</>;
+    return accountPromptOpen
+      ? accountPrompt
+      : <LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("sign-in")}/>;
   }
 
   if (serviceError) {

@@ -527,29 +527,32 @@ std::string mime_type(const std::filesystem::path& path) {
 
 } // namespace
 
-std::optional<Response> Api::authorize(const Request& request) const {
+Api::Authentication Api::authenticate(const Request& request) const {
     if (!auth_.required)
-        return std::nullopt;
+        return {};
 
     if (!auth_.verify)
-        return auth_response(503, "authentication is not configured", "auth_unavailable");
+        return Authentication{{}, auth_response(503, "authentication is not configured",
+                                                 "auth_unavailable")};
 
     auto authorization = request.headers.find("authorization");
     if (authorization == request.headers.end())
         authorization = request.headers.find("Authorization");
     if (authorization == request.headers.end())
-        return auth_response(401, "authentication is required", "auth_required");
+        return Authentication{{}, auth_response(401, "authentication is required",
+                                                 "auth_required")};
 
     constexpr std::string_view bearer_prefix = "Bearer ";
     const std::string_view value = authorization->second;
     if (!value.starts_with(bearer_prefix))
-        return auth_response(401, "bearer authentication is required", "invalid_token");
+        return Authentication{{}, auth_response(401, "bearer authentication is required",
+                                                 "invalid_token")};
     const std::string_view token = value.substr(bearer_prefix.size());
     if (token.empty() || token.size() > 4096 ||
         std::any_of(token.begin(), token.end(), [](unsigned char character) {
             return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
         })) {
-        return auth_response(401, "bearer token is invalid", "invalid_token");
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
     }
 
     std::optional<app::OwnerId> owner;
@@ -557,11 +560,21 @@ std::optional<Response> Api::authorize(const Request& request) const {
         owner = auth_.verify(token);
     } catch (...) {
         // A verifier must never leak provider details or token material through this boundary.
-        return auth_response(401, "bearer token is invalid", "invalid_token");
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
     }
     if (!owner)
-        return auth_response(401, "bearer token is invalid", "invalid_token");
-    if (*owner != repository_.owner())
+        return Authentication{{}, auth_response(401, "bearer token is invalid", "invalid_token")};
+    return Authentication{std::move(owner), {}};
+}
+
+std::optional<Response> Api::authorize(const Request& request) const {
+    const Authentication authentication = authenticate(request);
+    if (authentication.denial)
+        return authentication.denial;
+    // A scoped resolver owns the repository choice. The fixed-owner comparison remains for the
+    // legacy local/one-owner hosted adapter and keeps this public helper backwards compatible.
+    if (authentication.owner && !auth_.resolve_scope &&
+        *authentication.owner != default_repository_.owner())
         return auth_response(403, "resource is outside the authenticated owner", "forbidden");
     return std::nullopt;
 }
@@ -573,10 +586,37 @@ Response Api::handle(const Request& request) {
             request.method == "GET" &&
             (parts == std::vector<std::string>{"api", "health"} ||
              parts == std::vector<std::string>{"api", "ready"});
+        ApiScope scope{&default_repository_, &default_jobs_};
         if (!public_route) {
-            if (const auto denied = authorize(request))
-                return *denied;
+            const Authentication authentication = authenticate(request);
+            if (authentication.denial)
+                return *authentication.denial;
+            if (authentication.owner) {
+                if (auth_.resolve_scope) {
+                    std::optional<ApiScope> resolved;
+                    try {
+                        resolved = auth_.resolve_scope(*authentication.owner);
+                    } catch (...) {
+                        return auth_response(503, "authenticated storage is unavailable",
+                                             "storage_unavailable");
+                    }
+                    if (!resolved || resolved->repository == nullptr || resolved->jobs == nullptr ||
+                        resolved->repository->owner() != *authentication.owner)
+                        return auth_response(503, "authenticated storage is unavailable",
+                                             "storage_unavailable");
+                    scope = *resolved;
+                } else if (*authentication.owner != default_repository_.owner()) {
+                    return auth_response(403, "resource is outside the authenticated owner",
+                                         "forbidden");
+                }
+            }
         }
+        if (scope.repository == nullptr || scope.jobs == nullptr)
+            return error_response(500, "request scope is unavailable");
+        // Keep the route implementation below unchanged while selecting its dependencies per
+        // request. These locals intentionally shadow the fixed constructor members.
+        app::IRepository& repository_ = *scope.repository;
+        app::JobManager& jobs_ = *scope.jobs;
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
             json::Value::Object health{
@@ -1306,6 +1346,22 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
         std::ostringstream head;
         head << "HTTP/1.1 " << response.status << ' ' << reason_phrase(response.status)
              << "\r\n";
+        for (const auto& [key, value] : response.headers)
+            head << key << ": " << value << "\r\n";
+        head << "Content-Length: " << response.body.size()
+             << "\r\nConnection: close\r\n\r\n";
+        const std::string encoded = head.str();
+        static_cast<void>(send_all(client_fd, encoded.data(), encoded.size()));
+        static_cast<void>(send_all(client_fd, response.body.data(), response.body.size()));
+        close(client_fd);
+        return;
+    }
+    if (api_.has_scoped_authorization()) {
+        const Response response = json_response(
+            503, json::Value::Object{{"error", "owner-scoped event streaming is not configured"},
+                                     {"code", "events_unavailable"}});
+        std::ostringstream head;
+        head << "HTTP/1.1 503 Service Unavailable\r\n";
         for (const auto& [key, value] : response.headers)
             head << key << ": " << value << "\r\n";
         head << "Content-Length: " << response.body.size()

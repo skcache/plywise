@@ -252,6 +252,49 @@ TEST_CASE("API hosted mode fails closed and scopes authenticated requests") {
     CHECK_EQ(json::parse(unavailable_response.body).at("code").as_string(), "auth_unavailable");
 }
 
+TEST_CASE("API scoped auth routes each request through its resolved owner resources") {
+    ApiFixture default_scope;
+    ApiFixture resolved_scope;
+    const service::AuthConfig auth{
+        true,
+        [](std::string_view token) -> std::optional<app::OwnerId> {
+            if (token == "resolved-owner")
+                return app::OwnerId::local();
+            if (token == "missing-scope")
+                return app::OwnerId::account("account-without-runtime");
+            return std::nullopt;
+        },
+        [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+            if (owner == app::OwnerId::local())
+                return service::ApiScope{&resolved_scope.repository, &resolved_scope.jobs};
+            if (owner.kind() == app::OwnerKind::Account)
+                return service::ApiScope{&default_scope.repository, &default_scope.jobs};
+            return std::nullopt;
+        },
+    };
+    service::Api scoped(default_scope.importer, default_scope.repository, default_scope.jobs,
+                        {}, {}, nullptr, {}, auth);
+    const std::string body = json::dump(json::Value::Object{
+        {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"},
+    });
+
+    const auto imported = scoped.handle(
+        service::Request{"POST", "/api/import", {{"authorization", "Bearer resolved-owner"}}, body});
+    CHECK_EQ(imported.status, 202);
+    CHECK_EQ(default_scope.repository.size(), 0ULL);
+    CHECK_EQ(resolved_scope.repository.size(), 1ULL);
+
+    const auto listed = scoped.handle(
+        service::Request{"GET", "/api/games", {{"authorization", "Bearer resolved-owner"}}, {}});
+    CHECK_EQ(listed.status, 200);
+    CHECK_EQ(json::parse(listed.body).at("games").as_array().size(), 1ULL);
+
+    const auto unavailable = scoped.handle(service::Request{
+        "GET", "/api/games", {{"authorization", "Bearer missing-scope"}}, {}});
+    CHECK_EQ(unavailable.status, 503);
+    CHECK_EQ(json::parse(unavailable.body).at("code").as_string(), "storage_unavailable");
+}
+
 TEST_CASE("API path router decodes identifiers safely") {
     ApiFixture fixture;
     const auto response = fixture.api.handle(

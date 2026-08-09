@@ -39,12 +39,24 @@ struct Readiness {
     std::string engine;
 };
 
+// A request scope keeps the repository and job queue selected by the authenticated owner
+// together. Hosted callers must return objects that remain alive for the duration of the request;
+// the API never stores these pointers between requests.
+struct ApiScope {
+    app::IRepository* repository{nullptr};
+    app::JobManager* jobs{nullptr};
+};
+
 struct AuthConfig {
     using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
+    using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
 
     // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
     bool required{false};
     TokenVerifier verify;
+    // When present, authenticated requests are routed to an owner-scoped repository and job
+    // manager. Without it, the API retains the fixed local repository behavior.
+    ScopeResolver resolve_scope;
 };
 
 class Api {
@@ -57,17 +69,27 @@ class Api {
         Diagnostics diagnostics = {}, AdvancedDrills advanced_drills = {},
         app::IngestManager* ingest = nullptr, ReadinessCheck readiness = {},
         AuthConfig auth = {})
-        : importer_(importer), repository_(repository), jobs_(jobs),
+        : importer_(importer), default_repository_(repository), default_jobs_(jobs),
           diagnostics_(std::move(diagnostics)), advanced_drills_(std::move(advanced_drills)),
           ingest_(ingest), readiness_(std::move(readiness)), auth_(std::move(auth)) {}
 
     [[nodiscard]] Response handle(const Request& request);
     [[nodiscard]] std::optional<Response> authorize(const Request& request) const;
+    [[nodiscard]] bool has_scoped_authorization() const noexcept {
+        return static_cast<bool>(auth_.resolve_scope);
+    }
 
   private:
+    struct Authentication {
+        std::optional<app::OwnerId> owner;
+        std::optional<Response> denial;
+    };
+
+    [[nodiscard]] Authentication authenticate(const Request& request) const;
+
     import::ImportService& importer_;
-    app::IRepository& repository_;
-    app::JobManager& jobs_;
+    app::IRepository& default_repository_;
+    app::JobManager& default_jobs_;
     Diagnostics diagnostics_;
     AdvancedDrills advanced_drills_;
     app::IngestManager* ingest_{nullptr};

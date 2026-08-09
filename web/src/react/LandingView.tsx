@@ -86,16 +86,15 @@ export function LandingView({ onStart, onSignIn }: {
           <article className="landing-flow-stage">
             <div className="landing-stage-heading"><strong>Analysis loading</strong></div>
             <div className="landing-stage-loading" role="img" aria-label="Analysis loading">
-              <span className="landing-stage-spinner" aria-hidden="true" />
               <span className="landing-loading-copy"><strong>Reviewing the game</strong><small>Checking the game for key moments</small></span>
-              <span className="landing-loading-pulse" aria-hidden="true" />
+              <span className="landing-loading-track" aria-hidden="true"><span className="landing-loading-fill" /></span>
             </div>
             <p>Let the review run when you are ready.</p>
           </article>
           <article className="landing-flow-stage landing-flow-stage-board">
             <div className="landing-stage-heading"><strong>Follow the review</strong></div>
             <div className="landing-stage-board" role="img" aria-label="Chess analysis board with a suggested move">
-              <ChessBoard fen={reviewFen} orientation="white" activeUci="c2f5" showArrow />
+              <ChessBoard fen={reviewFen} orientation="white" compact activeUci="c2f5" showArrow />
               <span>Analysis ready</span>
             </div>
             <p>See the position and the move worth another look.</p>

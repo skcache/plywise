@@ -277,16 +277,15 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .landing-stage-input, .landing-stage-loading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; margin-top: 34px; padding: 0 15px; border: 1px solid var(--line-strong); border-radius: 17px; background: var(--surface-high); box-shadow: inset 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light); color: var(--text-soft); font-size: 10px; }
 .landing-stage-input span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .landing-stage-input b { flex: 0 0 auto; padding: 8px 10px; border-radius: 10px; color: var(--surface-high); background: var(--text); font-size: 9px; font-weight: 650; }
-.landing-stage-loading { justify-content: flex-start; gap: 12px; }
-.landing-stage-spinner { width: 16px; height: 16px; flex: 0 0 auto; border: 2px solid var(--line-strong); border-top-color: var(--focus); border-radius: 50%; }
+.landing-stage-loading { display: block; }
 .landing-loading-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .landing-loading-copy strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .landing-loading-copy small { overflow: hidden; color: var(--text-faint); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.landing-loading-pulse { width: 38px; height: 4px; margin-left: auto; overflow: hidden; flex: 0 0 auto; border-radius: 99px; background: var(--line); }
-.landing-loading-pulse::after { display: block; width: 45%; height: 100%; border-radius: inherit; background: var(--focus); content: ""; animation: landing-loading-sweep 1.55s ease-in-out infinite; }
-.landing-stage-board { position: relative; display: flex; align-items: center; gap: 17px; min-height: 164px; margin-top: 24px; padding: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-high); box-shadow: inset 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light); }
-.landing-stage-board .chess-board { width: min(150px, 52%); flex: 0 0 auto; border-radius: 10px; box-shadow: 6px 8px 13px var(--shadow-dark); }
-.landing-stage-board > span { color: var(--good); font-size: 10px; font-weight: 650; }
+.landing-loading-track { display: block; width: 100%; height: 6px; margin-top: 16px; overflow: hidden; border-radius: 99px; background: var(--line); }
+.landing-loading-fill { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--focus); animation: landing-loading-fill 2.4s cubic-bezier(.65, 0, .35, 1) infinite; }
+.landing-stage-board { position: relative; display: flex; align-items: center; gap: 12px; min-height: 190px; margin-top: 24px; padding: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-high); box-shadow: inset 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light); }
+.landing-stage-board .chess-board { width: min(180px, 72%); flex: 0 0 auto; border-radius: 10px; box-shadow: 6px 8px 13px var(--shadow-dark); }
+.landing-stage-board > span { min-width: 0; color: var(--good); font-size: 10px; font-weight: 650; }
 .surface-heading { display: flex; align-items: end; justify-content: space-between; min-height: 112px; padding: 24px 30px; border-bottom: 1px solid var(--line); }
 .surface-heading span, .progress-heading span, .profile-block > span, .explore-index header span, .concept-copy > span { color: var(--text-faint); font-size: 11px; }
 .surface-heading h1, .explore-index h1 { max-width: 620px; margin: 7px 0 0; font-size: 28px; font-weight: 560; letter-spacing: -.035em; }
@@ -886,9 +885,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .landing-preview-board { cursor: pointer; }
 .landing-preview-board .chess-board { width: min(100%, 390px); margin: 0 auto; border-radius: 18px; box-shadow: 10px 13px 24px var(--shadow-dark); }
 .landing-preview-copy strong { display: block; margin: 13px 0 10px; font-size: clamp(22px, 2.4vw, 32px); font-weight: 560; letter-spacing: -.055em; line-height: 1.04; }
-.landing-stage-spinner { animation: landing-spin 1.2s linear infinite; }
-@keyframes landing-spin { to { transform: rotate(360deg); } }
-@keyframes landing-loading-sweep { 0% { transform: translateX(-125%); } 55%, 100% { transform: translateX(230%); } }
+@keyframes landing-loading-fill { 0% { width: 0; } 68% { width: 72%; } 100% { width: 100%; } }
 
 .import-modal input, .import-modal textarea { box-shadow: none; transition: border-color 160ms ease, background-color 160ms ease; }
 .import-modal input:focus-visible, .import-modal textarea:focus-visible { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
@@ -948,7 +945,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .landing-flow-stage + .landing-flow-stage { border-top: 1px solid var(--line); border-left: 0; }
   .landing-flow-stage { min-height: 220px; padding: 22px; }
   .landing-stage-input, .landing-stage-loading { margin-top: 24px; }
-  .landing-stage-board { min-height: 146px; }
+  .landing-stage-board { min-height: 190px; }
   .landing-actions { align-items: stretch; flex-direction: column; gap: 12px; }
   .landing-primary { justify-content: center; }
   .landing-secondary { align-self: flex-start; white-space: normal; text-align: left; }
@@ -962,5 +959,5 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .landing-preview,
   .landing-preview:hover,
   .landing-preview:active { transform: none; transition: none; }
-  .landing-stage-spinner, .landing-loading-pulse::after { animation: none; }
+  .landing-loading-fill { animation: none; width: 72%; }
 }

@@ -245,6 +245,16 @@ Response error_response(int status, std::string message, ErrorCode code) {
                                                       {"code", std::string(error_code(code))}});
 }
 
+Response auth_response(int status, std::string message, std::string code) {
+    Response response = json_response(status, json::Value::Object{
+                                                    {"error", std::move(message)},
+                                                    {"code", std::move(code)},
+                                                });
+    if (status == 401)
+        response.headers.insert_or_assign("WWW-Authenticate", "Bearer");
+    return response;
+}
+
 Response ingest_error(int status, std::string message, std::string code,
                       std::vector<std::string> actions = {}) {
     json::Value::Array encoded;
@@ -305,6 +315,8 @@ std::string reason_phrase(int status) {
         return "No Content";
     case 400:
         return "Bad Request";
+    case 401:
+        return "Unauthorized";
     case 403:
         return "Forbidden";
     case 404:
@@ -515,18 +527,68 @@ std::string mime_type(const std::filesystem::path& path) {
 
 } // namespace
 
+std::optional<Response> Api::authorize(const Request& request) const {
+    if (!auth_.required)
+        return std::nullopt;
+
+    if (!auth_.verify)
+        return auth_response(503, "authentication is not configured", "auth_unavailable");
+
+    auto authorization = request.headers.find("authorization");
+    if (authorization == request.headers.end())
+        authorization = request.headers.find("Authorization");
+    if (authorization == request.headers.end())
+        return auth_response(401, "authentication is required", "auth_required");
+
+    constexpr std::string_view bearer_prefix = "Bearer ";
+    const std::string_view value = authorization->second;
+    if (!value.starts_with(bearer_prefix))
+        return auth_response(401, "bearer authentication is required", "invalid_token");
+    const std::string_view token = value.substr(bearer_prefix.size());
+    if (token.empty() || token.size() > 4096 ||
+        std::any_of(token.begin(), token.end(), [](unsigned char character) {
+            return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
+        })) {
+        return auth_response(401, "bearer token is invalid", "invalid_token");
+    }
+
+    std::optional<app::OwnerId> owner;
+    try {
+        owner = auth_.verify(token);
+    } catch (...) {
+        // A verifier must never leak provider details or token material through this boundary.
+        return auth_response(401, "bearer token is invalid", "invalid_token");
+    }
+    if (!owner)
+        return auth_response(401, "bearer token is invalid", "invalid_token");
+    if (*owner != repository_.owner())
+        return auth_response(403, "resource is outside the authenticated owner", "forbidden");
+    return std::nullopt;
+}
+
 Response Api::handle(const Request& request) {
     try {
         const auto parts = path_parts(request.path);
+        const bool public_route =
+            request.method == "GET" &&
+            (parts == std::vector<std::string>{"api", "health"} ||
+             parts == std::vector<std::string>{"api", "ready"});
+        if (!public_route) {
+            if (const auto denied = authorize(request))
+                return *denied;
+        }
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
-            return json_response(200, json::Value::Object{
-                                          {"status", "ok"},
-                                          {"version", "0.3.0"},
-                                          {"service", "plywise-api"},
-                                          {"local_only", state.local_only},
-                                          {"games", repository_.size()},
-                                      });
+            json::Value::Object health{
+                {"status", "ok"},
+                {"version", "0.3.0"},
+                {"service", "plywise-api"},
+                {"local_only", state.local_only},
+                {"auth_required", auth_.required},
+            };
+            if (!auth_.required)
+                health.emplace("games", repository_.size());
+            return json_response(200, std::move(health));
         }
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "ready"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
@@ -1239,6 +1301,21 @@ void HttpServer::handle_client(int client_fd) {
 }
 
 void HttpServer::handle_websocket(int client_fd, const Request& request) {
+    if (const auto denied = api_.authorize(request)) {
+        const Response response = *denied;
+        std::ostringstream head;
+        head << "HTTP/1.1 " << response.status << ' ' << reason_phrase(response.status)
+             << "\r\n";
+        for (const auto& [key, value] : response.headers)
+            head << key << ": " << value << "\r\n";
+        head << "Content-Length: " << response.body.size()
+             << "\r\nConnection: close\r\n\r\n";
+        const std::string encoded = head.str();
+        static_cast<void>(send_all(client_fd, encoded.data(), encoded.size()));
+        static_cast<void>(send_all(client_fd, response.body.data(), response.body.size()));
+        close(client_fd);
+        return;
+    }
     const auto origin = request.headers.find("origin");
     if (origin == request.headers.end() || !origin_allowed(origin->second)) {
         constexpr std::string_view forbidden =

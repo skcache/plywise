@@ -44,6 +44,8 @@ struct Options {
     std::string chesscom_username;
     std::vector<std::string> trusted_hosts;
     std::vector<std::string> allowed_origins;
+    bool require_auth{false};
+    bool require_auth_explicit{false};
 };
 
 std::optional<std::string> environment(std::string_view name) {
@@ -82,6 +84,14 @@ unsigned long bounded_number(std::string_view value, std::string_view name,
     return parsed;
 }
 
+bool boolean_option(std::string_view value, std::string_view name) {
+    if (value == "1" || value == "true")
+        return true;
+    if (value == "0" || value == "false")
+        return false;
+    throw std::runtime_error(std::string(name) + " must be true or false");
+}
+
 Options environment_options() {
     Options options;
     if (const auto value = environment("PCT_DATA_DIR"))
@@ -110,6 +120,10 @@ Options environment_options() {
         options.trusted_hosts = comma_separated(*value);
     if (const auto value = environment("PCT_ALLOWED_ORIGINS"))
         options.allowed_origins = comma_separated(*value);
+    if (const auto value = environment("PCT_REQUIRE_AUTH")) {
+        options.require_auth = boolean_option(*value, "PCT_REQUIRE_AUTH");
+        options.require_auth_explicit = true;
+    }
     return options;
 }
 
@@ -149,6 +163,9 @@ Options parse_options(int argc, char** argv) {
             options.trusted_hosts.push_back(value());
         } else if (argument == "--allowed-origin") {
             options.allowed_origins.push_back(value());
+        } else if (argument == "--require-auth") {
+            options.require_auth = true;
+            options.require_auth_explicit = true;
         } else if (argument == "--help") {
             std::cout << "usage: personal-chess-tutor [--data-dir path] [--web-root path] "
                          "[--stockfish path] [--bind-address IPv4] [--port number] "
@@ -156,12 +173,15 @@ Options parse_options(int argc, char** argv) {
                          "[--max-pending count] [--retry-limit count] "
                          "[--chesscom-username public-name] "
                          "[--trusted-host hostname] [--allowed-origin https-origin] "
+                         "[--require-auth] "
                          "[--tactical-corpus path | --no-tactical-corpus]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown option: " + std::string(argument));
         }
     }
+    if (!options.require_auth_explicit && options.bind_address != "127.0.0.1")
+        options.require_auth = true;
     return options;
 }
 
@@ -245,7 +265,7 @@ int main(int argc, char** argv) {
         }, &ingest, [=] {
             return pct::service::Readiness{
                 true, engine_ready, options.bind_address == "127.0.0.1", engine_identity};
-        });
+        }, pct::service::AuthConfig{options.require_auth, {}});
         pct::service::HttpServer server(
             api, jobs,
             pct::service::ServerOptions{options.port, options.web_root, options.bind_address,

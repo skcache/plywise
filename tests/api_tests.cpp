@@ -201,6 +201,57 @@ TEST_CASE("API distinguishes liveness from engine readiness") {
     CHECK_EQ(body.at("components").at("engine").as_string(), "unavailable");
 }
 
+TEST_CASE("API hosted mode fails closed and scopes authenticated requests") {
+    ApiFixture fixture;
+    const service::AuthConfig auth{
+        true,
+        [](std::string_view token) -> std::optional<app::OwnerId> {
+            if (token == "local-token")
+                return app::OwnerId::local();
+            if (token == "other-owner")
+                return app::OwnerId::account("account-02");
+            return std::nullopt;
+        },
+    };
+    service::Api hosted(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {},
+                        auth);
+
+    const auto health = hosted.handle(service::Request{"GET", "/api/health", {}, {}});
+    CHECK_EQ(health.status, 200);
+    CHECK(json::parse(health.body).at("auth_required").as_bool());
+    CHECK(!json::parse(health.body).as_object().contains("games"));
+
+    const auto missing = hosted.handle(service::Request{"GET", "/api/games", {}, {}});
+    CHECK_EQ(missing.status, 401);
+    CHECK_EQ(missing.headers.at("WWW-Authenticate"), "Bearer");
+    CHECK_EQ(json::parse(missing.body).at("code").as_string(), "auth_required");
+
+    const auto malformed = hosted.handle(
+        service::Request{"GET", "/api/games", {{"authorization", "Basic secret"}}, {}});
+    CHECK_EQ(malformed.status, 401);
+    CHECK_EQ(json::parse(malformed.body).at("code").as_string(), "invalid_token");
+
+    const auto invalid = hosted.handle(
+        service::Request{"GET", "/api/games", {{"authorization", "Bearer wrong"}}, {}});
+    CHECK_EQ(invalid.status, 401);
+
+    const auto wrong_owner = hosted.handle(
+        service::Request{"GET", "/api/games", {{"authorization", "Bearer other-owner"}}, {}});
+    CHECK_EQ(wrong_owner.status, 403);
+    CHECK_EQ(json::parse(wrong_owner.body).at("code").as_string(), "forbidden");
+
+    const auto valid = hosted.handle(
+        service::Request{"GET", "/api/games", {{"authorization", "Bearer local-token"}}, {}});
+    CHECK_EQ(valid.status, 200);
+
+    service::Api unavailable(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr,
+                             {}, service::AuthConfig{true, {}});
+    const auto unavailable_response =
+        unavailable.handle(service::Request{"GET", "/api/games", {}, {}});
+    CHECK_EQ(unavailable_response.status, 503);
+    CHECK_EQ(json::parse(unavailable_response.body).at("code").as_string(), "auth_unavailable");
+}
+
 TEST_CASE("API path router decodes identifiers safely") {
     ApiFixture fixture;
     const auto response = fixture.api.handle(

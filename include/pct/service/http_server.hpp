@@ -11,7 +11,9 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -37,6 +39,14 @@ struct Readiness {
     std::string engine;
 };
 
+struct AuthConfig {
+    using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
+
+    // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
+    bool required{false};
+    TokenVerifier verify;
+};
+
 class Api {
   public:
     using Diagnostics = std::function<json::Value()>;
@@ -45,12 +55,14 @@ class Api {
 
     Api(import::ImportService& importer, app::IRepository& repository, app::JobManager& jobs,
         Diagnostics diagnostics = {}, AdvancedDrills advanced_drills = {},
-        app::IngestManager* ingest = nullptr, ReadinessCheck readiness = {})
+        app::IngestManager* ingest = nullptr, ReadinessCheck readiness = {},
+        AuthConfig auth = {})
         : importer_(importer), repository_(repository), jobs_(jobs),
           diagnostics_(std::move(diagnostics)), advanced_drills_(std::move(advanced_drills)),
-          ingest_(ingest), readiness_(std::move(readiness)) {}
+          ingest_(ingest), readiness_(std::move(readiness)), auth_(std::move(auth)) {}
 
     [[nodiscard]] Response handle(const Request& request);
+    [[nodiscard]] std::optional<Response> authorize(const Request& request) const;
 
   private:
     import::ImportService& importer_;
@@ -60,6 +72,7 @@ class Api {
     AdvancedDrills advanced_drills_;
     app::IngestManager* ingest_{nullptr};
     ReadinessCheck readiness_;
+    AuthConfig auth_;
 };
 
 struct ServerOptions {

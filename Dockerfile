@@ -50,6 +50,7 @@ LABEL org.opencontainers.image.title="Plywise C++ service" \
       org.opencontainers.image.source="https://github.com/siddhantkuwar/plywise"
 
 ENV PCT_BIND_ADDRESS=0.0.0.0 \
+    PCT_REQUIRE_AUTH=true \
     PCT_PORT=8787 \
     PCT_DATA_DIR=/var/lib/plywise \
     PCT_WEB_ROOT=/opt/plywise/web \

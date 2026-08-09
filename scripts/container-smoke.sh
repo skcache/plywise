@@ -23,6 +23,7 @@ docker run --detach \
   --tmpfs /var/lib/plywise:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
   --env PCT_TRUSTED_HOSTS=api.plywise.test \
   --env PCT_ALLOWED_ORIGINS=https://app.plywise.test \
+  --env PCT_REQUIRE_AUTH=false \
   --publish 127.0.0.1::8787 \
   "$IMAGE" >/dev/null
 

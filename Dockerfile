@@ -34,6 +34,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         libcurl4 \
+        libpq5 \
         stockfish \
     && mkdir -p /licenses /opt/plywise/resources /var/lib/plywise \
     && cp /usr/share/common-licenses/GPL-3 /licenses/stockfish-GPL-3.0.txt \

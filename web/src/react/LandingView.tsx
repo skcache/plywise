@@ -87,7 +87,7 @@ export function LandingView({ onStart, onSignIn }: {
             <div className="landing-stage-heading"><strong>Analysis loading</strong></div>
             <div className="landing-stage-loading" role="img" aria-label="Analysis loading">
               <span className="landing-loading-copy"><strong>Reviewing the game</strong><small>Checking the game for key moments</small></span>
-              <span className="landing-loading-track" aria-hidden="true"><span className="landing-loading-fill" /></span>
+              <span className="landing-loading-track" aria-hidden="true" />
             </div>
             <p>Let the review run when you are ready.</p>
           </article>

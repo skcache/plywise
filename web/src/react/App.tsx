@@ -622,6 +622,11 @@ export default function App() {
     setImportOpen(true);
   }, []);
 
+  const canSaveGuestReview = !authSnapshot.session &&
+    guestTrial.status === "used" &&
+    guestTrial.gameId === selectedGameId &&
+    Boolean(loadGuestSession());
+
   const openAccountPrompt = useCallback((context: "landing" | "save") => {
     accountFlowRequested.current = true;
     pendingAccountContext.current = context;
@@ -632,9 +637,15 @@ export default function App() {
       pendingClaim.current = guestSession
         ? { guestToken: guestSession.token, idempotencyKey: createClaimIdempotencyKey() }
         : null;
+      if (!guestSession) {
+        setAuthMessage("This guest review expired on this device. It cannot be saved now.");
+      } else {
+        setAuthMessage("");
+      }
       if (authSnapshot.session) void claimPendingReview();
     } else {
       pendingClaim.current = null;
+      setAuthMessage("");
     }
   }, [authSnapshot.session, claimPendingReview]);
 
@@ -733,6 +744,7 @@ export default function App() {
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     header = <TopBar title={gameName} detail={opening} meta={selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
+      {canSaveGuestReview && <SoftButton icon="book" onClick={() => openAccountPrompt("save")}>Save review</SoftButton>}
       {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>{selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => setOverviewOpen((value) => !value)}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">

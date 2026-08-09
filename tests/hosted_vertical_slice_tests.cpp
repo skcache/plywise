@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <array>
 #include <thread>
 #include <utility>
 
@@ -165,6 +166,136 @@ TEST_CASE("hosted vertical slice persists an account review and denies another o
         account_request("GET", "/api/games/" + game_id + "/retry-attempts"));
     CHECK_EQ(reopened_attempts.status, 200);
     CHECK_EQ(json::parse(reopened_attempts.body).at("attempts").as_array().size(), 1ULL);
+}
+
+TEST_CASE("hosted guest review claim survives the account API boundary") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    VerticalSliceEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 3, 2});
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    app::HostedIdentityStore identity(connection);
+    const auto account = identity.ensure_account("test", "guest-claim-account-" + std::to_string(stamp));
+    const std::string guest_id = "guest-claim-" + std::to_string(stamp);
+    std::array<unsigned char, 32> token_hash{};
+    token_hash.fill(0x19);
+    const auto expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count() +
+                            60 * 60 * 1000;
+    static_cast<void>(identity.create_guest_session(guest_id, token_hash, expires_at));
+
+    app::PostgresRepository account_repository(connection, account.owner());
+    app::PostgresRepository guest_repository(connection, app::OwnerId::guest(guest_id));
+    app::JobManager account_jobs(account_repository, analyzer, app::JobManagerOptions{1, 8, 1});
+    app::JobManager guest_jobs(guest_repository, analyzer, app::JobManagerOptions{1, 8, 1});
+    import::ImportService importer;
+    bool guest_valid = true;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [&](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "account-token")
+            return account.owner();
+        if (token == "guest-token" && guest_valid)
+            return app::OwnerId::guest(guest_id);
+        return std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+        if (owner == account.owner())
+            return service::ApiScope{&account_repository, &account_jobs};
+        if (owner == app::OwnerId::guest(guest_id))
+            return service::ApiScope{&guest_repository, &guest_jobs};
+        return std::nullopt;
+    };
+    auth.create_guest_session = [&] {
+        return std::optional<service::GuestSessionCredential>{
+            service::GuestSessionCredential{guest_id, "guest-token", expires_at}};
+    };
+    auth.claim_guest = [&](std::string_view token, const app::OwnerId& owner,
+                           std::string_view idempotency_key) {
+        CHECK_EQ(token, "guest-token");
+        CHECK(owner == account.owner());
+        const auto receipt = identity.claim_guest(guest_id, account.id, std::string(idempotency_key));
+        guest_valid = false;
+        return service::GuestClaimResult{receipt.guest_id, receipt.account_id,
+                                         receipt.transferred_games, receipt.already_claimed};
+    };
+    service::Api hosted(importer, account_repository, account_jobs, {}, {}, nullptr, {}, auth);
+    const auto request = [&](std::string method, std::string path, std::string body,
+                             std::string token) {
+        return hosted.handle(service::Request{
+            std::move(method), std::move(path),
+            {{"authorization", "Bearer " + std::move(token)}}, std::move(body)});
+    };
+
+    const auto guest_session = hosted.handle(
+        service::Request{"POST", "/api/guest/session", {}, "{}"});
+    CHECK_EQ(guest_session.status, 201);
+    CHECK_EQ(json::parse(guest_session.body).at("guest_id").as_string(), guest_id);
+
+    const auto imported = request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", vertical_slice_pgn()}}),
+        "guest-token");
+    CHECK_EQ(imported.status, 202);
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const auto guest_games = request("GET", "/api/games", {}, "guest-token");
+    CHECK_EQ(guest_games.status, 200);
+    CHECK_EQ(json::parse(guest_games.body).at("games").as_array().size(), 1ULL);
+
+    const auto started = request("POST", "/api/games/" + game_id + "/analysis", {}, "guest-token");
+    CHECK_EQ(started.status, 202);
+    const auto job_id = static_cast<std::uint64_t>(json::parse(started.body).at("id").as_number());
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const auto job = guest_jobs.get(job_id);
+        if (job && (job->status == app::JobStatus::Complete || job->status == app::JobStatus::Failed))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const auto completed_job = guest_jobs.get(job_id);
+    CHECK(completed_job.has_value());
+    CHECK(completed_job->status == app::JobStatus::Complete);
+
+    const auto account_before_claim = request("GET", "/api/games", {}, "account-token");
+    CHECK_EQ(account_before_claim.status, 200);
+    CHECK(json::parse(account_before_claim.body).at("games").as_array().empty());
+
+    const std::string claim_body = json::dump(json::Value::Object{
+        {"guest_token", "guest-token"}, {"idempotency_key", "guest-claim-api-1"}});
+    const auto claimed = request("POST", "/api/guest/claim", claim_body, "account-token");
+    CHECK_EQ(claimed.status, 200);
+    CHECK_EQ(json::parse(claimed.body).at("transferred_games").as_size(), 1ULL);
+    CHECK(!json::parse(claimed.body).at("already_claimed").as_bool());
+
+    const auto retry = request("POST", "/api/guest/claim", claim_body, "account-token");
+    CHECK_EQ(retry.status, 200);
+    CHECK_EQ(json::parse(retry.body).at("transferred_games").as_size(), 1ULL);
+    CHECK(!json::parse(retry.body).at("already_claimed").as_bool());
+    const auto already_claimed = request(
+        "POST", "/api/guest/claim",
+        json::dump(json::Value::Object{
+            {"guest_token", "guest-token"}, {"idempotency_key", "guest-claim-api-2"}}),
+        "account-token");
+    CHECK_EQ(already_claimed.status, 200);
+    CHECK_EQ(json::parse(already_claimed.body).at("transferred_games").as_size(), 0ULL);
+    CHECK(json::parse(already_claimed.body).at("already_claimed").as_bool());
+
+    const auto account_games = request("GET", "/api/games", {}, "account-token");
+    CHECK_EQ(account_games.status, 200);
+    CHECK_EQ(json::parse(account_games.body).at("games").as_array().size(), 1ULL);
+    const auto account_review = request("GET", "/api/games/" + game_id + "/analysis", {}, "account-token");
+    CHECK_EQ(account_review.status, 200);
+    CHECK(json::parse(account_review.body).as_object().contains("moves"));
+
+    const auto guest_after_claim = request("GET", "/api/games", {}, "guest-token");
+    CHECK_EQ(guest_after_claim.status, 401);
+
+    app::PostgresRepository reopened(connection, account.owner());
+    const auto reopened_game = reopened.get(game_id);
+    CHECK(reopened_game.has_value());
+    CHECK(reopened_game->analysis.has_value());
 }
 
 #endif

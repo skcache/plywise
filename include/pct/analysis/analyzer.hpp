@@ -219,4 +219,13 @@ classify_mistake_category(const chess::Game& game, std::size_t ply,
                           const engine::AnalysisResult& best_before,
                           const engine::AnalysisResult& best_after);
 
+// Assemble a review from already validated position evaluations. This is shared by the browser
+// observation path and the server analyzer so both execution sources use the same C++ classifiers,
+// opening source, tactical tags, explanations, and accuracy contract.
+[[nodiscard]] GameAnalysis assemble_observation_review(
+    const chess::Game& game, const std::vector<engine::AnalysisResult>& before_results,
+    const std::vector<engine::AnalysisResult>& after_results,
+    ClassificationState state = ClassificationState::Final, AnalyzerOptions options = {},
+    std::string_view engine_version = {});
+
 } // namespace pct::analysis

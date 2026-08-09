@@ -122,11 +122,11 @@ class EnginePool::State {
                     engine = factory(index);
                 AnalysisResult result =
                     engine->analyze(work->request, work->cancellation.get_token());
-                work->promise.set_value(std::move(result));
                 {
                     std::lock_guard lock(mutex);
                     ++completed;
                 }
+                work->promise.set_value(std::move(result));
                 finish_active(work->request.priority);
             } catch (...) {
                 engine.reset();

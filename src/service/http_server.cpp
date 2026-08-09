@@ -1328,11 +1328,19 @@ Response Api::handle(const Request& request) {
             }
             if (parts.size() == 4 && parts[3] == "browser-analysis" &&
                 request.method == "POST") {
+                if (!completed_game(*game))
+                    throw Error(ErrorCode::InvalidArgument,
+                                "analysis requires a completed game");
                 BrowserEngineIdentity engine;
-                const auto run = parse_browser_observation_run(json::parse(request.body), engine);
+                auto run = parse_browser_observation_run(json::parse(request.body), engine);
                 if (run.game_id != parts[2])
                     throw Error(ErrorCode::InvalidArgument,
                                 "browser analysis game does not match the route");
+                if (game->imported.game.plies.size() >
+                    analysis::browser_observation_max_run_observations / 2)
+                    throw Error(ErrorCode::InvalidArgument,
+                                "game is too long for the browser analysis contract");
+                run.expected_observations = game->imported.game.plies.size() * 2;
                 browser_observations_.begin(browser_owner_key(repository_.owner()), run);
                 return json_response(201, json::Value::Object{
                                              {"status", "collecting"},
@@ -1341,6 +1349,7 @@ Response Api::handle(const Request& request) {
                                              {"analysisRunId", run.analysis_run_id},
                                              {"gameId", run.game_id},
                                              {"profile", run.profile},
+                                             {"expectedObservations", run.expected_observations},
                                              {"engine", json::Value::Object{
                                                             {"name", engine.name},
                                                             {"version", engine.version},
@@ -1358,9 +1367,14 @@ Response Api::handle(const Request& request) {
                 if (observation.ply >= game->imported.game.plies.size())
                     throw Error(ErrorCode::InvalidArgument,
                                 "browser observation ply is outside the canonical game");
+                const auto& canonical_ply = game->imported.game.plies[observation.ply];
+                if (observation.fen != canonical_ply.fen_before &&
+                    observation.fen != canonical_ply.fen_after)
+                    throw Error(ErrorCode::InvalidArgument,
+                                "browser observation FEN does not match the canonical game");
                 const analysis::BrowserObservationContext context{
                     parts[2], observation.analysis_run_id, observation.profile,
-                    game->imported.game.plies[observation.ply].fen_before,
+                    observation.fen,
                 };
                 const auto receipt = browser_observations_.submit(
                     browser_owner_key(repository_.owner()), context, observation);
@@ -1376,6 +1390,36 @@ Response Api::handle(const Request& request) {
                                                              {"ply", observation.ply},
                                                              {"sequence", observation.sequence},
                                                          });
+            }
+            if (parts.size() == 5 && parts[3] == "browser-observations" &&
+                parts[4] == "finalize" && request.method == "POST") {
+                const json::Value body = json::parse(request.body);
+                require_object_keys(body, {"analysisRunId"}, {},
+                                    "browser observation finalization");
+                const std::string run_id = bounded_text(
+                    body.at("analysisRunId"), analysis::browser_observation_max_id_length,
+                    "analysis run id");
+                const auto bundle = browser_observations_.finalize(
+                    browser_owner_key(repository_.owner()), parts[2], run_id);
+                if (game->analysis) {
+                    return json_response(200, json::Value::Object{
+                                                 {"status", "complete"},
+                                                 {"staging", false},
+                                                 {"analysisRunId", run_id},
+                                                 {"gameId", parts[2]},
+                                                 {"analysis", app::to_json(*game->analysis)},
+                                             });
+                }
+                const analysis::GameAnalysis review =
+                    analysis::assemble_browser_review(game->imported.game, bundle.observations);
+                repository_.save_analysis(review);
+                return json_response(200, json::Value::Object{
+                                             {"status", "complete"},
+                                             {"staging", false},
+                                             {"analysisRunId", run_id},
+                                             {"gameId", parts[2]},
+                                             {"analysis", app::to_json(review)},
+                                         });
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "POST") {
                 if (!completed_game(*game))

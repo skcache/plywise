@@ -184,6 +184,15 @@ export function startAnalysis(id: string): Promise<Job> {
 
 export type BrowserAnalysisStartResponse = BrowserAnalysisRequest & {
   readonly status: "collecting";
+  readonly expectedObservations: number;
+};
+
+export type BrowserAnalysisFinalizationResponse = {
+  readonly status: "complete";
+  readonly staging: false;
+  readonly analysisRunId: string;
+  readonly gameId: string;
+  readonly analysis: NonNullable<StoredGame["analysis"]>;
 };
 
 export type BrowserObservationResponse = {
@@ -206,6 +215,15 @@ export function submitBrowserObservation(input: BrowserObservationPayload): Prom
   return request(`/api/games/${encodeURIComponent(input.gameId)}/browser-observations`, {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function finalizeBrowserAnalysis(
+  gameId: string, analysisRunId: string,
+): Promise<BrowserAnalysisFinalizationResponse> {
+  return request(`/api/games/${encodeURIComponent(gameId)}/browser-observations/finalize`, {
+    method: "POST",
+    body: JSON.stringify({ analysisRunId }),
   });
 }
 

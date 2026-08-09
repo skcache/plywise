@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <set>
 
 namespace pct::analysis {
 namespace {
@@ -107,6 +108,23 @@ void validate_run_context(const BrowserObservationRunContext& context) {
         !valid_opaque_id(context.game_id) || !valid_opaque_id(context.analysis_run_id))
         throw Error(ErrorCode::InvalidArgument, "browser observation run context is invalid");
     static_cast<void>(profile_limits(context.profile));
+    if (context.expected_observations > browser_observation_max_run_observations)
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observation run is larger than its bounded contract");
+}
+
+engine::AnalysisResult engine_result(const BrowserEngineObservation& observation) {
+    const auto& source = observation.lines.front();
+    engine::PrincipalVariation line{
+        observation.multipv,
+        observation.depth,
+        source.centipawns,
+        source.mate,
+        observation.nodes,
+        observation.time_ms,
+        source.moves,
+    };
+    return engine::AnalysisResult{{std::move(line)}, observation.best_move, {}};
 }
 
 } // namespace
@@ -163,6 +181,74 @@ validate_browser_observation(const BrowserObservationContext& context,
     return BrowserObservationReceipt{BrowserObservationDisposition::Accepted, observation.sequence};
 }
 
+GameAnalysis assemble_browser_review(
+    const chess::Game& game, const std::vector<BrowserEngineObservation>& observations) {
+    if (game.plies.empty())
+        throw Error(ErrorCode::InvalidArgument, "cannot assemble an empty browser review");
+    if (game.plies.size() > browser_observation_max_run_observations / 2 ||
+        observations.size() != game.plies.size() * 2)
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observation run is incomplete for the canonical game");
+
+    std::vector<std::optional<engine::AnalysisResult>> before(game.plies.size());
+    std::vector<std::optional<engine::AnalysisResult>> after(game.plies.size());
+    std::set<std::size_t> sequences;
+    std::string run_id;
+    std::string profile;
+    std::string engine_version;
+    for (const auto& observation : observations) {
+        const BrowserObservationContext context{
+            observation.game_id, observation.analysis_run_id, observation.profile, observation.fen};
+        static_cast<void>(validate_browser_observation(context, observation));
+        if (observation.game_id != game.identity)
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation game does not match the canonical game");
+        if (run_id.empty()) {
+            run_id = observation.analysis_run_id;
+            profile = observation.profile;
+            engine_version = observation.engine_version;
+        } else if (observation.analysis_run_id != run_id || observation.profile != profile ||
+                   observation.engine_version != engine_version) {
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation run metadata is inconsistent");
+        }
+        if (!sequences.insert(observation.sequence).second)
+            throw Error(ErrorCode::InvalidArgument, "browser observation sequence is duplicated");
+        if (observation.ply >= game.plies.size())
+            throw Error(ErrorCode::InvalidArgument, "browser observation ply is outside the game");
+        const auto& ply = game.plies[observation.ply];
+        const bool is_before = observation.fen == ply.fen_before;
+        const bool is_after = observation.fen == ply.fen_after;
+        if (is_before == is_after)
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation does not identify a canonical position");
+        auto& target = is_before ? before[observation.ply] : after[observation.ply];
+        if (target.has_value())
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation contains duplicate data for a position");
+        target = engine_result(observation);
+    }
+    for (std::size_t sequence = 0; sequence < observations.size(); ++sequence) {
+        if (!sequences.contains(sequence))
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observation sequence is incomplete");
+    }
+
+    std::vector<engine::AnalysisResult> before_results;
+    std::vector<engine::AnalysisResult> after_results;
+    before_results.reserve(game.plies.size());
+    after_results.reserve(game.plies.size());
+    for (std::size_t index = 0; index < game.plies.size(); ++index) {
+        if (!before[index] || !after[index])
+            throw Error(ErrorCode::InvalidArgument,
+                        "browser observations must cover each position before and after the move");
+        before_results.push_back(std::move(*before[index]));
+        after_results.push_back(std::move(*after[index]));
+    }
+    return assemble_observation_review(game, before_results, after_results,
+                                       ClassificationState::Final, {}, engine_version);
+}
+
 BrowserObservationLedger::BrowserObservationLedger(std::size_t max_runs,
                                                    std::size_t max_observations_per_run)
     : max_runs_(max_runs), max_observations_per_run_(max_observations_per_run) {
@@ -180,11 +266,17 @@ void BrowserObservationLedger::begin(std::string_view owner_key,
         if (found->second.context.game_id != context.game_id ||
             found->second.context.profile != context.profile)
             throw Error(ErrorCode::InvalidArgument, "browser observation run context changed");
+        if (found->second.context.expected_observations != 0 &&
+            context.expected_observations != 0 &&
+            found->second.context.expected_observations != context.expected_observations)
+            throw Error(ErrorCode::InvalidArgument, "browser observation run length changed");
+        if (found->second.context.expected_observations == 0)
+            found->second.context.expected_observations = context.expected_observations;
         return;
     }
     if (runs_.size() >= max_runs_)
         throw Error(ErrorCode::InvalidArgument, "browser observation run capacity reached");
-    runs_.emplace(key, RunState{context, 0, {}});
+    runs_.emplace(key, RunState{context, 0, {}, false});
 }
 
 BrowserObservationReceipt BrowserObservationLedger::submit(
@@ -208,6 +300,11 @@ BrowserObservationReceipt BrowserObservationLedger::submit(
                                              observation.sequence};
         throw Error(ErrorCode::InvalidArgument, "browser observation replay conflicts with prior data");
     }
+    if (state.finalized)
+        throw Error(ErrorCode::InvalidArgument, "browser observation run is already finalized");
+    if (state.context.expected_observations != 0 &&
+        state.observations.size() >= state.context.expected_observations)
+        throw Error(ErrorCode::InvalidArgument, "browser observation run is already complete");
     if (state.observations.size() >= max_observations_per_run_)
         throw Error(ErrorCode::InvalidArgument, "browser observation run capacity reached");
     if (observation.sequence != state.next_sequence)
@@ -215,6 +312,31 @@ BrowserObservationReceipt BrowserObservationLedger::submit(
     state.observations.emplace(observation_key, observation);
     ++state.next_sequence;
     return BrowserObservationReceipt{BrowserObservationDisposition::Accepted, observation.sequence};
+}
+
+BrowserObservationBundle BrowserObservationLedger::finalize(std::string_view owner_key,
+                                                            std::string_view game_id,
+                                                            std::string_view analysis_run_id) {
+    const std::string key = run_key(owner_key, analysis_run_id);
+    std::lock_guard lock(mutex_);
+    const auto found = runs_.find(key);
+    if (found == runs_.end())
+        throw Error(ErrorCode::InvalidArgument, "browser observation run is not registered");
+    RunState& state = found->second;
+    if (state.context.game_id != game_id)
+        throw Error(ErrorCode::InvalidArgument, "browser observation game does not match the run");
+    if (state.context.expected_observations == 0)
+        throw Error(ErrorCode::InvalidArgument,
+                    "browser observation run has no expected position count");
+    if (state.observations.size() != state.context.expected_observations)
+        throw Error(ErrorCode::InvalidArgument, "browser observation run is incomplete");
+    state.finalized = true;
+    BrowserObservationBundle result;
+    result.context = state.context;
+    result.observations.reserve(state.observations.size());
+    for (const auto& [_, observation] : state.observations)
+        result.observations.push_back(observation);
+    return result;
 }
 
 std::size_t BrowserObservationLedger::run_count() const {

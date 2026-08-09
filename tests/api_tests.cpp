@@ -81,6 +81,25 @@ TEST_CASE("API refuses analysis for incomplete games") {
     CHECK_EQ(body.at("code").as_string(), "invalid_argument");
     CHECK(body.at("error").as_string().find("completed game") != std::string::npos);
     CHECK(fixture.jobs.list().empty());
+
+    const json::Value::Object engine{
+        {"name", std::string(analysis::browser_engine_name)},
+        {"version", std::string(analysis::browser_engine_version)},
+        {"source", std::string(analysis::browser_engine_source)},
+        {"hash", std::string(analysis::browser_engine_asset_hash)},
+    };
+    const auto browser_analysis = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-analysis", {},
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", "incomplete-browser-run"},
+            {"gameId", game_id},
+            {"profile", "quick"},
+            {"engine", engine},
+        })});
+    CHECK_EQ(browser_analysis.status, 400);
+    CHECK(json::parse(browser_analysis.body).at("error").as_string().find("completed game") !=
+          std::string::npos);
 }
 
 TEST_CASE("API variation contract validates moves and preserves sibling branches") {
@@ -274,6 +293,100 @@ TEST_CASE("API stages only owner-scoped, versioned browser observations") {
         "POST", "/api/games/" + game_id + "/browser-observations", {},
         json::dump(std::move(forged))});
     CHECK_EQ(rejected.status, 400);
+}
+
+TEST_CASE("API finalizes a complete browser run through the C++ review pipeline") {
+    ApiFixture fixture;
+    const auto imported = fixture.api.handle(service::Request{
+        "POST", "/api/import", {},
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"},
+        })});
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const std::string run_id = "run-api-complete";
+    const json::Value::Object engine{
+        {"name", std::string(analysis::browser_engine_name)},
+        {"version", std::string(analysis::browser_engine_version)},
+        {"source", std::string(analysis::browser_engine_source)},
+        {"hash", std::string(analysis::browser_engine_asset_hash)},
+    };
+    const auto started = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-analysis", {},
+        json::dump(json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id},
+            {"gameId", game_id},
+            {"profile", "quick"},
+            {"engine", engine},
+        })});
+    CHECK_EQ(started.status, 201);
+    CHECK_EQ(json::parse(started.body).at("expectedObservations").as_size(), 4ULL);
+
+    const auto stored = fixture.repository.get(game_id);
+    CHECK(stored.has_value());
+    const auto observation_body = [&](std::size_t ply, std::size_t sequence,
+                                      std::string fen, std::string best_move) {
+        json::Value::Array moves;
+        moves.emplace_back(best_move);
+        return json::Value::Object{
+            {"contractVersion", std::string(analysis::browser_observation_contract_version)},
+            {"analysisRunId", run_id},
+            {"gameId", game_id},
+            {"ply", ply},
+            {"sequence", sequence},
+            {"fen", std::move(fen)},
+            {"profile", "quick"},
+            {"engine", engine},
+            {"depth", 10},
+            {"nodes", 1000},
+            {"timeMs", 100},
+            {"multipv", 1},
+            {"bestMove", best_move},
+            {"lines", json::Value::Array{json::Value::Object{
+                           {"rank", 1},
+                           {"centipawns", 24},
+                           {"mate", json::Value{}},
+                           {"moves", std::move(moves)},
+                       }}},
+        };
+    };
+    const auto submit = [&](std::size_t ply, std::size_t sequence, bool after,
+                            std::string best_move) {
+        const auto& canonical = stored->imported.game.plies[ply];
+        const auto response = fixture.api.handle(service::Request{
+            "POST", "/api/games/" + game_id + "/browser-observations", {},
+            json::dump(observation_body(ply, sequence,
+                                         after ? canonical.fen_after : canonical.fen_before,
+                                         std::move(best_move)))});
+        CHECK_EQ(response.status, 202);
+    };
+    submit(0, 0, false, "e2e4");
+    submit(0, 1, true, "e7e5");
+    submit(1, 2, false, "e7e5");
+    submit(1, 3, true, "g1f3");
+
+    const auto finalized = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-observations/finalize", {},
+        json::dump(json::Value::Object{{"analysisRunId", run_id}})});
+    CHECK_EQ(finalized.status, 200);
+    const auto body = json::parse(finalized.body);
+    CHECK_EQ(body.at("status").as_string(), "complete");
+    CHECK(!body.at("staging").as_bool());
+    CHECK_EQ(body.at("analysis").at("moves").as_array().size(), 2ULL);
+    CHECK_EQ(body.at("analysis").at("moves").as_array().at(0).at("classification_state").as_string(),
+             "final");
+    CHECK_EQ(body.at("analysis").at("moves").as_array().at(0).at("engine_version").as_string(),
+             std::string(analysis::browser_engine_version));
+    const auto reopened = fixture.repository.get(game_id);
+    CHECK(reopened.has_value());
+    CHECK(reopened->analysis.has_value());
+    CHECK_EQ(reopened->analysis->moves.size(), 2ULL);
+
+    const auto retry = fixture.api.handle(service::Request{
+        "POST", "/api/games/" + game_id + "/browser-observations/finalize", {},
+        json::dump(json::Value::Object{{"analysisRunId", run_id}})});
+    CHECK_EQ(retry.status, 200);
+    CHECK_EQ(json::parse(retry.body).at("analysis").at("moves").as_array().size(), 2ULL);
 }
 
 TEST_CASE("API distinguishes liveness from engine readiness") {

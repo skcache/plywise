@@ -4,6 +4,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
+sh scripts/check-public-surface.sh
+
 if [ -n "${PCT_SECURITY_BUILD_DIR:-}" ]; then
   BUILD_DIR=$PCT_SECURITY_BUILD_DIR
 else

@@ -10,6 +10,7 @@ import type {
   IngestSync,
   Job,
   Profile,
+  PlayerIdentity,
   ResourceRecommendation,
   RuntimeSettings,
   ReviewAttempt,
@@ -306,6 +307,15 @@ export function generateSupplementalDrills(): Promise<{ added: number; drills: D
 
 export function loadProfile(): Promise<Profile> {
   return request<Profile>("/api/profile");
+}
+
+export function savePlayerIdentity(input: {
+  game_id: string;
+  player_name: string;
+  source: PlayerIdentity["source"];
+  decision: PlayerIdentity["decision"];
+}): Promise<{ identity: PlayerIdentity }> {
+  return request("/api/profile/identity", { method: "PUT", body: JSON.stringify(input) });
 }
 
 export async function loadResources(): Promise<ResourceRecommendation[]> {

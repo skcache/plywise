@@ -22,6 +22,7 @@ import {
   loadProfile,
   loadRuntimeSettings,
   resetVariation,
+  savePlayerIdentity,
   setVariationCursor,
   startChessComSync,
   startBrowserAnalysis,
@@ -38,7 +39,7 @@ import { runGuestBrowserReview, type GuestBrowserReviewProgress } from "../guest
 import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
-import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
+import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
 import { eventProtocols, eventUrl } from "../config/runtime";
 import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
@@ -49,6 +50,7 @@ import { AccountPrompt } from "./AccountPrompt";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "line" | "method";
+type IdentityPromptState = { gameId: string; names: string[]; source: PlayerIdentity["source"] };
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const routes = new Set<Route>(["landing", "home", "recent", "analysis", "explore", "progress", "settings"]);
@@ -92,6 +94,9 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importStage, setImportStage] = useState("");
+  const [identityPrompt, setIdentityPrompt] = useState<IdentityPromptState | null>(null);
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityError, setIdentityError] = useState("");
   const [error, setError] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
@@ -238,6 +243,8 @@ export default function App() {
         setJobs([]);
         setProfile(null);
         setDrills([]);
+        setIdentityPrompt(null);
+        setIdentityError("");
         setSelectedGameId("");
         setRoute("landing");
         setAccountPromptOpen(false);
@@ -682,6 +689,7 @@ export default function App() {
     try {
       const result = await importGameObservable(url.trim() ? { url: url.trim() } : { pgn: pgn.trim() });
       let gameId = result.status === "resolving" ? "" : result.game_id;
+      let identitySource: IdentityPromptState["source"] = url.trim() ? "public_page" : "pgn";
       if (result.status === "resolving") {
         setImportStage("Finding public archive");
         let resolution = result.resolution;
@@ -691,6 +699,7 @@ export default function App() {
         }
         if (resolution.status !== "resolved" || !resolution.imported_game_id) throw new Error(resolution.error || "Chess.com import could not be resolved.");
         gameId = resolution.imported_game_id;
+        identitySource = resolution.source === "profile_archive" || resolution.source === "local_archive" ? "profile_archive" : "public_page";
       }
       setImportStage("Reconstructing positions");
       const game = await refreshGame(gameId);
@@ -698,6 +707,12 @@ export default function App() {
       setSelectedPly(0);
       setImportOpen(false);
       setRoute("recent");
+      const names = [game.game.tags.White, game.game.tags.Black]
+        .map((name) => name?.trim() ?? "")
+        .filter((name) => name && name !== "?" && !["unknown", "anonymous"].includes(name.toLowerCase()))
+        .filter((name, index, values) => values.indexOf(name) === index);
+      setIdentityError("");
+      setIdentityPrompt({ gameId: game.game.id, names, source: identitySource });
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "Import failed.");
     } finally {
@@ -705,6 +720,27 @@ export default function App() {
       setImportStage("");
     }
   }, [refreshGame]);
+
+  const decideImportedIdentity = useCallback(async (decision: PlayerIdentity["decision"], playerName: string) => {
+    if (!identityPrompt) return;
+    setIdentityBusy(true);
+    setIdentityError("");
+    try {
+      await savePlayerIdentity({
+        game_id: identityPrompt.gameId,
+        player_name: playerName,
+        source: identityPrompt.source,
+        decision,
+      });
+      const nextProfile = await loadProfile().catch(() => null);
+      if (nextProfile) setProfile(nextProfile);
+      setIdentityPrompt(null);
+    } catch (identityFailure) {
+      setIdentityError(identityFailure instanceof Error ? identityFailure.message : "Could not save that identity decision.");
+    } finally {
+      setIdentityBusy(false);
+    }
+  }, [identityPrompt]);
 
   const setAppRoute = useCallback((next: Route) => {
     setRoute(next);
@@ -907,6 +943,15 @@ export default function App() {
     {importOpen && (
       <ImportModal busy={importBusy} stage={importStage} error={error} onClose={() => !importBusy && setImportOpen(false)} onSubmit={(url, pgn) => void runImport(url, pgn)}/>
     )}
+    {identityPrompt && (
+      <PlayerIdentityPrompt
+        prompt={identityPrompt}
+        busy={identityBusy}
+        error={identityError}
+        onClose={() => !identityBusy && setIdentityPrompt(null)}
+        onDecision={(decision, playerName) => void decideImportedIdentity(decision, playerName)}
+      />
+    )}
     {accountPrompt}
   </>;
 }
@@ -1088,6 +1133,27 @@ function ImportModal({ busy, stage, error, onClose, onSubmit }: { busy: boolean;
   const [url, setUrl] = useState("");
   const [pgn, setPgn] = useState("");
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onSubmit={(event) => { event.preventDefault(); onSubmit(url, pgn); }}><header><div><span>Add to Recent Games</span><h2 id="import-title">Bring in a game.</h2><p>Paste a public Chess.com link or PGN. The imported game stays canonical until you choose Analyze.</p></div><button type="button" aria-label="Close import" onClick={onClose}><Icon name="close"/></button></header><label><span>Chess.com game link</span><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.chess.com/game/live/…"/></label><div className="or-rule"><span>or</span></div><label><span>PGN</span><textarea value={pgn} onChange={(event) => setPgn(event.target.value)} placeholder={'[Event "…"]\n\n1. e4 e5 …'}/></label>{error && <p className="form-error" role="alert">{error}</p>}<footer><small>Public game data only · no Chess.com password</small><button disabled={busy}>{busy ? stage || "Importing…" : "Import game"}</button></footer></form></div>;
+}
+
+function PlayerIdentityPrompt({ prompt, busy, error, onClose, onDecision }: {
+  prompt: IdentityPromptState;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onDecision: (decision: PlayerIdentity["decision"], playerName: string) => void;
+}) {
+  const [selectedName, setSelectedName] = useState(prompt.names[0] ?? "");
+  const sourceLabel = prompt.source === "profile_archive" ? "public profile archive" : prompt.source === "public_page" ? "public game page" : "pasted PGN";
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="identity-modal" role="dialog" aria-modal="true" aria-labelledby="identity-title">
+      <header><div><span>Keep your profile accurate</span><h2 id="identity-title">Is this you?</h2><p>We found a player name in this {sourceLabel}. Your review is already saved either way.</p></div><button type="button" aria-label="Close identity prompt" onClick={onClose} disabled={busy}><Icon name="close"/></button></header>
+      {prompt.names.length === 0 ? <div className="identity-empty"><strong>No player name was included.</strong><p>You can still analyze this game. Use a tagged PGN or connect a public profile later if you want progress to include it.</p><button type="button" onClick={onClose}>Continue</button></div> : <>
+        <fieldset className="identity-names"><legend>Detected player</legend>{prompt.names.map((name) => <label key={name}><input type="radio" name="imported-player" value={name} checked={selectedName === name} onChange={() => setSelectedName(name)}/><span>{name}</span></label>)}</fieldset>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <footer><button type="button" onClick={() => onDecision("uncertain", selectedName)} disabled={busy}>I’m not sure</button><button type="button" onClick={() => onDecision("declined", selectedName)} disabled={busy}>Not me</button><button type="button" className="identity-confirm" onClick={() => onDecision("confirmed", selectedName)} disabled={busy}>{busy ? "Saving…" : "Yes, this is me"}</button></footer>
+      </>}
+    </section>
+  </div>;
 }
 
 function gameDate(tags: Record<string, string>) {

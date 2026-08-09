@@ -127,6 +127,47 @@ TEST_CASE("repository deduplicates imports and replays completed analysis") {
     remove_repository_files(path);
 }
 
+TEST_CASE("repository never infers a player until the imported identity is confirmed") {
+    const auto path = repository_path();
+    remove_repository_files(path);
+    const chess::Game parsed = chess::parse_pgn(pgn);
+    const import::ImportedGame imported{
+        parsed, {}, std::string(pgn), import::ImportMethod::ManualPgn};
+    {
+        storage::EventLog log(path);
+        app::Repository repository(log);
+        CHECK(repository.add(imported) == app::AddResult::Added);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(!repository.player_identity().has_value());
+
+        training::PlayerIdentity identity;
+        identity.game_id = parsed.identity;
+        identity.player_name = "Alex";
+        identity.source = "pgn";
+        identity.decision = training::PlayerIdentityDecision::Confirmed;
+        repository.save_player_identity(identity);
+        CHECK_EQ(repository.profile().player_name, "Alex");
+        CHECK(repository.profile().player_identity.has_value());
+        CHECK(repository.profile().player_identity->decision ==
+              training::PlayerIdentityDecision::Confirmed);
+
+        identity.decision = training::PlayerIdentityDecision::Declined;
+        repository.save_player_identity(identity);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(repository.profile().player_identity->decision ==
+              training::PlayerIdentityDecision::Declined);
+    }
+    {
+        storage::EventLog log(path);
+        app::Repository repository(log);
+        CHECK(repository.profile().player_name.empty());
+        CHECK(repository.player_identity().has_value());
+        CHECK(repository.player_identity()->decision ==
+              training::PlayerIdentityDecision::Declined);
+    }
+    remove_repository_files(path);
+}
+
 TEST_CASE("repository persists variation trees and deletion tombstones") {
     const auto path = repository_path();
     remove_repository_files(path);

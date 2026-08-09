@@ -256,7 +256,7 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
         const std::string request =
             "OPTIONS /api/games HTTP/1.1\r\nHost: api.plywise.test\r\n"
             "Origin: https://app.plywise.test\r\n"
-            "Access-Control-Request-Method: GET\r\nConnection: close\r\n\r\n";
+            "Access-Control-Request-Method: PUT\r\nConnection: close\r\n\r\n";
         static_cast<void>(send(accepted_preflight, request.data(), request.size(), 0));
         accepted_preflight_response = receive_available(accepted_preflight);
         close(accepted_preflight);
@@ -303,6 +303,9 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
     CHECK(accepted_preflight_response.starts_with("HTTP/1.1 204 No Content"));
     CHECK(accepted_preflight_response.find(
               "Access-Control-Allow-Origin: https://app.plywise.test") != std::string::npos);
+    CHECK(accepted_preflight_response.find(
+              "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS") !=
+          std::string::npos);
     CHECK(rejected >= 0);
     CHECK(rejected_response.starts_with("HTTP/1.1 403 Forbidden"));
     CHECK(accepted >= 0);

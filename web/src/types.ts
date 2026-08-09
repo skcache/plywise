@@ -215,6 +215,7 @@ export interface Weakness {
 export interface Profile {
   projection_version: string;
   player_name: string;
+  player_identity?: PlayerIdentity | null;
   latest_rating: number;
   rating_observations: number;
   games_imported: number;
@@ -238,6 +239,15 @@ export interface Profile {
   endgame_conversion: RateMetric;
   king_safety_violations: RateMetric;
   time_management_failures: RateMetric;
+}
+
+export interface PlayerIdentity {
+  contract_version: string;
+  game_id: string;
+  player_name: string;
+  source: "pgn" | "public_page" | "public_api" | "profile_archive" | "manual";
+  decision: "confirmed" | "declined" | "uncertain";
+  decided_at_ms: number;
 }
 
 export interface RateMetric {

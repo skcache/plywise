@@ -810,6 +810,55 @@ std::optional<ChessComProfile> PostgresRepository::chesscom_profile() const {
     return profile;
 }
 
+void PostgresRepository::save_player_identity(training::PlayerIdentity identity) {
+    training::validate_player_identity(identity);
+    std::lock_guard lock(mutex_);
+    const auto games = select_games(impl_->connection, owner_, identity.game_id);
+    if (games.empty())
+        throw Error(ErrorCode::NotFound, "cannot decide identity for an unknown game");
+    const std::string white = games.front().imported.game.tag("White");
+    const std::string black = games.front().imported.game.tag("Black");
+    if ((!identity.player_name.empty() && identity.player_name != white &&
+         identity.player_name != black) ||
+        (identity.decision == training::PlayerIdentityDecision::Confirmed &&
+         identity.player_name != white && identity.player_name != black))
+        throw Error(ErrorCode::InvalidArgument,
+                    "player identity must match a name in the imported game");
+    if (identity.decided_at_ms == 0)
+        identity.decided_at_ms = now_ms();
+    const std::string encoded = json::dump(training::to_json(identity));
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.user_settings "
+        "(owner_kind, owner_id, settings_version, settings_json, updated_at) "
+        "VALUES ($1, $2, 1, jsonb_build_object('player_identity', $3::jsonb), now()) "
+        "ON CONFLICT (owner_kind, owner_id) DO UPDATE SET "
+        "settings_version = plywise.user_settings.settings_version + 1, "
+        "settings_json = jsonb_set(plywise.user_settings.settings_json, '{player_identity}', "
+        "EXCLUDED.settings_json->'player_identity', true), updated_at = now()",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value()), encoded}));
+    transaction.commit();
+}
+
+std::optional<training::PlayerIdentity> PostgresRepository::player_identity() const {
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT settings_json::text FROM plywise.user_settings "
+        "WHERE owner_kind = $1 AND owner_id = $2",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    if (PQntuples(result.get()) == 0)
+        return std::nullopt;
+    const json::Value settings = json::parse(value_at(result, 0, 0));
+    const json::Value identity = settings.get("player_identity", json::Value{});
+    if (identity.is_null())
+        return std::nullopt;
+    return training::player_identity_from_json(identity);
+}
+
 // The remaining projections are intentionally kept behind the same repository boundary. They
 // will be added in the next hosted slices rather than silently falling back to local storage.
 std::vector<training::Drill> PostgresRepository::drills(std::int64_t) const {
@@ -1589,7 +1638,12 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
         "(owner_kind, owner_id, settings_version, settings_json, updated_at) "
         "SELECT 'account', $2, settings_version, settings_json, updated_at "
         "FROM plywise.user_settings WHERE owner_kind = 'guest' AND owner_id = $1 "
-        "ON CONFLICT DO NOTHING",
+        "ON CONFLICT (owner_kind, owner_id) DO UPDATE SET "
+        "settings_version = GREATEST(plywise.user_settings.settings_version, EXCLUDED.settings_version) + 1, "
+        "settings_json = CASE WHEN plywise.user_settings.settings_json ? 'player_identity' "
+        "THEN plywise.user_settings.settings_json "
+        "ELSE plywise.user_settings.settings_json || EXCLUDED.settings_json END, "
+        "updated_at = now()",
         {guest_id, account_id}));
     static_cast<void>(execute(
         impl_->connection,

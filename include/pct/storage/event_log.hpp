@@ -43,6 +43,7 @@ enum class EventType : std::uint16_t {
     VariationSaved = 25,
     VariationDeleted = 26,
     ReviewAttempted = 27,
+    PlayerIdentityUpdated = 28,
 };
 
 struct Event {

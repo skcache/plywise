@@ -133,6 +133,34 @@ TEST_CASE("PostgreSQL repository keeps owner-scoped games and reviews durable") 
     CHECK_THROWS(expired.size());
 }
 
+TEST_CASE("PostgreSQL imported identity decisions stay owner scoped and durable") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    import::ImportService importer;
+    const auto imported = importer.from_pgn(
+        "[Event \"Identity boundary\"]\n[White \"Identity A\"]\n"
+        "[Black \"Identity B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0");
+    app::PostgresRepository owner_a(connection, app::OwnerId::account("account_test_a"));
+    CHECK(owner_a.add(imported) == app::AddResult::Added);
+    CHECK(!owner_a.player_identity().has_value());
+    owner_a.save_player_identity(training::PlayerIdentity{
+        std::string(training::player_identity_contract_version), imported.game.identity,
+        "Identity A", "pgn", training::PlayerIdentityDecision::Confirmed, 0});
+    CHECK_EQ(owner_a.player_identity()->player_name, "Identity A");
+
+    app::PostgresRepository reopened(connection, app::OwnerId::account("account_test_a"));
+    CHECK(reopened.player_identity().has_value());
+    CHECK(reopened.player_identity()->decision == training::PlayerIdentityDecision::Confirmed);
+
+    app::PostgresRepository owner_b(connection, app::OwnerId::account("account_test_b"));
+    CHECK(!owner_b.player_identity().has_value());
+    CHECK_THROWS(owner_b.save_player_identity(training::PlayerIdentity{
+        std::string(training::player_identity_contract_version), imported.game.identity,
+        "Identity A", "pgn", training::PlayerIdentityDecision::Confirmed, 0}));
+}
+
 TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
     if (connection == nullptr || connection[0] == '\0')

@@ -267,6 +267,8 @@ class ISettingsRepository : public virtual IOwnedRepository {
 
     virtual void save_chesscom_profile(ChessComProfile profile) = 0;
     [[nodiscard]] virtual std::optional<ChessComProfile> chesscom_profile() const = 0;
+    virtual void save_player_identity(training::PlayerIdentity identity) = 0;
+    [[nodiscard]] virtual std::optional<training::PlayerIdentity> player_identity() const = 0;
     virtual void save_chesscom_sync_state(ChessComSyncState state) = 0;
     [[nodiscard]] virtual ChessComSyncState chesscom_sync_state() const = 0;
 };
@@ -335,6 +337,8 @@ class EventLogRepository final : public IRepository {
     [[nodiscard]] json::Value batches() const override;
     void save_chesscom_profile(ChessComProfile profile) override;
     [[nodiscard]] std::optional<ChessComProfile> chesscom_profile() const override;
+    void save_player_identity(training::PlayerIdentity identity) override;
+    [[nodiscard]] std::optional<training::PlayerIdentity> player_identity() const override;
     [[nodiscard]] std::size_t
     index_chesscom_archive_chunk(std::vector<ChessComArchiveEntry> entries) override;
     [[nodiscard]] std::optional<ChessComArchiveEntry>
@@ -382,6 +386,7 @@ class EventLogRepository final : public IRepository {
     std::map<std::string, json::Value> batches_;
     std::uint64_t next_batch_id_{1};
     std::optional<ChessComProfile> chesscom_profile_;
+    std::optional<training::PlayerIdentity> player_identity_;
     std::map<std::string, ChessComArchiveEntry> chesscom_archive_;
     std::map<std::string, ChessComMonthCheckpoint> chesscom_checkpoints_;
     ChessComSyncState chesscom_sync_state_;

@@ -64,6 +64,36 @@ TEST_CASE("API imports PGN and returns navigable game data immediately") {
     CHECK_EQ(json::parse(move.body).at("san").as_string(), "e4");
 }
 
+TEST_CASE("API persists explicit imported identity decisions") {
+    ApiFixture fixture;
+    const auto imported = fixture.api.handle(service::Request{
+        "POST", "/api/import", {},
+        json::dump(json::Value::Object{
+            {"pgn", "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"},
+        })});
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const auto before = fixture.api.handle(service::Request{"GET", "/api/profile", {}, {}});
+    CHECK_EQ(json::parse(before.body).at("player_name").as_string(), "");
+    CHECK(json::parse(before.body).at("player_identity").is_null());
+
+    const auto confirmed = fixture.api.handle(service::Request{
+        "PUT", "/api/profile/identity", {},
+        json::dump(json::Value::Object{{"game_id", game_id}, {"player_name", "A"},
+                                       {"source", "pgn"}, {"decision", "confirmed"}})});
+    CHECK_EQ(confirmed.status, 200);
+    const auto confirmed_body = json::parse(confirmed.body).at("identity");
+    CHECK_EQ(confirmed_body.at("contract_version").as_string(), "player-identity-1");
+    CHECK_EQ(confirmed_body.at("decision").as_string(), "confirmed");
+    const auto after = fixture.api.handle(service::Request{"GET", "/api/profile", {}, {}});
+    CHECK_EQ(json::parse(after.body).at("player_name").as_string(), "A");
+
+    const auto rejected = fixture.api.handle(service::Request{
+        "PUT", "/api/profile/identity", {},
+        json::dump(json::Value::Object{{"game_id", game_id}, {"player_name", "Not A"},
+                                       {"source", "pgn"}, {"decision", "confirmed"}})});
+    CHECK_EQ(rejected.status, 400);
+}
+
 TEST_CASE("API refuses analysis for incomplete games") {
     ApiFixture fixture;
     const auto imported = fixture.api.handle(service::Request{

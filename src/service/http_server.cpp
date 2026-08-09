@@ -1062,6 +1062,36 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "profile"} && request.method == "GET")
             return json_response(200, training::to_json(repository_.profile()));
+        if (parts == std::vector<std::string>{"api", "profile", "identity"}) {
+            if (request.method == "GET") {
+                const auto identity = repository_.player_identity();
+                return json_response(200, json::Value::Object{
+                                              {"identity", identity ? training::to_json(*identity)
+                                                                       : json::Value{}},
+                                          });
+            }
+            if (request.method == "PUT") {
+                const json::Value body = json::parse(request.body);
+                for (const auto& [key, _] : body.as_object())
+                    if (key != "game_id" && key != "player_name" && key != "source" &&
+                        key != "decision")
+                        throw Error(ErrorCode::InvalidArgument,
+                                    "identity accepts only game_id, player_name, source, and decision");
+                training::PlayerIdentity identity;
+                identity.game_id = body.at("game_id").as_string();
+                identity.player_name = body.get("player_name", "").as_string();
+                identity.source = body.at("source").as_string();
+                identity.decision = training::player_identity_decision(
+                    body.at("decision").as_string());
+                repository_.save_player_identity(std::move(identity));
+                const auto saved = repository_.player_identity();
+                if (!saved)
+                    throw Error(ErrorCode::Corruption, "saved player identity could not be loaded");
+                return json_response(200, json::Value::Object{
+                                              {"identity", training::to_json(*saved)},
+                                          });
+            }
+        }
         if (parts == std::vector<std::string>{"api", "chesscom", "profile"}) {
             if (request.method == "GET") {
                 const auto profile = repository_.chesscom_profile();
@@ -1712,7 +1742,7 @@ void HttpServer::handle_client(int client_fd) {
         if (request->method == "OPTIONS" && request->path.starts_with("/api/")) {
             response = Response{204, {}, {}};
             response.headers.insert_or_assign("Access-Control-Allow-Methods",
-                                              "GET, POST, DELETE, OPTIONS");
+                                              "GET, POST, PUT, DELETE, OPTIONS");
             response.headers.insert_or_assign(
                 "Access-Control-Allow-Headers",
                 "Authorization, Content-Type, Idempotency-Key");

@@ -67,6 +67,8 @@ class PostgresRepository final : public IRepository {
 
     void save_chesscom_profile(ChessComProfile profile) override;
     [[nodiscard]] std::optional<ChessComProfile> chesscom_profile() const override;
+    void save_player_identity(training::PlayerIdentity identity) override;
+    [[nodiscard]] std::optional<training::PlayerIdentity> player_identity() const override;
     [[nodiscard]] std::size_t
     index_chesscom_archive_chunk(std::vector<ChessComArchiveEntry> entries) override;
     [[nodiscard]] std::optional<ChessComArchiveEntry>

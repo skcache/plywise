@@ -18,6 +18,7 @@ namespace pct::training {
 inline constexpr std::string_view scheduler_version = "pct-sm2-1";
 inline constexpr std::string_view profile_version = "profile-1";
 inline constexpr std::string_view catalog_version = "2026.1";
+inline constexpr std::string_view player_identity_contract_version = "player-identity-1";
 
 enum class DrillState { New, Due, Upcoming, Mastered };
 
@@ -132,6 +133,18 @@ struct Weakness {
     std::map<std::string, std::size_t> phases;
 };
 
+enum class PlayerIdentityDecision { Confirmed, Declined, Uncertain };
+
+struct PlayerIdentity {
+    std::string contract_version{std::string(player_identity_contract_version)};
+    std::string game_id;
+    std::string player_name;
+    std::string source;
+    PlayerIdentityDecision decision{PlayerIdentityDecision::Uncertain};
+    std::int64_t decided_at_ms{0};
+    bool operator==(const PlayerIdentity&) const = default;
+};
+
 struct Profile {
     struct RateMetric {
         std::size_t numerator{0};
@@ -146,6 +159,7 @@ struct Profile {
         std::size_t drill_correct{0};
     };
     std::string player_name;
+    std::optional<PlayerIdentity> player_identity;
     int latest_rating{0};
     std::size_t rating_observations{0};
     std::size_t games_imported{0};
@@ -209,6 +223,11 @@ recommend(const Profile& profile, const std::vector<Resource>& catalog,
           const std::map<std::string, std::int64_t>& completions,
           std::int64_t now_ms = 0);
 [[nodiscard]] std::string_view name(DrillState state);
+[[nodiscard]] std::string_view name(PlayerIdentityDecision decision);
+[[nodiscard]] PlayerIdentityDecision player_identity_decision(std::string_view value);
+void validate_player_identity(const PlayerIdentity& identity);
+[[nodiscard]] PlayerIdentity player_identity_from_json(const json::Value& value);
+[[nodiscard]] json::Value to_json(const PlayerIdentity& identity);
 [[nodiscard]] json::Value to_json(const DrillAttempt& attempt);
 [[nodiscard]] json::Value to_json(const Drill& drill, std::int64_t now_ms,
                                   std::size_t category_frequency = 1);

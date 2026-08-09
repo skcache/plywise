@@ -4,6 +4,7 @@ import {
   homeFocus,
   homeRecentGames,
   homeWeek,
+  inferPlayerName,
   ratingDelta,
   ratingHistory,
   reviewArc,
@@ -36,6 +37,7 @@ assert(buildExploreEntries(games).map((entry) => entry.section), ["Openings", "M
 assert(reviewArc(games)[1]?.largestSwing, .3, "review arc uses largest expected-points swing");
 assert(homeRecentGames(games).map((game) => game.game.id), ["2026.07.15", "2026.07.01"], "home recency is evidence ordered");
 assert(homeContinueReview(games)?.moments, 1, "home review counts attention-worthy moves");
+assert(inferPlayerName(null, games), "", "untagged profile does not infer player identity");
 
 const weakness = {
   category: "Piece safety", occurrences: 5, games: 3, attempts: 0, correct: 0, occurrences_7_days: 2, occurrences_30_days: 5,

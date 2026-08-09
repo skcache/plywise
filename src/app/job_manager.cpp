@@ -63,6 +63,12 @@ JobManager::JobManager(IRepository& repository, analysis::Analyzer& analyzer,
 
 JobManager::~JobManager() {
     set_observer({});
+    {
+        std::unique_lock lock(mutex_);
+        additional_observers_.clear();
+        const std::size_t local_calls = observing_manager == this ? observing_depth : 0;
+        observer_condition_.wait(lock, [&] { return observer_calls_ <= local_calls; });
+    }
     worker_cancellation_.request_stop();
     {
         std::lock_guard lock(mutex_);
@@ -331,26 +337,49 @@ void JobManager::set_observer(JobObserver observer) {
     }
 }
 
-void JobManager::notify(const AnalysisJob& job) {
-    JobObserver observer;
-    {
-        std::lock_guard lock(mutex_);
-        observer = observer_;
-        if (observer)
-            ++observer_calls_;
-    }
+JobManager::ObserverId JobManager::add_observer(JobObserver observer) {
     if (!observer)
+        return 0;
+    std::lock_guard lock(mutex_);
+    const ObserverId id = next_observer_id_++;
+    additional_observers_.emplace(id, std::move(observer));
+    return id;
+}
+
+void JobManager::remove_observer(ObserverId observer_id) {
+    if (observer_id == 0)
         return;
-    ObserverInvocation invocation(this);
-    try {
-        observer(job);
-    } catch (...) {
-    }
+    std::unique_lock lock(mutex_);
+    if (additional_observers_.erase(observer_id) == 0)
+        return;
+    const std::size_t local_calls = observing_manager == this ? observing_depth : 0;
+    observer_condition_.wait(lock, [&] { return observer_calls_ <= local_calls; });
+}
+
+void JobManager::notify(const AnalysisJob& job) {
+    std::vector<JobObserver> observers;
     {
         std::lock_guard lock(mutex_);
-        --observer_calls_;
+        if (observer_)
+            observers.push_back(observer_);
+        for (const auto& [_, observer] : additional_observers_)
+            observers.push_back(observer);
+        observer_calls_ += observers.size();
     }
-    observer_condition_.notify_all();
+    if (observers.empty())
+        return;
+    for (const auto& observer : observers) {
+        ObserverInvocation invocation(this);
+        try {
+            observer(job);
+        } catch (...) {
+        }
+        {
+            std::lock_guard lock(mutex_);
+            --observer_calls_;
+        }
+        observer_condition_.notify_all();
+    }
 }
 
 void JobManager::work(CancellationToken stop_token) {

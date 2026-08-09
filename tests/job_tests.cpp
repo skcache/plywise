@@ -529,6 +529,73 @@ TEST_CASE("observer unsubscribe waits for callbacks and callback failures do not
     std::filesystem::remove_all(directory);
 }
 
+TEST_CASE("additional job observers can be subscribed and removed independently") {
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("pct-jobs-additional-observers-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(directory);
+    storage::EventLog log(directory / "events.log");
+    app::Repository repository(log);
+    import::ImportService importer;
+    const auto first = importer.from_pgn(
+        "[White \"Observer\"]\n[Black \"First\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0");
+    const auto second = importer.from_pgn(
+        "[White \"Observer\"]\n[Black \"Second\"]\n[Result \"0-1\"]\n\n1. d4 d5 0-1");
+    static_cast<void>(repository.add(first));
+    static_cast<void>(repository.add(second));
+    repository.set_background_paused(true);
+    QuietEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 2, 1});
+    std::mutex observer_mutex;
+    std::condition_variable observer_condition;
+    std::size_t first_calls = 0;
+    std::size_t second_calls = 0;
+    {
+        app::JobManager jobs(repository, analyzer, app::JobManagerOptions{1, 8, 0});
+        const auto first_observer = jobs.add_observer([&](const app::AnalysisJob&) {
+            {
+                std::lock_guard lock(observer_mutex);
+                ++first_calls;
+            }
+            observer_condition.notify_all();
+        });
+        const auto second_observer = jobs.add_observer([&](const app::AnalysisJob&) {
+            {
+                std::lock_guard lock(observer_mutex);
+                ++second_calls;
+            }
+            observer_condition.notify_all();
+        });
+        CHECK(first_observer != 0);
+        CHECK(second_observer != 0);
+        static_cast<void>(jobs.start(first.game.identity));
+        jobs.resume();
+        {
+            std::unique_lock lock(observer_mutex);
+            CHECK(observer_condition.wait_for(lock, std::chrono::seconds(2),
+                                              [&] { return second_calls >= 3; }));
+        }
+        std::size_t first_before_remove = 0;
+        {
+            std::lock_guard lock(observer_mutex);
+            first_before_remove = first_calls;
+        }
+        jobs.remove_observer(first_observer);
+        static_cast<void>(jobs.start(second.game.identity));
+        {
+            std::unique_lock lock(observer_mutex);
+            CHECK(observer_condition.wait_for(lock, std::chrono::seconds(2),
+                                              [&] { return second_calls >= 6; }));
+        }
+        {
+            std::lock_guard lock(observer_mutex);
+            CHECK_EQ(first_calls, first_before_remove);
+        }
+        jobs.remove_observer(second_observer);
+    }
+    std::filesystem::remove_all(directory);
+}
+
 TEST_CASE("batch scheduling prioritizes recent shallow work before resumed deep work") {
     for (std::size_t iteration = 0; iteration < 25; ++iteration)
         run_priority_cleanup_iteration(iteration);

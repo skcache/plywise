@@ -31,7 +31,7 @@ import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAn
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
-import { eventUrl } from "../config/runtime";
+import { eventProtocols, eventUrl } from "../config/runtime";
 import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
@@ -176,7 +176,7 @@ export default function App() {
     let reconnect = 0;
     let socket: WebSocket | null = null;
     const connect = () => {
-      socket = new WebSocket(eventUrl("/ws"));
+      socket = new WebSocket(eventUrl("/ws"), eventProtocols());
       socket.addEventListener("message", (event) => {
         const message = JSON.parse(String(event.data)) as ProgressSocketMessage;
         if (message.type === "jobs_snapshot") setJobs(message.jobs);

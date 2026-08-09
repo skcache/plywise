@@ -30,6 +30,7 @@ namespace {
 
 constexpr std::size_t max_header_size = 64 * 1024;
 constexpr std::size_t max_body_size = 10 * 1024 * 1024;
+constexpr std::string_view websocket_auth_protocol = "plywise-auth";
 
 std::int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -89,6 +90,24 @@ bool valid_loopback_origin(std::string_view origin) {
     constexpr std::string_view scheme = "http://";
     return origin.starts_with(scheme) &&
            valid_loopback_authority(origin.substr(scheme.size()));
+}
+
+std::optional<std::string> websocket_bearer_token(std::string_view protocols) {
+    const std::size_t separator = protocols.find(',');
+    if (separator == std::string_view::npos)
+        return std::nullopt;
+    const std::string_view scheme = protocols.substr(0, separator);
+    std::size_t token_start = separator + 1;
+    while (token_start < protocols.size() && protocols[token_start] == ' ')
+        ++token_start;
+    const std::string_view token = protocols.substr(token_start);
+    if (scheme != websocket_auth_protocol || token.empty() || token.size() > 4096 ||
+        token.find(',') != std::string_view::npos ||
+        std::any_of(token.begin(), token.end(), [](unsigned char character) {
+            return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
+        }))
+        return std::nullopt;
+    return std::string(token);
 }
 
 bool valid_port(std::string_view value) {
@@ -567,8 +586,11 @@ Api::Authentication Api::authenticate(const Request& request) const {
     return Authentication{std::move(owner), {}};
 }
 
-std::optional<Response> Api::authorize(const Request& request) const {
+std::optional<Response> Api::authorize(
+    const Request& request, std::optional<app::OwnerId>* authenticated_owner) const {
     const Authentication authentication = authenticate(request);
+    if (authenticated_owner)
+        *authenticated_owner = authentication.owner;
     if (authentication.denial)
         return authentication.denial;
     // A scoped resolver owns the repository choice. The fixed-owner comparison remains for the
@@ -577,6 +599,23 @@ std::optional<Response> Api::authorize(const Request& request) const {
         *authentication.owner != default_repository_.owner())
         return auth_response(403, "resource is outside the authenticated owner", "forbidden");
     return std::nullopt;
+}
+
+std::optional<ApiScope> Api::scope_for_owner(const app::OwnerId& owner) const {
+    if (!auth_.resolve_scope) {
+        if (owner == default_repository_.owner())
+            return ApiScope{&default_repository_, &default_jobs_};
+        return std::nullopt;
+    }
+    try {
+        const auto scope = auth_.resolve_scope(owner);
+        if (!scope || scope->repository == nullptr || scope->jobs == nullptr ||
+            scope->repository->owner() != owner)
+            return std::nullopt;
+        return scope;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 Response Api::handle(const Request& request) {
@@ -1237,6 +1276,7 @@ HttpServer::~HttpServer() {
     jobs_.set_observer({});
     if (ingest_)
         ingest_->set_observer({});
+    remove_scoped_observers();
     stop();
     std::vector<std::thread> client_threads;
     {
@@ -1319,8 +1359,8 @@ void HttpServer::stop() noexcept {
         close(listen_fd);
     }
     std::lock_guard lock(clients_mutex_);
-    for (const int client : websocket_clients_)
-        static_cast<void>(shutdown(client, SHUT_RDWR));
+    for (const auto& client : websocket_clients_)
+        static_cast<void>(shutdown(client.fd, SHUT_RDWR));
 }
 
 void HttpServer::handle_client(int client_fd) {
@@ -1394,8 +1434,7 @@ void HttpServer::handle_client(int client_fd) {
 }
 
 void HttpServer::handle_websocket(int client_fd, const Request& request) {
-    if (const auto denied = api_.authorize(request)) {
-        const Response response = *denied;
+    const auto send_http_response = [&](const Response& response) {
         std::ostringstream head;
         head << "HTTP/1.1 " << response.status << ' ' << reason_phrase(response.status)
              << "\r\n";
@@ -1406,25 +1445,47 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
         const std::string encoded = head.str();
         static_cast<void>(send_all(client_fd, encoded.data(), encoded.size()));
         static_cast<void>(send_all(client_fd, response.body.data(), response.body.size()));
+    };
+
+    Request authenticated_request = request;
+    std::string selected_protocol;
+    const auto authorization = request.headers.find("authorization");
+    const auto protocols = request.headers.find("sec-websocket-protocol");
+    if (authorization == request.headers.end() && protocols != request.headers.end()) {
+        if (const auto token = websocket_bearer_token(protocols->second)) {
+            authenticated_request.headers.insert_or_assign(
+                "authorization", "Bearer " + *token);
+            selected_protocol = std::string(websocket_auth_protocol);
+        }
+    }
+
+    std::optional<app::OwnerId> owner;
+    if (const auto denied = api_.authorize(authenticated_request, &owner)) {
+        const Response response = *denied;
+        send_http_response(response);
         close(client_fd);
         return;
     }
-    if (api_.has_scoped_authorization()) {
-        const Response response = json_response(
-            503, json::Value::Object{{"error", "owner-scoped event streaming is not configured"},
-                                     {"code", "events_unavailable"}});
-        std::ostringstream head;
-        head << "HTTP/1.1 503 Service Unavailable\r\n";
-        for (const auto& [key, value] : response.headers)
-            head << key << ": " << value << "\r\n";
-        head << "Content-Length: " << response.body.size()
-             << "\r\nConnection: close\r\n\r\n";
-        const std::string encoded = head.str();
-        static_cast<void>(send_all(client_fd, encoded.data(), encoded.size()));
-        static_cast<void>(send_all(client_fd, response.body.data(), response.body.size()));
+
+    if (api_.has_scoped_authorization() && !owner) {
+        send_http_response(auth_response(401, "authentication is required", "auth_required"));
         close(client_fd);
         return;
     }
+
+    app::JobManager* event_jobs = &jobs_;
+    if (owner) {
+        const auto scope = api_.scope_for_owner(*owner);
+        if (!scope) {
+            send_http_response(json_response(
+                503, json::Value::Object{{"error", "owner-scoped event streaming is unavailable"},
+                                         {"code", "events_unavailable"}}));
+            close(client_fd);
+            return;
+        }
+        event_jobs = scope->jobs;
+    }
+
     const auto origin = request.headers.find("origin");
     if (origin == request.headers.end() || !origin_allowed(origin->second)) {
         constexpr std::string_view forbidden =
@@ -1443,32 +1504,40 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     const std::string accept = websocket_accept(key->second);
     const std::string response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                  "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
-                                 accept + "\r\n\r\n";
+                                 accept +
+                                 (selected_protocol.empty()
+                                      ? "\r\n\r\n"
+                                      : "\r\nSec-WebSocket-Protocol: " + selected_protocol +
+                                            "\r\n\r\n");
     if (!send_all(client_fd, response.data(), response.size())) {
         close(client_fd);
         return;
     }
+    if (owner)
+        subscribe_to_owner_events(*event_jobs, *owner);
     {
         std::lock_guard lock(clients_mutex_);
-        websocket_clients_.push_back(client_fd);
+        websocket_clients_.push_back(WebSocketClient{client_fd, owner});
     }
     json::Value::Array jobs;
-    for (const auto& job : jobs_.list())
+    for (const auto& job : event_jobs->list())
         jobs.push_back(app::to_json(job));
     const std::string snapshot = websocket_frame(
         json::dump(json::Value::Object{{"type", "jobs_snapshot"}, {"jobs", std::move(jobs)}}));
     if (!send_all(client_fd, snapshot.data(), snapshot.size())) {
         std::lock_guard lock(clients_mutex_);
-        std::erase(websocket_clients_, client_fd);
+        std::erase_if(websocket_clients_,
+                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
         close(client_fd);
         return;
     }
-    if (ingest_) {
+    if (ingest_ && !owner) {
         const std::string ingest_snapshot = websocket_frame(json::dump(json::Value::Object{
             {"type", "ingest_snapshot"}, {"ingest", ingest_->snapshot()}}));
         if (!send_all(client_fd, ingest_snapshot.data(), ingest_snapshot.size())) {
             std::lock_guard lock(clients_mutex_);
-            std::erase(websocket_clients_, client_fd);
+            std::erase_if(websocket_clients_,
+                          [&](const WebSocketClient& client) { return client.fd == client_fd; });
             close(client_fd);
             return;
         }
@@ -1491,16 +1560,58 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     }
     {
         std::lock_guard lock(clients_mutex_);
-        std::erase(websocket_clients_, client_fd);
+        std::erase_if(websocket_clients_,
+                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
     }
     close(client_fd);
 }
 
 void HttpServer::broadcast(std::string_view message) {
+    if (api_.has_scoped_authorization())
+        return;
     const std::string frame = websocket_frame(message);
     std::lock_guard lock(clients_mutex_);
     std::erase_if(websocket_clients_,
-                  [&](int client) { return !send_all(client, frame.data(), frame.size()); });
+                  [&](const WebSocketClient& client) {
+                      return !client.owner &&
+                             !send_all(client.fd, frame.data(), frame.size());
+                  });
+}
+
+void HttpServer::broadcast_to_owner(const app::OwnerId& owner, std::string_view message) {
+    const std::string frame = websocket_frame(message);
+    std::lock_guard lock(clients_mutex_);
+    std::erase_if(websocket_clients_, [&](const WebSocketClient& client) {
+        if (!client.owner || *client.owner != owner)
+            return false;
+        return !send_all(client.fd, frame.data(), frame.size());
+    });
+}
+
+void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner) {
+    std::lock_guard lock(scoped_observers_mutex_);
+    if (scoped_observers_.contains(&jobs))
+        return;
+    const app::JobManager::ObserverId observer_id = jobs.add_observer(
+        [this, owner](const app::AnalysisJob& job) {
+            broadcast_to_owner(
+                owner, json::dump(json::Value::Object{{"type", "job_update"},
+                                                       {"job", app::to_json(job)}}));
+        });
+    if (observer_id != 0)
+        scoped_observers_.emplace(&jobs, observer_id);
+}
+
+void HttpServer::remove_scoped_observers() noexcept {
+    std::map<app::JobManager*, app::JobManager::ObserverId> observers;
+    {
+        std::lock_guard lock(scoped_observers_mutex_);
+        observers.swap(scoped_observers_);
+    }
+    for (const auto& [jobs, observer_id] : observers) {
+        if (jobs)
+            jobs->remove_observer(observer_id);
+    }
 }
 
 bool HttpServer::valid_websocket_origin(std::string_view origin) {

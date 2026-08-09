@@ -4,16 +4,79 @@
 #include "pct/app/postgres_repository.hpp"
 #include "pct/import/import_service.hpp"
 #include "pct/service/hosted_runtime.hpp"
+#include "pct/service/http_server.hpp"
 
+#include <arpa/inet.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <poll.h>
 #include <string>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 
 using namespace pct;
 
 #ifdef PCT_HAS_POSTGRES
+
+namespace {
+
+int connect_loopback(std::uint16_t port) {
+    const int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_fd < 0)
+        return -1;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(socket_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        close(socket_fd);
+        return -1;
+    }
+    return socket_fd;
+}
+
+std::string receive_available(int socket_fd) {
+    std::string result;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        pollfd descriptor{socket_fd, POLLIN | POLLHUP, 0};
+        const int ready = poll(&descriptor, 1, 100);
+        if (ready <= 0)
+            continue;
+        char buffer[4096];
+        const ssize_t count = recv(socket_fd, buffer, sizeof(buffer), 0);
+        if (count <= 0)
+            break;
+        result.append(buffer, static_cast<std::size_t>(count));
+        if (result.find("\r\n\r\n") != std::string::npos)
+            break;
+    }
+    return result;
+}
+
+std::string receive_until_quiet(int socket_fd) {
+    std::string result;
+    int quiet_attempts = 0;
+    for (int attempt = 0; attempt < 30 && quiet_attempts < 3; ++attempt) {
+        pollfd descriptor{socket_fd, POLLIN | POLLHUP, 0};
+        const int ready = poll(&descriptor, 1, 100);
+        if (ready <= 0) {
+            ++quiet_attempts;
+            continue;
+        }
+        char buffer[4096];
+        const ssize_t count = recv(socket_fd, buffer, sizeof(buffer), 0);
+        if (count <= 0)
+            break;
+        result.append(buffer, static_cast<std::size_t>(count));
+        quiet_attempts = 0;
+    }
+    return result;
+}
+
+} // namespace
 
 TEST_CASE("PostgreSQL repository keeps owner-scoped games and reviews durable") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
@@ -292,6 +355,110 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
     CHECK_EQ(receipt.account_id, "account_test_a");
     CHECK_EQ(receipt.transferred_games, 0ULL);
     CHECK(!verify(session->token).has_value());
+}
+
+TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by owner") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    HostedRuntimeEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache);
+    service::HostedRuntime runtime(
+        service::HostedRuntimeOptions{
+            connection,
+            "https://project.supabase.co/auth/v1",
+            "authenticated",
+            "supabase",
+            "https://project.supabase.co/auth/v1/.well-known/jwks.json",
+        },
+        analyzer,
+        app::JobManagerOptions{1, 8, 0});
+    app::HostedIdentityStore identity(connection);
+    const auto alice = identity.ensure_account("test", "websocket-alice");
+    const auto bob = identity.ensure_account("test", "websocket-bob");
+    const auto resolve = runtime.scope_resolver();
+    const auto alice_scope = resolve(alice.owner());
+    const auto bob_scope = resolve(bob.owner());
+    CHECK(alice_scope.has_value());
+    CHECK(bob_scope.has_value());
+
+    import::ImportService importer;
+    const auto imported = importer.from_pgn(
+        "[White \"WebSocket\"]\n[Black \"Owner\"]\n[Result \"1-0\"]\n\n"
+        "1. e4 e5 1-0");
+    const auto added = alice_scope->repository->add(imported);
+    CHECK(added == app::AddResult::Added || added == app::AddResult::Duplicate);
+
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [&](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "alice-token")
+            return alice.owner();
+        if (token == "bob-token")
+            return bob.owner();
+        return std::nullopt;
+    };
+    auth.resolve_scope = resolve;
+    service::Api api(importer, *alice_scope->repository, *alice_scope->jobs, {}, {}, nullptr, {},
+                     auth);
+    service::HttpServer server(
+        api, *alice_scope->jobs, service::ServerOptions{0, {}, "127.0.0.1", {}, {}});
+    std::exception_ptr server_error;
+    std::thread server_thread([&] {
+        try {
+            server.run();
+        } catch (...) {
+            server_error = std::current_exception();
+        }
+    });
+    for (int attempt = 0; attempt < 200 && server.bound_port() == 0; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const std::uint16_t port = server.bound_port();
+
+    const auto connect_authenticated = [&](std::string_view token) {
+        const int socket_fd = port == 0 ? -1 : connect_loopback(port);
+        if (socket_fd < 0)
+            return std::pair<int, std::string>{socket_fd, std::string{}};
+        const std::string request =
+            "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
+            "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: http://127.0.0.1:" +
+            std::to_string(port) + "\r\nSec-WebSocket-Protocol: plywise-auth, " +
+            std::string(token) +
+            "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+        static_cast<void>(send(socket_fd, request.data(), request.size(), 0));
+        return std::pair<int, std::string>{socket_fd, receive_available(socket_fd)};
+    };
+
+    const auto alice_connection = connect_authenticated("alice-token");
+    const auto bob_connection = connect_authenticated("bob-token");
+    static_cast<void>(receive_until_quiet(alice_connection.first));
+    static_cast<void>(receive_until_quiet(bob_connection.first));
+    static_cast<void>(alice_scope->jobs->start(imported.game.identity));
+    const std::string alice_events = receive_until_quiet(alice_connection.first);
+    const std::string bob_events = receive_until_quiet(bob_connection.first);
+
+    server.stop();
+    server.stop();
+    if (alice_connection.first >= 0)
+        close(alice_connection.first);
+    if (bob_connection.first >= 0)
+        close(bob_connection.first);
+    server_thread.join();
+
+    CHECK(port != 0);
+    CHECK(!server_error);
+    CHECK(alice_connection.first >= 0);
+    CHECK(bob_connection.first >= 0);
+    CHECK(alice_connection.second.starts_with("HTTP/1.1 101 Switching Protocols"));
+    CHECK(alice_connection.second.find("Sec-WebSocket-Protocol: plywise-auth") !=
+          std::string::npos);
+    CHECK(alice_connection.second.find("alice-token") == std::string::npos);
+    CHECK(bob_connection.second.starts_with("HTTP/1.1 101 Switching Protocols"));
+    CHECK(alice_events.find("\"type\":\"job_update\"") != std::string::npos);
+    CHECK(alice_events.find(imported.game.identity) != std::string::npos);
+    CHECK(bob_events.find(imported.game.identity) == std::string::npos);
 }
 
 #endif

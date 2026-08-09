@@ -94,7 +94,9 @@ class Api {
           ingest_(ingest), readiness_(std::move(readiness)), auth_(std::move(auth)) {}
 
     [[nodiscard]] Response handle(const Request& request);
-    [[nodiscard]] std::optional<Response> authorize(const Request& request) const;
+    [[nodiscard]] std::optional<Response> authorize(
+        const Request& request, std::optional<app::OwnerId>* authenticated_owner = nullptr) const;
+    [[nodiscard]] std::optional<ApiScope> scope_for_owner(const app::OwnerId& owner) const;
     [[nodiscard]] bool has_scoped_authorization() const noexcept {
         return static_cast<bool>(auth_.resolve_scope);
     }
@@ -151,15 +153,24 @@ class HttpServer {
     std::atomic<std::uint16_t> bound_port_{0};
     std::atomic<int> listen_fd_{-1};
     std::mutex clients_mutex_;
-    std::vector<int> websocket_clients_;
+    struct WebSocketClient {
+        int fd{-1};
+        std::optional<app::OwnerId> owner;
+    };
+    std::vector<WebSocketClient> websocket_clients_;
+    std::mutex scoped_observers_mutex_;
+    std::map<app::JobManager*, app::JobManager::ObserverId> scoped_observers_;
     std::mutex client_threads_mutex_;
     std::vector<std::thread> client_threads_;
 
     void handle_client(int client_fd);
     void handle_websocket(int client_fd, const Request& request);
+    void subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner);
+    void remove_scoped_observers() noexcept;
     [[nodiscard]] Response static_file(std::string_view path) const;
     [[nodiscard]] bool host_allowed(std::string_view host) const;
     [[nodiscard]] bool origin_allowed(std::string_view origin) const;
+    void broadcast_to_owner(const app::OwnerId& owner, std::string_view message);
 };
 
 } // namespace pct::service

@@ -69,8 +69,8 @@ std::optional<std::string> fetch_jwks(std::string url) {
         return std::nullopt;
     JwksResponse response;
     curl_easy_setopt(raw, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(raw, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
-    curl_easy_setopt(raw, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+    curl_easy_setopt(raw, CURLOPT_PROTOCOLS_STR, "https");
+    curl_easy_setopt(raw, CURLOPT_REDIR_PROTOCOLS_STR, "https");
     curl_easy_setopt(raw, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(raw, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(raw, CURLOPT_SSL_VERIFYHOST, 2L);

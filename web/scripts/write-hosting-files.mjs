@@ -42,6 +42,10 @@ if (!indexHtml.includes('http-equiv="Content-Security-Policy"')) {
   fs.writeFileSync(indexOutput, indexHtml.replace("</head>", `    ${cspMeta}\n  </head>`));
 }
 
+for (const privateBuildFile of ["pieces/ASSET_AUDIT.md"]) {
+  fs.rmSync(path.resolve("dist", privateBuildFile), { force: true });
+}
+
 const headers = `/*
   Content-Security-Policy: ${contentSecurityPolicy}
   Permissions-Policy: camera=(), microphone=(), geolocation=()

@@ -37,15 +37,15 @@ export function LandingView({ onStart, onSignIn }: {
 
         <section className="landing-preview" aria-label="Board-first review preview">
           <span className="landing-preview-header"><span>Board-first review</span><small>Built for finished games</small></span>
-          <span className="landing-preview-body">
-            <span className="landing-preview-board"><ChessBoard fen={previewFen} orientation="white" compact={false} interactive onSquare={onStart} /></span>
-            <span className="landing-preview-copy">
+          <div className="landing-preview-body">
+            <div className="landing-preview-board"><ChessBoard fen={previewFen} orientation="white" compact={false} interactive onSquare={onStart} /></div>
+            <div className="landing-preview-copy">
               <span>Review, not noise</span>
               <strong>Start with the position.</strong>
               <p>See the verdict first. Open the engine line when you want the detail.</p>
-              <span className="landing-preview-rule"><Icon name="analysis" /><span>Analysis starts when you choose a game.</span></span>
-            </span>
-          </span>
+              <div className="landing-preview-rule"><Icon name="analysis" /><span>Analysis starts when you choose a game.</span></div>
+            </div>
+          </div>
         </section>
       </section>
 

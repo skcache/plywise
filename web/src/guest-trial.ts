@@ -72,6 +72,26 @@ export function loadGuestTrial(storage: StorageLike | null = browserStorage(), n
   return next;
 }
 
+/** Binds the local one-review state to the hosted guest identity and expiry. */
+export function bindGuestSession(
+  guestId: string,
+  expiresAtMs: number,
+  storage: StorageLike | null = browserStorage(),
+  now = Date.now(),
+): GuestTrialState {
+  if (!guestId || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= now) {
+    throw new Error("Guest session response is invalid.");
+  }
+  const current = loadGuestTrial(storage, now);
+  const next: GuestTrialState = {
+    ...current,
+    guestId,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+  };
+  saveState(storage, next);
+  return next;
+}
+
 export function reserveGuestAnalysis(gameId: string, storage: StorageLike | null = browserStorage(), now = Date.now()): GuestTrialResult {
   const current = loadGuestTrial(storage, now);
   if (current.status !== "available") {

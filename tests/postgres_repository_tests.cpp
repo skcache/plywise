@@ -267,7 +267,31 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
     CHECK(repeated.has_value());
     CHECK_EQ(repeated->repository, first->repository);
     CHECK_EQ(repeated->jobs, first->jobs);
-    CHECK(!resolve(app::OwnerId::guest("guest_runtime")).has_value());
+
+    const auto create_guest = runtime.guest_session_creator();
+    const auto session = create_guest();
+    CHECK(session.has_value());
+    CHECK_EQ(session->guest_id.starts_with("guest-"), true);
+    CHECK_EQ(session->token.size(), 64ULL);
+
+    const auto verify = runtime.token_verifier();
+    const auto guest_owner = verify(session->token);
+    CHECK(guest_owner.has_value());
+    CHECK(guest_owner->kind() == app::OwnerKind::Guest);
+    CHECK_EQ(guest_owner->value(), session->guest_id);
+    const auto guest_scope = resolve(*guest_owner);
+    CHECK(guest_scope.has_value());
+    CHECK(guest_scope->repository != nullptr);
+    CHECK(guest_scope->jobs != nullptr);
+    CHECK(guest_scope->repository->owner() == *guest_owner);
+
+    const auto claim = runtime.guest_claim_handler();
+    const auto receipt = claim(session->token, app::OwnerId::account("account_test_a"),
+                               "runtime-claim-1");
+    CHECK_EQ(receipt.guest_id, session->guest_id);
+    CHECK_EQ(receipt.account_id, "account_test_a");
+    CHECK_EQ(receipt.transferred_games, 0ULL);
+    CHECK(!verify(session->token).has_value());
 }
 
 #endif

@@ -4,6 +4,7 @@ import {
   analyzeVariation,
   cancelJob,
   createVariation,
+  createGuestSession,
   deleteVariation,
   extendVariation,
   importGameObservable,
@@ -25,7 +26,8 @@ import {
   submitReviewAttempt,
 } from "../api";
 import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, reviewArc, type ExploreSection } from "../insights";
-import { loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
+import { loadGuestSession, saveGuestSession } from "../guest-session";
+import { bindGuestSession, loadGuestTrial, markGuestAnalysisUsed, releaseGuestAnalysis, reserveGuestAnalysis, type GuestTrialState } from "../guest-trial";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -114,6 +116,21 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
+        let guestSession = loadGuestSession();
+        if (!guestSession) {
+          try {
+            const created = await createGuestSession();
+            guestSession = saveGuestSession({
+              guestId: created.guest_id,
+              token: created.token,
+              expiresAtMs: created.expires_at_ms,
+            });
+          } catch (sessionError) {
+            // The local reference runtime intentionally has no hosted session endpoint.
+            if (!(sessionError instanceof ApiError) || ![404, 503].includes(sessionError.status)) throw sessionError;
+          }
+        }
+        if (guestSession) setGuestTrial(bindGuestSession(guestSession.guestId, guestSession.expiresAtMs));
         const [listed, jobState, nextProfile, nextDrills, chessCom] = await Promise.all([
           listGames(),
           loadJobs(),

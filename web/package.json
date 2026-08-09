@@ -16,7 +16,8 @@
     "test:review": "tsc tests/review-state.test.ts src/review.ts src/types.ts --outDir /tmp/pct-web-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-review/tests/review-state.test.js",
     "test:insights": "tsc tests/insights.test.ts src/insights.ts src/types.ts --outDir /tmp/pct-web-insights --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-insights/tests/insights.test.js",
     "test:guest": "tsc tests/guest-trial.test.ts src/guest-trial.ts --outDir /tmp/pct-web-guest --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-guest/tests/guest-trial.test.js",
-    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:guest"
+    "test:session": "tsc tests/guest-session.test.ts src/guest-session.ts --outDir /tmp/pct-web-session --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-session/tests/guest-session.test.js",
+    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:guest && npm run test:session"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

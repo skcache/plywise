@@ -282,6 +282,8 @@ int main(int argc, char** argv) {
             auth.required = true;
             auth.verify = hosted_runtime->token_verifier();
             auth.resolve_scope = hosted_runtime->scope_resolver();
+            auth.create_guest_session = hosted_runtime->guest_session_creator();
+            auth.claim_guest = hosted_runtime->guest_claim_handler();
 #else
             throw std::runtime_error(
                 "hosted runtime requires a build with PostgreSQL and OpenSSL support");

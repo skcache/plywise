@@ -252,6 +252,60 @@ TEST_CASE("API hosted mode fails closed and scopes authenticated requests") {
     CHECK_EQ(json::parse(unavailable_response.body).at("code").as_string(), "auth_unavailable");
 }
 
+TEST_CASE("API exposes a public guest session and account-only claim contract") {
+    ApiFixture fixture;
+    bool claimed = false;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "account-token")
+            return app::OwnerId::account("account-test");
+        if (token == "guest-token")
+            return app::OwnerId::guest("guest-test");
+        return std::nullopt;
+    };
+    auth.create_guest_session = [] {
+        return std::optional<service::GuestSessionCredential>{
+            service::GuestSessionCredential{"guest-test", "guest-token", 123456789}};
+    };
+    auth.claim_guest = [&claimed](std::string_view token, const app::OwnerId& account,
+                                  std::string_view idempotency_key) {
+        CHECK_EQ(token, "guest-token");
+        CHECK(account == app::OwnerId::account("account-test"));
+        CHECK_EQ(idempotency_key, "claim-1");
+        claimed = true;
+        return service::GuestClaimResult{"guest-test", "account-test", 1, false};
+    };
+    service::Api hosted(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {},
+                        auth);
+
+    const auto session = hosted.handle(service::Request{"POST", "/api/guest/session", {}, "{}"});
+    CHECK_EQ(session.status, 201);
+    CHECK_EQ(json::parse(session.body).at("guest_id").as_string(), "guest-test");
+    CHECK_EQ(json::parse(session.body).at("token").as_string(), "guest-token");
+
+    const auto missing_auth = hosted.handle(service::Request{
+        "POST", "/api/guest/claim", {},
+        json::dump(json::Value::Object{{"guest_token", "guest-token"},
+                                       {"idempotency_key", "claim-1"}})});
+    CHECK_EQ(missing_auth.status, 401);
+
+    const auto guest_auth = hosted.handle(service::Request{
+        "POST", "/api/guest/claim", {{"authorization", "Bearer guest-token"}},
+        json::dump(json::Value::Object{{"guest_token", "guest-token"},
+                                       {"idempotency_key", "claim-1"}})});
+    CHECK_EQ(guest_auth.status, 403);
+    CHECK_EQ(json::parse(guest_auth.body).at("code").as_string(), "account_required");
+
+    const auto account_auth = hosted.handle(service::Request{
+        "POST", "/api/guest/claim", {{"authorization", "Bearer account-token"}},
+        json::dump(json::Value::Object{{"guest_token", "guest-token"},
+                                       {"idempotency_key", "claim-1"}})});
+    CHECK_EQ(account_auth.status, 200);
+    CHECK(claimed);
+    CHECK_EQ(json::parse(account_auth.body).at("transferred_games").as_size(), 1ULL);
+}
+
 TEST_CASE("API scoped auth routes each request through its resolved owner resources") {
     ApiFixture default_scope;
     ApiFixture resolved_scope;

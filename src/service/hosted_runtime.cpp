@@ -8,14 +8,19 @@
 #include "pct/service/oidc_token_verifier.hpp"
 
 #include <curl/curl.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
 #endif
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 namespace pct::service {
@@ -24,6 +29,35 @@ namespace {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
 
 constexpr std::size_t max_jwks_bytes = 512U * 1024U;
+constexpr std::int64_t guest_lifetime_ms = 24LL * 60 * 60 * 1000;
+
+template <std::size_t Size>
+std::string hex_encode(const std::array<unsigned char, Size>& bytes) {
+    constexpr char alphabet[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(Size * 2);
+    for (const unsigned char byte : bytes) {
+        encoded.push_back(alphabet[byte >> 4U]);
+        encoded.push_back(alphabet[byte & 0x0fU]);
+    }
+    return encoded;
+}
+
+std::array<unsigned char, 32> sha256_token(std::string_view token) {
+    std::array<unsigned char, 32> digest{};
+    SHA256(reinterpret_cast<const unsigned char*>(token.data()), token.size(), digest.data());
+    return digest;
+}
+
+bool valid_guest_token(std::string_view token) {
+    if (token.size() != 64)
+        return false;
+    return std::all_of(token.begin(), token.end(), [](unsigned char character) {
+        return (character >= '0' && character <= '9') ||
+               (character >= 'a' && character <= 'f') ||
+               (character >= 'A' && character <= 'F');
+    });
+}
 
 bool valid_jwks_url(std::string_view url) {
     if (!url.starts_with("https://") || url.size() > 2048 ||
@@ -133,11 +167,66 @@ struct HostedRuntime::Impl {
         }
     }
 
+    std::optional<app::OwnerId> guest_owner(std::string_view token) const {
+        if (!valid_guest_token(token))
+            return std::nullopt;
+        try {
+            return identity->owner_for_guest_token(sha256_token(token));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    std::optional<GuestSessionCredential> create_guest_session() const {
+        std::array<unsigned char, 32> token_bytes{};
+        std::array<unsigned char, 16> guest_bytes{};
+        if (RAND_bytes(token_bytes.data(), static_cast<int>(token_bytes.size())) != 1 ||
+            RAND_bytes(guest_bytes.data(), static_cast<int>(guest_bytes.size())) != 1)
+            return std::nullopt;
+        const std::string token = hex_encode(token_bytes);
+        const std::string guest_id = "guest-" + hex_encode(guest_bytes);
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        try {
+            const auto session = identity->create_guest_session(
+                guest_id, sha256_token(token), now + guest_lifetime_ms);
+            return GuestSessionCredential{session.id, token, session.expires_at_ms};
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    GuestClaimResult claim_guest(std::string_view token, const app::OwnerId& account,
+                                 std::string_view idempotency_key) const {
+        if (account.kind() != app::OwnerKind::Account || !valid_guest_token(token))
+            throw Error(ErrorCode::InvalidArgument, "guest claim is invalid");
+        const auto guest = guest_owner(token);
+        if (!guest)
+            throw Error(ErrorCode::NotFound, "guest session does not exist");
+        try {
+            const auto receipt = identity->claim_guest(std::string(guest->value()),
+                                                       std::string(account.value()),
+                                                       std::string(idempotency_key));
+            return GuestClaimResult{receipt.guest_id, receipt.account_id,
+                                    receipt.transferred_games, receipt.already_claimed};
+        } catch (const Error& error) {
+            if (error.code() == ErrorCode::InvalidArgument ||
+                error.code() == ErrorCode::NotFound)
+                throw;
+            throw Error(ErrorCode::IoError, "guest claim is unavailable");
+        } catch (...) {
+            throw Error(ErrorCode::IoError, "guest claim is unavailable");
+        }
+    }
+
     std::optional<ApiScope> scope_for_owner(const app::OwnerId& owner) {
-        if (owner.kind() != app::OwnerKind::Account)
+        if (owner.kind() != app::OwnerKind::Account && owner.kind() != app::OwnerKind::Guest)
             return std::nullopt;
         std::lock_guard lock(resources_mutex);
-        const std::string key(owner.value());
+        const std::string key =
+            (owner.kind() == app::OwnerKind::Account ? "account:" : "guest:") +
+            std::string(owner.value());
         if (const auto existing = resources.find(key); existing != resources.end())
             return ApiScope{existing->second.repository.get(), existing->second.jobs.get()};
 
@@ -174,7 +263,12 @@ HostedRuntime::~HostedRuntime() = default;
 AuthConfig::TokenVerifier HostedRuntime::token_verifier() const {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
     const OidcTokenVerifier* verifier = impl_->verifier.get();
-    return [verifier](std::string_view token) { return verifier->verify(token); };
+    Impl* runtime = impl_.get();
+    return [verifier, runtime](std::string_view token) {
+        if (const auto guest = runtime->guest_owner(token))
+            return guest;
+        return verifier->verify(token);
+    };
 #else
     return {};
 #endif
@@ -184,6 +278,27 @@ AuthConfig::ScopeResolver HostedRuntime::scope_resolver() const {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
     Impl* runtime = impl_.get();
     return [runtime](const app::OwnerId& owner) { return runtime->scope_for_owner(owner); };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::GuestSessionCreator HostedRuntime::guest_session_creator() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime] { return runtime->create_guest_session(); };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::GuestClaimHandler HostedRuntime::guest_claim_handler() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](std::string_view token, const app::OwnerId& account,
+                     std::string_view idempotency_key) {
+        return runtime->claim_guest(token, account, idempotency_key);
+    };
 #else
     return {};
 #endif

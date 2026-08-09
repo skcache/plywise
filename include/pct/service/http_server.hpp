@@ -47,9 +47,25 @@ struct ApiScope {
     app::JobManager* jobs{nullptr};
 };
 
+struct GuestSessionCredential {
+    std::string guest_id;
+    std::string token;
+    std::int64_t expires_at_ms{0};
+};
+
+struct GuestClaimResult {
+    std::string guest_id;
+    std::string account_id;
+    std::size_t transferred_games{0};
+    bool already_claimed{false};
+};
+
 struct AuthConfig {
     using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
     using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
+    using GuestSessionCreator = std::function<std::optional<GuestSessionCredential>()>;
+    using GuestClaimHandler = std::function<GuestClaimResult(
+        std::string_view token, const app::OwnerId& account, std::string_view idempotency_key)>;
 
     // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
     bool required{false};
@@ -57,6 +73,10 @@ struct AuthConfig {
     // When present, authenticated requests are routed to an owner-scoped repository and job
     // manager. Without it, the API retains the fixed local repository behavior.
     ScopeResolver resolve_scope;
+    // These callbacks keep guest token generation and claim transactions behind the hosted
+    // runtime. The API only validates the request shape and serializes typed results.
+    GuestSessionCreator create_guest_session;
+    GuestClaimHandler claim_guest;
 };
 
 class Api {

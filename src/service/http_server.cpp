@@ -582,16 +582,22 @@ std::optional<Response> Api::authorize(const Request& request) const {
 Response Api::handle(const Request& request) {
     try {
         const auto parts = path_parts(request.path);
-        const bool public_route =
-            request.method == "GET" &&
-            (parts == std::vector<std::string>{"api", "health"} ||
-             parts == std::vector<std::string>{"api", "ready"});
+        const bool guest_session_route =
+            request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "session"};
+        const bool guest_claim_route =
+            request.method == "POST" && parts == std::vector<std::string>{"api", "guest", "claim"};
+        const bool public_route = guest_session_route ||
+                                  (request.method == "GET" &&
+                                   (parts == std::vector<std::string>{"api", "health"} ||
+                                    parts == std::vector<std::string>{"api", "ready"}));
         ApiScope scope{&default_repository_, &default_jobs_};
+        std::optional<app::OwnerId> authenticated_owner;
         if (!public_route) {
             const Authentication authentication = authenticate(request);
             if (authentication.denial)
                 return *authentication.denial;
-            if (authentication.owner) {
+            authenticated_owner = authentication.owner;
+            if (authentication.owner && !guest_claim_route) {
                 if (auth_.resolve_scope) {
                     std::optional<ApiScope> resolved;
                     try {
@@ -613,6 +619,53 @@ Response Api::handle(const Request& request) {
         }
         if (scope.repository == nullptr || scope.jobs == nullptr)
             return error_response(500, "request scope is unavailable");
+
+        if (guest_session_route) {
+            if (!auth_.create_guest_session)
+                return auth_response(503, "guest sessions are not configured",
+                                     "guest_sessions_unavailable");
+            const auto session = auth_.create_guest_session();
+            if (!session)
+                return auth_response(503, "guest sessions are unavailable",
+                                     "guest_sessions_unavailable");
+            return json_response(201, json::Value::Object{
+                                          {"guest_id", session->guest_id},
+                                          {"token", session->token},
+                                          {"expires_at_ms", static_cast<double>(session->expires_at_ms)},
+                                      });
+        }
+
+        if (guest_claim_route) {
+            if (!authenticated_owner || authenticated_owner->kind() != app::OwnerKind::Account)
+                return auth_response(403, "account authentication is required", "account_required");
+            if (!auth_.claim_guest)
+                return auth_response(503, "guest claiming is not configured",
+                                     "guest_claim_unavailable");
+            const json::Value body = json::parse(request.body);
+            for (const auto& [key, _] : body.as_object()) {
+                if (key != "guest_token" && key != "idempotency_key")
+                    throw Error(ErrorCode::InvalidArgument,
+                                "guest claim accepts only guest_token and idempotency_key");
+            }
+            const std::string token = body.at("guest_token").as_string();
+            std::string idempotency_key = body.get("idempotency_key", "").as_string();
+            if (idempotency_key.empty()) {
+                if (const auto found = request.headers.find("idempotency-key");
+                    found != request.headers.end())
+                    idempotency_key = found->second;
+            }
+            if (idempotency_key.empty())
+                throw Error(ErrorCode::InvalidArgument, "guest claim requires an idempotency key");
+            const GuestClaimResult result =
+                auth_.claim_guest(token, *authenticated_owner, idempotency_key);
+            return json_response(200, json::Value::Object{
+                                          {"guest_id", result.guest_id},
+                                          {"account_id", result.account_id},
+                                          {"transferred_games", result.transferred_games},
+                                          {"already_claimed", result.already_claimed},
+                                      });
+        }
+
         // Keep the route implementation below unchanged while selecting its dependencies per
         // request. These locals intentionally shadow the fixed constructor members.
         app::IRepository& repository_ = *scope.repository;

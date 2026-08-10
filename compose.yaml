@@ -18,8 +18,16 @@ services:
     volumes:
       - plywise-data:/var/lib/plywise
     ports:
-      - "127.0.0.1:8787:8787"
+      - "${PCT_PUBLISH_BIND:-127.0.0.1}:${PCT_PUBLISH_PORT:-8787}:8787"
     environment:
+      PCT_BIND_ADDRESS: ${PCT_BIND_ADDRESS:-0.0.0.0}
+      PCT_REQUIRE_AUTH: ${PCT_REQUIRE_AUTH:-true}
+      PCT_POSTGRES_URL: ${PCT_POSTGRES_URL:-}
+      PCT_SUPABASE_URL: ${PCT_SUPABASE_URL:-}
+      PCT_OIDC_ISSUER: ${PCT_OIDC_ISSUER:-}
+      PCT_OIDC_JWKS_URL: ${PCT_OIDC_JWKS_URL:-}
+      PCT_OIDC_AUDIENCE: ${PCT_OIDC_AUDIENCE:-authenticated}
+      PCT_OIDC_PROVIDER: ${PCT_OIDC_PROVIDER:-supabase}
       PCT_TRUSTED_HOSTS: ${PCT_TRUSTED_HOSTS:-}
       PCT_ALLOWED_ORIGINS: ${PCT_ALLOWED_ORIGINS:-}
 

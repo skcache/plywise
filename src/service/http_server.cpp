@@ -338,6 +338,28 @@ int status_for(ErrorCode code) {
     return 500;
 }
 
+std::string public_api_error_message(ErrorCode code, std::string_view detail) {
+    switch (code) {
+    case ErrorCode::InvalidArgument:
+    case ErrorCode::ParseError:
+    case ErrorCode::IllegalMove:
+    case ErrorCode::Unsupported:
+    case ErrorCode::NotFound:
+        return std::string(detail);
+    case ErrorCode::NetworkError:
+        return "the upstream service is unavailable";
+    case ErrorCode::Timeout:
+        return "the request timed out";
+    case ErrorCode::QuotaExceeded:
+        return "the request limit has been reached";
+    case ErrorCode::EngineError:
+    case ErrorCode::IoError:
+    case ErrorCode::Corruption:
+        return "the request could not be completed";
+    }
+    return "the request could not be completed";
+}
+
 std::uint64_t parse_id(std::string_view value) {
     std::uint64_t result = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
@@ -1741,7 +1763,9 @@ Response Api::handle(const Request& request) {
             return ingest_error(status_for(error.code()),
                                 public_ingest_error_message(error.code(), error.what()),
                                 std::string(error_code(error.code())));
-        return error_response(status_for(error.code()), error.what(), error.code());
+        return error_response(status_for(error.code()),
+                              public_api_error_message(error.code(), error.what()),
+                              error.code());
     } catch (const std::exception& error) {
         log(LogLevel::Error, "api", error.what());
         return error_response(500, "internal server error");
@@ -1919,6 +1943,8 @@ void HttpServer::handle_client(int client_fd) {
             response.headers.insert_or_assign("Access-Control-Allow-Origin", origin->second);
             response.headers.insert_or_assign("Vary", "Origin");
         }
+        if (request->path.starts_with("/api/"))
+            response.headers.insert_or_assign("Cache-Control", "no-store");
         response.headers.insert_or_assign("Content-Length", std::to_string(response.body.size()));
         response.headers.insert_or_assign("Connection", "close");
         response.headers.insert_or_assign("X-Content-Type-Options", "nosniff");
@@ -1939,7 +1965,8 @@ void HttpServer::handle_client(int client_fd) {
         send_all(client_fd, header.data(), header.size());
         send_all(client_fd, response.body.data(), response.body.size());
     } catch (const std::exception& error) {
-        const Response response = error_response(400, error.what());
+        const Response response =
+            error_response(400, "invalid HTTP request", ErrorCode::InvalidArgument);
         const std::string head =
             "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " +
             std::to_string(response.body.size()) + "\r\nConnection: close\r\n\r\n";

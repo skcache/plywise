@@ -1898,9 +1898,13 @@ void HttpServer::stop() noexcept {
         static_cast<void>(shutdown(listen_fd, SHUT_RDWR));
         close(listen_fd);
     }
-    std::lock_guard lock(clients_mutex_);
-    for (const auto& client : websocket_clients_)
-        static_cast<void>(shutdown(client.fd, SHUT_RDWR));
+    std::vector<WebSocketClientPtr> clients;
+    {
+        std::lock_guard lock(clients_mutex_);
+        clients = websocket_clients_;
+    }
+    for (const auto& client : clients)
+        retire_websocket_client(client);
 }
 
 void HttpServer::handle_client(int client_fd) {
@@ -2060,35 +2064,37 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     }
     if (owner)
         subscribe_to_owner_events(*event_jobs, *owner, std::move(scope_lifetime));
+    const auto client = std::make_shared<WebSocketClient>(client_fd, owner);
     {
         std::lock_guard lock(clients_mutex_);
-        websocket_clients_.push_back(WebSocketClient{client_fd, owner});
+        websocket_clients_.push_back(client);
     }
     json::Value::Array jobs;
     for (const auto& job : event_jobs->list())
         jobs.push_back(app::to_json(job));
     const std::string snapshot = websocket_frame(
         json::dump(json::Value::Object{{"type", "jobs_snapshot"}, {"jobs", std::move(jobs)}}));
-    if (!send_all(client_fd, snapshot.data(), snapshot.size())) {
-        std::lock_guard lock(clients_mutex_);
-        std::erase_if(websocket_clients_,
-                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
-        close(client_fd);
+    if (!send_websocket_frame(client, snapshot)) {
+        remove_websocket_client(client);
+        close_websocket_client(client);
         return;
     }
     if (ingest_ && !owner) {
         const std::string ingest_snapshot = websocket_frame(json::dump(json::Value::Object{
             {"type", "ingest_snapshot"}, {"ingest", ingest_->snapshot()}}));
-        if (!send_all(client_fd, ingest_snapshot.data(), ingest_snapshot.size())) {
-            std::lock_guard lock(clients_mutex_);
-            std::erase_if(websocket_clients_,
-                          [&](const WebSocketClient& client) { return client.fd == client_fd; });
-            close(client_fd);
+        if (!send_websocket_frame(client, ingest_snapshot)) {
+            remove_websocket_client(client);
+            close_websocket_client(client);
             return;
         }
     }
     std::array<char, 1024> buffer{};
     while (!stopped_.load(std::memory_order_acquire)) {
+        {
+            std::lock_guard lock(client->io_mutex);
+            if (client->retired || client->fd < 0)
+                break;
+        }
         pollfd descriptor{client_fd, POLLIN, 0};
         const int ready = poll(&descriptor, 1, 1000);
         if (ready < 0 && errno == EINTR)
@@ -2103,34 +2109,77 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
         if ((static_cast<unsigned char>(buffer[0]) & 0x0fU) == 0x08U)
             break;
     }
-    {
-        std::lock_guard lock(clients_mutex_);
-        std::erase_if(websocket_clients_,
-                      [&](const WebSocketClient& client) { return client.fd == client_fd; });
-    }
-    close(client_fd);
+    remove_websocket_client(client);
+    close_websocket_client(client);
 }
 
 void HttpServer::broadcast(std::string_view message) {
     if (api_.has_scoped_authorization())
         return;
     const std::string frame = websocket_frame(message);
-    std::lock_guard lock(clients_mutex_);
-    std::erase_if(websocket_clients_,
-                  [&](const WebSocketClient& client) {
-                      return !client.owner &&
-                             !send_all(client.fd, frame.data(), frame.size());
-                  });
+    std::vector<WebSocketClientPtr> clients;
+    {
+        std::lock_guard lock(clients_mutex_);
+        for (const auto& client : websocket_clients_)
+            if (!client->owner)
+                clients.push_back(client);
+    }
+    for (const auto& client : clients)
+        if (!send_websocket_frame(client, frame))
+            remove_websocket_client(client);
 }
 
 void HttpServer::broadcast_to_owner(const app::OwnerId& owner, std::string_view message) {
     const std::string frame = websocket_frame(message);
+    std::vector<WebSocketClientPtr> clients;
+    {
+        std::lock_guard lock(clients_mutex_);
+        for (const auto& client : websocket_clients_)
+            if (client->owner && *client->owner == owner)
+                clients.push_back(client);
+    }
+    for (const auto& client : clients)
+        if (!send_websocket_frame(client, frame))
+            remove_websocket_client(client);
+}
+
+bool HttpServer::send_websocket_frame(const WebSocketClientPtr& client,
+                                      std::string_view frame) {
+    if (!client)
+        return false;
+    std::lock_guard lock(client->io_mutex);
+    if (client->retired || client->fd < 0)
+        return false;
+    return send_all(client->fd, frame.data(), frame.size());
+}
+
+void HttpServer::retire_websocket_client(const WebSocketClientPtr& client) noexcept {
+    if (!client)
+        return;
+    std::lock_guard lock(client->io_mutex);
+    if (client->retired || client->fd < 0)
+        return;
+    client->retired = true;
+    static_cast<void>(shutdown(client->fd, SHUT_RDWR));
+}
+
+void HttpServer::close_websocket_client(const WebSocketClientPtr& client) noexcept {
+    if (!client)
+        return;
+    std::lock_guard lock(client->io_mutex);
+    client->retired = true;
+    if (client->fd >= 0) {
+        static_cast<void>(shutdown(client->fd, SHUT_RDWR));
+        close(client->fd);
+        client->fd = -1;
+    }
+}
+
+void HttpServer::remove_websocket_client(const WebSocketClientPtr& client) noexcept {
+    retire_websocket_client(client);
     std::lock_guard lock(clients_mutex_);
-    std::erase_if(websocket_clients_, [&](const WebSocketClient& client) {
-        if (!client.owner || *client.owner != owner)
-            return false;
-        return !send_all(client.fd, frame.data(), frame.size());
-    });
+    std::erase_if(websocket_clients_,
+                  [&](const WebSocketClientPtr& current) { return current == client; });
 }
 
 void HttpServer::subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,

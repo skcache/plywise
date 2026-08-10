@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace pct::service {
@@ -205,10 +206,18 @@ class HttpServer {
     std::atomic<int> listen_fd_{-1};
     std::mutex clients_mutex_;
     struct WebSocketClient {
+        explicit WebSocketClient(int input_fd, std::optional<app::OwnerId> input_owner)
+            : fd(input_fd), owner(std::move(input_owner)) {}
+
         int fd{-1};
         std::optional<app::OwnerId> owner;
+        std::mutex io_mutex;
+        bool retired{false};
     };
-    std::vector<WebSocketClient> websocket_clients_;
+    using WebSocketClientPtr = std::shared_ptr<WebSocketClient>;
+    // Membership is short-lived under clients_mutex_; socket I/O is serialized per client so a
+    // stalled peer cannot block broadcasts or admission of other peers.
+    std::vector<WebSocketClientPtr> websocket_clients_;
     std::mutex scoped_observers_mutex_;
     struct ScopedObserver {
         app::JobManager::ObserverId observer_id{0};
@@ -222,6 +231,11 @@ class HttpServer {
 
     void handle_client(int client_fd);
     void handle_websocket(int client_fd, const Request& request);
+    [[nodiscard]] static bool send_websocket_frame(const WebSocketClientPtr& client,
+                                                    std::string_view frame);
+    static void retire_websocket_client(const WebSocketClientPtr& client) noexcept;
+    static void close_websocket_client(const WebSocketClientPtr& client) noexcept;
+    void remove_websocket_client(const WebSocketClientPtr& client) noexcept;
     void subscribe_to_owner_events(app::JobManager& jobs, const app::OwnerId& owner,
                                     std::shared_ptr<void> lifetime = {});
     void remove_scoped_observers() noexcept;

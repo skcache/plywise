@@ -42,6 +42,7 @@ export function AccountPrompt({
   const [showPassword, setShowPassword] = useState(false);
   const [resetMode, setResetMode] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
+  const [submitError, setSubmitError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -85,17 +86,35 @@ export function AccountPrompt({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (signUpMode && !name.trim()) {
+      setSubmitError(true);
+      setSubmitMessage("Enter your name.");
+      return;
+    }
+    if (signUpMode && password.length < 10) {
+      setSubmitError(true);
+      setSubmitMessage("Use at least 10 characters for your password.");
+      return;
+    }
     setSubmitting(true);
     setSubmitMessage("");
-    const result = resetMode
-      ? await onPasswordReset(email)
-      : signUpMode
-        ? await onPasswordSignUp(name, email, password)
-        : await onPasswordSignIn(email, password);
-    setSubmitMessage(result.message);
-    setSubmitting(false);
-    if (result.ok && resetMode) setResetMode(false);
-    if (result.ok && !resetMode) setPassword("");
+    setSubmitError(false);
+    try {
+      const result = resetMode
+        ? await onPasswordReset(email)
+        : signUpMode
+          ? await onPasswordSignUp(name, email, password)
+          : await onPasswordSignIn(email, password);
+      setSubmitMessage(result.message);
+      setSubmitError(!result.ok);
+      if (result.ok && resetMode) setResetMode(false);
+      if (result.ok && !resetMode) setPassword("");
+    } catch {
+      setSubmitError(true);
+      setSubmitMessage("Something went wrong while contacting the account service. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const dialog = <section ref={dialogRef} className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-prompt-title" aria-describedby="account-prompt-description">
@@ -123,14 +142,14 @@ export function AccountPrompt({
         <button type="button" className="account-primary" onClick={onClose}>Start a review</button>
       </footer>
     </> : <>
-      {resetMode ? <form className="account-form" onSubmit={(event) => void submit(event)}>
+      {resetMode ? <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
         <div className="account-field">
           <label htmlFor="account-reset-email">Email</label>
           <input id="account-reset-email" name="email" type="email" inputMode="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} disabled={!auth.configured || submitting} />
         </div>
         <button type="submit" className="account-primary account-form-submit" disabled={!auth.configured || submitting}>{submitting ? "Sending…" : "Send reset link"}</button>
-        <button type="button" className="account-text-button" onClick={() => { setResetMode(false); setSubmitMessage(""); }}>Back to sign in</button>
-      </form> : <form className="account-form" onSubmit={(event) => void submit(event)}>
+        <button type="button" className="account-text-button" onClick={() => { setResetMode(false); setSubmitMessage(""); setSubmitError(false); }}>Back to sign in</button>
+      </form> : <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
         {signUpMode && <div className="account-field">
           <label htmlFor="account-name">Name</label>
           <input id="account-name" name="name" type="text" autoComplete="name" required value={name} onChange={(event) => setName(event.target.value)} disabled={!auth.configured || submitting} />
@@ -142,13 +161,13 @@ export function AccountPrompt({
         <div className="account-field">
           <label htmlFor="account-password">Password</label>
           <div className="account-password-field">
-            <input id="account-password" name="password" type={showPassword ? "text" : "password"} autoComplete={signUpMode ? "new-password" : "current-password"} minLength={10} required value={password} onChange={(event) => setPassword(event.target.value)} disabled={!auth.configured || submitting} />
-            <button type="button" className="account-password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button>
+            <input id="account-password" name="password" type={showPassword ? "text" : "password"} autoComplete={signUpMode ? "new-password" : "current-password"} minLength={signUpMode ? 10 : undefined} required value={password} onChange={(event) => setPassword(event.target.value)} disabled={!auth.configured || submitting} />
+            <button type="button" className="account-password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} title={showPassword ? "Hide password" : "Show password"}><Icon name={showPassword ? "eye-off" : "eye"} /></button>
           </div>
           {signUpMode && <small className="account-field-hint">Use at least 10 characters. Password managers and paste are welcome.</small>}
         </div>
         <button type="submit" className="account-primary account-form-submit" disabled={!auth.configured || submitting}>{submitting ? (signUpMode ? "Creating account…" : "Signing in…") : signUpMode ? "Create account" : "Sign in"}</button>
-        {!signUpMode && <button type="button" className="account-text-button account-forgot" onClick={() => { setResetMode(true); setSubmitMessage(""); }}>Forgot password?</button>}
+        {!signUpMode && <button type="button" className="account-text-button account-forgot" onClick={() => { setResetMode(true); setSubmitMessage(""); setSubmitError(false); }}>Forgot password?</button>}
       </form>}
 
       {!resetMode && <>
@@ -167,7 +186,7 @@ export function AccountPrompt({
         </div>
       </>}
 
-      <p className="account-prompt-status" role="status" aria-live="polite">{statusMessage}</p>
+      <p id="account-form-status" className={`account-prompt-status ${submitError ? "is-error" : ""}`} role={submitError ? "alert" : "status"} aria-live="polite">{statusMessage}</p>
       <footer>
         <small>Plywise never receives your provider password.</small>
         <div className="account-entry-actions">
@@ -227,12 +246,12 @@ export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
       {complete ? <>
         <p className="account-prompt-status" role="status">{message || "Your password has been updated."}</p>
         <button type="button" className="account-primary account-form-submit" onClick={onClose}>Continue to Plywise</button>
-      </> : <form className="account-form" onSubmit={(event) => void submit(event)}>
+      </> : <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
         <div className="account-field">
           <label htmlFor="account-new-password">New password</label>
           <div className="account-password-field">
             <input id="account-new-password" type={showPassword ? "text" : "password"} autoComplete="new-password" minLength={10} required value={password} onChange={(event) => setPassword(event.target.value)} disabled={!auth.configured || busy} />
-            <button type="button" className="account-password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button>
+            <button type="button" className="account-password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} title={showPassword ? "Hide password" : "Show password"}><Icon name={showPassword ? "eye-off" : "eye"} /></button>
           </div>
         </div>
         <button type="submit" className="account-primary account-form-submit" disabled={!auth.configured || busy}>{busy ? "Updating…" : "Update password"}</button>

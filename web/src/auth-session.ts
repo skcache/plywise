@@ -160,7 +160,7 @@ export async function signUpWithPassword(name: string, email: string, password: 
       password,
       options: { data: { name: name.trim() } },
     });
-    if (error) return { ok: false, message: "We couldn't create that account. Check your details and try again." };
+    if (error) return { ok: false, message: signUpErrorMessage(error) };
     currentSession = data.session;
     currentMessage = data.session
       ? "Your account is ready."
@@ -278,7 +278,7 @@ export function clearAuthIntent(): void {
 }
 
 export function consumeAuthRedirectMessage(): string | null {
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined" || isAuthCallbackPath()) return null;
   const url = new URL(window.location.href);
   const params = new URLSearchParams(url.search);
   const errorCode = params.get("error_code") ?? params.get("error") ?? "";
@@ -321,15 +321,24 @@ async function completeAuthRedirect(): Promise<string | null> {
       return authRedirectMessage(errorCode, errorDescription) ?? "The account provider could not complete sign-in. Try again.";
     }
     const code = url.searchParams.get("code");
-    if (!code) {
+    if (code) {
+      const { data, error } = await client.auth.exchangeCodeForSession(code);
       cleanAuthUrl();
-      return "The account provider did not return a sign-in code. Try again.";
+      if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
+      currentSession = data.session;
+      return null;
     }
-    const { data, error } = await client.auth.exchangeCodeForSession(code);
+    // Older provider configurations can return tokens in the hash instead of a PKCE code.
+    // Accept that response only on this exact callback path, then immediately remove it.
+    if (recoveryTokens) {
+      const { data, error } = await client.auth.setSession(recoveryTokens);
+      cleanAuthUrl();
+      if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
+      currentSession = data.session;
+      return null;
+    }
     cleanAuthUrl();
-    if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
-    currentSession = data.session;
-    return null;
+    return "The account provider did not return a usable sign-in response. Try again.";
   }
 
   if (isPasswordResetPath() && recoveryTokens) {
@@ -352,6 +361,28 @@ function cleanAuthUrl(path = "/"): void {
   window.history.replaceState(null, "", path);
 }
 
+
+function signUpErrorMessage(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "").toLowerCase()
+    : "";
+  const message = typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message?: unknown }).message ?? "").toLowerCase()
+    : "";
+  if (code.includes("rate") || message.includes("rate limit") || message.includes("too many")) {
+    return "Too many attempts. Wait a moment and try again.";
+  }
+  if (code.includes("weak") || message.includes("password")) {
+    return "Use a stronger password with at least 10 characters.";
+  }
+  if (code.includes("email") && (code.includes("invalid") || message.includes("invalid email"))) {
+    return "Enter a valid email address.";
+  }
+  if (code.includes("already") || code.includes("exists") || message.includes("already registered") || message.includes("already been registered")) {
+    return "That email may already be in use. Try signing in or resetting your password.";
+  }
+  return "We couldn't create that account. Check your email and password, then try again.";
+}
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }

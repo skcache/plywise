@@ -31,6 +31,13 @@ React dev server against it on loopback. No hosted service or billing account is
 
 Vercel only serves the React site. The C++ API is a long-running container, so run `docker compose
 up --build -d` on an always-on Linux host and put a TLS reverse proxy in front of port `8787`.
+Tagged releases also publish `ghcr.io/skcache/plywise-api`; set `PCT_API_IMAGE` to that image if
+you want to pull the release instead of building it locally:
+
+```sh
+PCT_API_IMAGE=ghcr.io/skcache/plywise-api:latest docker compose pull
+PCT_API_IMAGE=ghcr.io/skcache/plywise-api:latest docker compose up -d
+```
 For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
 `PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then choose one API connection mode in Vercel:
 

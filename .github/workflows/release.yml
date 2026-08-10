@@ -26,3 +26,40 @@ jobs:
           name: Personal-Chess-Tutor-macOS
           path: dist/Personal-Chess-Tutor-macOS.zip
           if-no-files-found: error
+
+  container-image:
+    needs: macos-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.12.0
+      - run: chmod +x scripts/container-smoke.sh
+      - run: scripts/container-smoke.sh
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build and publish the API image
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${IMAGE_OWNER,,}/plywise-api"
+          SHORT_SHA="${RELEASE_SHA:0:12}"
+          SAFE_TAG="${RELEASE_TAG//\//-}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag "$IMAGE:$SAFE_TAG" \
+            --tag "$IMAGE:sha-$SHORT_SHA" \
+            --tag "$IMAGE:latest" \
+            --provenance=true \
+            --sbom=true \
+            --push \
+            .

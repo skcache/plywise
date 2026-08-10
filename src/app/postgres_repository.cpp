@@ -17,6 +17,7 @@
 #include <cctype>
 #include <iomanip>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -307,6 +308,69 @@ StoredGame stored_game_from_row(const Result& result, int row) {
         stored.analyzed_at_ms = integer_at(result, row, 6);
     }
     return stored;
+}
+
+void validate_archive_entry(ChessComArchiveEntry& entry) {
+    if (entry.game_id.empty() || entry.pgn.empty() || !valid_chesscom_month(entry.month) ||
+        entry.game_id.size() > 64 || entry.canonical_url.size() > 2048 ||
+        entry.source_url.size() > 2048 || entry.time_class.empty() ||
+        entry.time_class.size() > 16 || entry.end_time_ms < 0 || entry.fetched_at_ms < 0)
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive entry is invalid");
+    entry.username = normalize_chesscom_username(entry.username);
+    if (!entry.canonical_url.starts_with("https://www.chess.com/game/") &&
+        !entry.canonical_url.starts_with("https://chess.com/game/"))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive URL is invalid");
+    if (!entry.source_url.starts_with("https://api.chess.com/"))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive source URL is invalid");
+}
+
+ChessComArchiveEntry archive_entry_from_row(const Result& result, int row) {
+    return ChessComArchiveEntry{value_at(result, row, 0), value_at(result, row, 1),
+                                value_at(result, row, 2), value_at(result, row, 3),
+                                value_at(result, row, 4), value_at(result, row, 5),
+                                integer_at(result, row, 6), integer_at(result, row, 7),
+                                value_at(result, row, 8)};
+}
+
+ChessComMonthCheckpoint checkpoint_from_row(const Result& result, int row) {
+    return ChessComMonthCheckpoint{value_at(result, row, 0), value_at(result, row, 1),
+                                   value_at(result, row, 2),
+                                   static_cast<std::size_t>(unsigned_integer_at(result, row, 3)),
+                                   integer_at(result, row, 4)};
+}
+
+void validate_sync_state(ChessComSyncState& state) {
+    static const std::set<std::string> statuses{
+        "idle", "running", "paused", "succeeded", "failed"};
+    if (!statuses.contains(state.status) || state.started_at_ms < 0 ||
+        state.updated_at_ms < 0 ||
+        (!state.current_month.empty() && !valid_chesscom_month(state.current_month)))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com sync state is invalid");
+    if (!state.username.empty())
+        state.username = normalize_chesscom_username(state.username);
+    if (state.cursor.size() > chesscom_profile_cursor_limit)
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive cursor is too long");
+    for (const char raw_character : state.cursor) {
+        const auto character = static_cast<unsigned char>(raw_character);
+        if (character < 0x21U || character > 0x7eU)
+            throw Error(ErrorCode::InvalidArgument, "Chess.com archive cursor is invalid");
+    }
+    if (state.last_error.size() > chesscom_profile_error_limit)
+        state.last_error.resize(chesscom_profile_error_limit);
+}
+
+ChessComSyncState sync_state_from_row(const Result& result, int row) {
+    ChessComSyncState state;
+    state.status = value_at(result, row, 0);
+    state.username = value_at(result, row, 1);
+    state.cursor = value_at(result, row, 2);
+    state.current_month = value_at(result, row, 3);
+    state.months_completed = static_cast<std::size_t>(unsigned_integer_at(result, row, 4));
+    state.games_indexed = static_cast<std::size_t>(unsigned_integer_at(result, row, 5));
+    state.started_at_ms = integer_at(result, row, 6);
+    state.updated_at_ms = integer_at(result, row, 7);
+    state.last_error = value_at(result, row, 8);
+    return state;
 }
 
 constexpr std::string_view game_select = R"sql(
@@ -895,8 +959,9 @@ std::optional<training::PlayerIdentity> PostgresRepository::player_identity() co
     return training::player_identity_from_json(identity);
 }
 
-// The remaining projections are intentionally kept behind the same repository boundary. They
-// will be added in the next hosted slices rather than silently falling back to local storage.
+// Training and filesystem projections remain intentionally behind the same repository boundary.
+// Chess.com archive persistence is implemented below because URL imports consult this owner-
+// scoped index before falling back to the public game page.
 std::vector<training::Drill> PostgresRepository::drills(std::int64_t) const {
     unsupported("training drills");
 }
@@ -955,40 +1020,254 @@ json::Value PostgresRepository::batches() const {
     return json::Value::Object{{"batches", std::move(values)}};
 }
 
-std::size_t PostgresRepository::index_chesscom_archive_chunk(std::vector<ChessComArchiveEntry>) {
-    unsupported("Chess.com archive records");
+std::size_t PostgresRepository::index_chesscom_archive_chunk(
+    std::vector<ChessComArchiveEntry> entries) {
+    if (entries.size() > chesscom_archive_chunk_limit)
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive chunk has too many entries");
+
+    std::size_t encoded_bytes = 0;
+    for (auto& entry : entries) {
+        validate_archive_entry(entry);
+        const std::size_t estimate = entry.pgn.size() + entry.canonical_url.size() +
+                                     entry.username.size() + entry.source_url.size() + 1024;
+        if (estimate > chesscom_archive_chunk_encoded_byte_limit ||
+            encoded_bytes > chesscom_archive_chunk_encoded_byte_limit - estimate)
+            throw Error(ErrorCode::InvalidArgument, "Chess.com archive chunk is too large");
+        encoded_bytes += estimate;
+    }
+
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const std::string owner_kind = owner_kind_name(owner_.kind());
+    const std::string owner_id(owner_.value());
+    std::size_t indexed = 0;
+    for (const auto& entry : entries) {
+        const Result inserted = execute(
+            impl_->connection,
+            "INSERT INTO plywise.chesscom_archive_entries "
+            "(owner_kind, owner_id, game_id, canonical_url, pgn, username, month, "
+            "time_class, end_time_ms, fetched_at_ms, source_url) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+            "ON CONFLICT (owner_kind, owner_id, game_id) DO NOTHING RETURNING game_id",
+            {owner_kind, owner_id, entry.game_id, entry.canonical_url, entry.pgn,
+             entry.username, entry.month, entry.time_class, std::to_string(entry.end_time_ms),
+             std::to_string(entry.fetched_at_ms), entry.source_url});
+        if (PQntuples(inserted.get()) == 1)
+            ++indexed;
+    }
+    transaction.commit();
+    return indexed;
 }
 
 std::optional<ChessComArchiveEntry>
-PostgresRepository::chesscom_archive_entry(std::string_view) const {
-    unsupported("Chess.com archive records");
+PostgresRepository::chesscom_archive_entry(std::string_view game_id) const {
+    if (game_id.empty() || game_id.size() > 64)
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive game id is invalid");
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT game_id, canonical_url, pgn, username, month, time_class, end_time_ms, "
+        "fetched_at_ms, source_url FROM plywise.chesscom_archive_entries "
+        "WHERE owner_kind = $1 AND owner_id = $2 AND game_id = $3",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value()), std::string(game_id)});
+    if (PQntuples(result.get()) == 0)
+        return std::nullopt;
+    return archive_entry_from_row(result, 0);
 }
 
 ChessComArchivePage
-PostgresRepository::search_chesscom_archive(const ChessComArchiveSearch&) const {
-    unsupported("Chess.com archive records");
+PostgresRepository::search_chesscom_archive(const ChessComArchiveSearch& search) const {
+    const std::string username =
+        search.username.empty() ? std::string{} : normalize_chesscom_username(search.username);
+    if (!search.month.empty() && !valid_chesscom_month(search.month))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive month is invalid");
+    if (search.offset > game_list_offset_limit)
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive offset is too large");
+
+    ChessComArchivePage page;
+    const std::size_t limit = std::min(search.limit, chesscom_archive_search_limit);
+    page.next_offset = search.offset;
+    if (limit == 0)
+        return page;
+
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const std::string owner_kind = owner_kind_name(owner_.kind());
+    const std::string owner_id(owner_.value());
+    const Result result = execute(
+        impl_->connection,
+        "SELECT game_id, canonical_url, "
+        "CASE WHEN $8 = '1' THEN pgn ELSE '' END, username, month, time_class, "
+        "end_time_ms, fetched_at_ms, source_url "
+        "FROM plywise.chesscom_archive_entries "
+        "WHERE owner_kind = $1 AND owner_id = $2 "
+        "AND ($3 = '' OR username = $3) "
+        "AND ($4 = '' OR month = $4) "
+        "AND ($5 = '' OR time_class = $5) "
+        "AND ($6 = '0' OR end_time_ms >= $6::bigint) "
+        "AND ($7 = '0' OR end_time_ms <= $7::bigint) "
+        "ORDER BY end_time_ms DESC, game_id "
+        "LIMIT $9::bigint OFFSET $10::bigint",
+        {owner_kind, owner_id, username, search.month, search.time_class,
+         std::to_string(search.ended_after_ms), std::to_string(search.ended_before_ms),
+         search.include_pgn ? "1" : "0", std::to_string(limit + 1),
+         std::to_string(search.offset)});
+
+    const int rows = PQntuples(result.get());
+    std::size_t copied_pgn_bytes = 0;
+    for (int row = 0; row < rows && page.entries.size() < limit; ++row) {
+        auto entry = archive_entry_from_row(result, row);
+        if (search.include_pgn && !page.entries.empty() &&
+            entry.pgn.size() > chesscom_archive_chunk_encoded_byte_limit - copied_pgn_bytes)
+            break;
+        if (!search.include_pgn)
+            entry.pgn.clear();
+        else
+            copied_pgn_bytes += entry.pgn.size();
+        page.entries.push_back(std::move(entry));
+        page.next_offset = search.offset + page.entries.size();
+    }
+    page.has_more = page.next_offset < search.offset + static_cast<std::size_t>(rows);
+    return page;
 }
 
-void PostgresRepository::checkpoint_chesscom_month(ChessComMonthCheckpoint) {
-    unsupported("Chess.com checkpoints");
+void PostgresRepository::checkpoint_chesscom_month(ChessComMonthCheckpoint checkpoint) {
+    checkpoint.username = normalize_chesscom_username(checkpoint.username);
+    if (!valid_chesscom_month_checkpoint(checkpoint) || checkpoint.source_url.empty() ||
+        checkpoint.source_url.size() > 2048 ||
+        !checkpoint.source_url.starts_with("https://api.chess.com/"))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com month checkpoint is invalid");
+    if (checkpoint.indexed_games >
+        static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com checkpoint count is too large");
+
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const std::string owner_kind = owner_kind_name(owner_.kind());
+    const std::string owner_id(owner_.value());
+    const Result existing = execute(
+        impl_->connection,
+        "SELECT username, month, source_url, indexed_games, completed_at_ms "
+        "FROM plywise.chesscom_month_checkpoints "
+        "WHERE owner_kind = $1 AND owner_id = $2 AND username = $3 AND month = $4 FOR UPDATE",
+        {owner_kind, owner_id, checkpoint.username, checkpoint.month});
+    if (PQntuples(existing.get()) == 1) {
+        const auto previous = checkpoint_from_row(existing, 0);
+        if (previous == checkpoint) {
+            transaction.commit();
+            return;
+        }
+        if (checkpoint.completed_at_ms < previous.completed_at_ms)
+            throw Error(ErrorCode::InvalidArgument, "Chess.com month checkpoint is stale");
+    }
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.chesscom_month_checkpoints "
+        "(owner_kind, owner_id, username, month, source_url, indexed_games, completed_at_ms) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+        "ON CONFLICT (owner_kind, owner_id, username, month) DO UPDATE SET "
+        "source_url = EXCLUDED.source_url, indexed_games = EXCLUDED.indexed_games, "
+        "completed_at_ms = EXCLUDED.completed_at_ms",
+        {owner_kind, owner_id, checkpoint.username, checkpoint.month, checkpoint.source_url,
+         std::to_string(checkpoint.indexed_games), std::to_string(checkpoint.completed_at_ms)}));
+    transaction.commit();
 }
 
 std::optional<ChessComMonthCheckpoint>
-PostgresRepository::chesscom_month_checkpoint(std::string_view, std::string_view) const {
-    unsupported("Chess.com checkpoints");
+PostgresRepository::chesscom_month_checkpoint(std::string_view username,
+                                              std::string_view month) const {
+    if (!valid_chesscom_month(month))
+        throw Error(ErrorCode::InvalidArgument, "Chess.com archive month is invalid");
+    const std::string normalized = normalize_chesscom_username(username);
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT username, month, source_url, indexed_games, completed_at_ms "
+        "FROM plywise.chesscom_month_checkpoints "
+        "WHERE owner_kind = $1 AND owner_id = $2 AND username = $3 AND month = $4",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value()), normalized,
+         std::string(month)});
+    if (PQntuples(result.get()) == 0)
+        return std::nullopt;
+    return checkpoint_from_row(result, 0);
 }
 
 std::vector<ChessComMonthCheckpoint>
-PostgresRepository::chesscom_month_checkpoints(std::string_view) const {
-    unsupported("Chess.com checkpoints");
+PostgresRepository::chesscom_month_checkpoints(std::string_view username) const {
+    const std::string normalized =
+        username.empty() ? std::string{} : normalize_chesscom_username(username);
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT username, month, source_url, indexed_games, completed_at_ms "
+        "FROM plywise.chesscom_month_checkpoints "
+        "WHERE owner_kind = $1 AND owner_id = $2 AND ($3 = '' OR username = $3) "
+        "ORDER BY username, month",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value()), normalized});
+    std::vector<ChessComMonthCheckpoint> checkpoints;
+    checkpoints.reserve(static_cast<std::size_t>(PQntuples(result.get())));
+    for (int row = 0; row < PQntuples(result.get()); ++row)
+        checkpoints.push_back(checkpoint_from_row(result, row));
+    return checkpoints;
 }
 
-void PostgresRepository::save_chesscom_sync_state(ChessComSyncState) {
-    unsupported("Chess.com sync state");
+void PostgresRepository::save_chesscom_sync_state(ChessComSyncState state) {
+    validate_sync_state(state);
+    std::lock_guard lock(mutex_);
+    Transaction transaction(impl_->connection);
+    require_owner(impl_->connection, owner_);
+    const std::string owner_kind = owner_kind_name(owner_.kind());
+    const std::string owner_id(owner_.value());
+    const Result existing = execute(
+        impl_->connection,
+        "SELECT status, username, cursor, current_month, months_completed, games_indexed, "
+        "started_at_ms, updated_at_ms, last_error FROM plywise.chesscom_sync_states "
+        "WHERE owner_kind = $1 AND owner_id = $2 FOR UPDATE",
+        {owner_kind, owner_id});
+    if (PQntuples(existing.get()) == 1) {
+        const auto previous = sync_state_from_row(existing, 0);
+        if (state.updated_at_ms < previous.updated_at_ms)
+            throw Error(ErrorCode::InvalidArgument, "Chess.com sync state is stale");
+        if (state == previous) {
+            transaction.commit();
+            return;
+        }
+    }
+    static_cast<void>(execute(
+        impl_->connection,
+        "INSERT INTO plywise.chesscom_sync_states "
+        "(owner_kind, owner_id, status, username, cursor, current_month, months_completed, "
+        "games_indexed, started_at_ms, updated_at_ms, last_error) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+        "ON CONFLICT (owner_kind, owner_id) DO UPDATE SET status = EXCLUDED.status, "
+        "username = EXCLUDED.username, cursor = EXCLUDED.cursor, "
+        "current_month = EXCLUDED.current_month, months_completed = EXCLUDED.months_completed, "
+        "games_indexed = EXCLUDED.games_indexed, started_at_ms = EXCLUDED.started_at_ms, "
+        "updated_at_ms = EXCLUDED.updated_at_ms, last_error = EXCLUDED.last_error",
+        {owner_kind, owner_id, state.status, state.username, state.cursor, state.current_month,
+         std::to_string(state.months_completed), std::to_string(state.games_indexed),
+         std::to_string(state.started_at_ms), std::to_string(state.updated_at_ms),
+         state.last_error}));
+    transaction.commit();
 }
 
 ChessComSyncState PostgresRepository::chesscom_sync_state() const {
-    unsupported("Chess.com sync state");
+    std::lock_guard lock(mutex_);
+    require_owner(impl_->connection, owner_);
+    const Result result = execute(
+        impl_->connection,
+        "SELECT status, username, cursor, current_month, months_completed, games_indexed, "
+        "started_at_ms, updated_at_ms, last_error FROM plywise.chesscom_sync_states "
+        "WHERE owner_kind = $1 AND owner_id = $2",
+        {owner_kind_name(owner_.kind()), std::string(owner_.value())});
+    if (PQntuples(result.get()) == 0)
+        return {};
+    return sync_state_from_row(result, 0);
 }
 
 Variation PostgresRepository::create_variation(std::string_view game_id, std::size_t root_ply,

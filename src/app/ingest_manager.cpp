@@ -617,9 +617,14 @@ void IngestManager::run_resolution(std::string id) {
                                                       month.substr(5, 2), {}, cancellation);
                 std::vector<ChessComArchiveEntry> entries;
                 for (const auto& game : page.games) {
-                    if (auto entry = archive_entry(game, username, month, archive_url,
-                                                   now_ms(), false))
-                        entries.push_back(std::move(*entry));
+                    try {
+                        if (auto entry = archive_entry(game, username, month, archive_url,
+                                                       now_ms(), false))
+                            entries.push_back(std::move(*entry));
+                    } catch (const Error&) {
+                        // A single incomplete remote record should not prevent the exact
+                        // game from reaching the callback/page fallback below.
+                    }
                 }
                 static_cast<void>(persist_archive_chunks(repository_, entries));
                 if (const auto local = repository_.chesscom_archive_entry(state.game_id)) {
@@ -773,7 +778,13 @@ void IngestManager::run_sync_step(std::string id) {
             entries.reserve(page.games.size());
             imported_games.reserve(page.games.size());
             for (const auto& game : page.games) {
-                auto entry = archive_entry(game, state.username, month, archive_url, now_ms(), true);
+                std::optional<ChessComArchiveEntry> entry;
+                try {
+                    entry = archive_entry(game, state.username, month, archive_url, now_ms(), true);
+                } catch (const Error&) {
+                    // Keep a malformed archive record from failing the whole bounded sync.
+                    continue;
+                }
                 if (!entry || entry->end_time_ms < state.cutoff_ms ||
                     entry->end_time_ms > state.upper_bound_ms)
                     continue;

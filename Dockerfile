@@ -35,6 +35,7 @@ RUN apt-get update \
         curl \
         libcurl4 \
         libpq5 \
+        postgresql-client \
         stockfish \
     && mkdir -p /licenses /opt/plywise/resources /var/lib/plywise \
     && cp /usr/share/common-licenses/GPL-3 /licenses/stockfish-GPL-3.0.txt \
@@ -46,8 +47,14 @@ RUN apt-get update \
 
 COPY --from=build /build/personal-chess-tutor /usr/local/bin/personal-chess-tutor
 COPY resources /opt/plywise/resources
+COPY db/migrations /opt/plywise/db/migrations
+COPY scripts/postgres-migrate.sh /opt/plywise/scripts/postgres-migrate.sh
+COPY deploy/render-entrypoint.sh /usr/local/bin/plywise-entrypoint
 COPY deploy/render-healthcheck.sh /usr/local/bin/plywise-healthcheck
-RUN chmod 0555 /usr/local/bin/plywise-healthcheck
+RUN chmod 0555 \
+        /usr/local/bin/plywise-entrypoint \
+        /usr/local/bin/plywise-healthcheck \
+        /opt/plywise/scripts/postgres-migrate.sh
 
 LABEL org.opencontainers.image.title="Plywise C++ service" \
       org.opencontainers.image.description="Completed-game chess analysis and review service" \
@@ -74,4 +81,4 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD ["/usr/local/bin/plywise-healthcheck"]
 
-ENTRYPOINT ["/usr/local/bin/personal-chess-tutor"]
+ENTRYPOINT ["/usr/local/bin/plywise-entrypoint"]

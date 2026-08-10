@@ -5,10 +5,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIGRATIONS_DIR="$ROOT/db/migrations"
 
 psql_args=(-X -v ON_ERROR_STOP=1)
+psql_target=()
 if [[ -n "${DATABASE_URL:-}" ]]; then
-  export PGDATABASE="$DATABASE_URL"
-  unset DATABASE_URL
+  # Keep the connection string out of PGDATABASE: libpq treats that variable as
+  # a literal database name. Passing it as psql's dbname preserves URI options
+  # such as sslmode=require and works for both Render and CI.
+  psql_target=("$DATABASE_URL")
 fi
+
+psql_cmd() {
+  psql "${psql_args[@]}" "${psql_target[@]}" "$@"
+}
 
 checksum() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -18,7 +25,7 @@ checksum() {
   fi
 }
 
-psql "${psql_args[@]}" <<'SQL'
+psql_cmd <<'SQL'
 CREATE SCHEMA IF NOT EXISTS plywise;
 CREATE TABLE IF NOT EXISTS plywise.schema_migrations (
     version text PRIMARY KEY,
@@ -44,7 +51,7 @@ for migration in "${migrations[@]}"; do
 
   migration_checksum="$(checksum "$migration")"
   existing_checksum="$(
-    psql "${psql_args[@]}" --tuples-only --no-align \
+    psql_cmd --tuples-only --no-align \
       --command "SELECT checksum FROM plywise.schema_migrations WHERE version = '$version'"
   )"
 
@@ -56,14 +63,14 @@ for migration in "${migrations[@]}"; do
     continue
   fi
 
-  psql "${psql_args[@]}" --single-transaction \
+  psql_cmd --single-transaction \
     --command "SELECT pg_advisory_xact_lock(724959731); LOCK TABLE plywise.schema_migrations IN EXCLUSIVE MODE" \
     --command "SET LOCAL search_path TO plywise, public" \
     --file "$migration" \
     --command "INSERT INTO plywise.schema_migrations (version, checksum) VALUES ('$version', '$migration_checksum') ON CONFLICT (version) DO NOTHING"
 
   stored_checksum="$(
-    psql "${psql_args[@]}" --tuples-only --no-align \
+    psql_cmd --tuples-only --no-align \
       --command "SELECT checksum FROM plywise.schema_migrations WHERE version = '$version'"
   )"
   if [[ "$stored_checksum" != "$migration_checksum" ]]; then

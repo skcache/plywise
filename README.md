@@ -27,6 +27,15 @@ We are now moving Plywise from a Mac-first local app to a web-first hybrid produ
 Run `npm ci --prefix web`, then `scripts/browser-first-smoke.sh` to build the C++ API and start the
 React dev server against it on loopback. No hosted service or billing account is needed.
 
+## Run the API yourself
+
+Vercel only serves the React site. The C++ API is a long-running container, so run `docker compose
+up --build -d` on an always-on Linux host and put a TLS reverse proxy in front of port `8787`.
+For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
+`PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then set the Vercel build variable
+`VITE_PLYWISE_API_ORIGIN` to the HTTPS API origin. The service refuses to start when that hosted
+configuration is incomplete.
+
 ## What's left
 
 - Make the current experience work safely on the web.

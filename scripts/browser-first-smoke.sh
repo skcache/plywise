@@ -71,6 +71,23 @@ set -e
 [ "$GUARD_STATUS" -ne 0 ]
 grep -q "remote HTTP binds require" "$TMP/remote-guard.log"
 
+# A remote authenticated bind must also fail fast when its hosted identity/storage or browser
+# allowlists are missing. Starting in that state would leave private routes at 503 or reject every
+# browser origin while looking healthy at the process level.
+set +e
+PCT_BIND_ADDRESS=0.0.0.0 \
+PCT_PORT="$API_PORT" \
+PCT_REQUIRE_AUTH=true \
+"$BUILD_DIR/personal-chess-tutor" \
+  --data-dir "$TMP/misconfigured-hosted-data" \
+  --web-root "$ROOT/web/dist" \
+  --stockfish "$STOCKFISH" \
+  --no-tactical-corpus >"$TMP/hosted-config-guard.log" 2>&1
+HOSTED_GUARD_STATUS=$?
+set -e
+[ "$HOSTED_GUARD_STATUS" -ne 0 ]
+grep -q "authenticated remote HTTP binds require PCT_POSTGRES_URL" "$TMP/hosted-config-guard.log"
+
 mkdir -p "$DATA_DIR"
 "$BUILD_DIR/personal-chess-tutor" \
   --bind-address 127.0.0.1 \

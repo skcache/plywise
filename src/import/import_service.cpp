@@ -8,6 +8,7 @@
 #include <exception>
 #include <map>
 #include <optional>
+#include <set>
 #include <vector>
 
 namespace pct::import {
@@ -347,19 +348,46 @@ ImportedGame ImportService::from_url(std::string_view url,
                                      CancellationToken cancellation) const {
     const ChessComUrl parsed = parse_chesscom_url(url);
     std::exception_ptr archive_failure;
+    std::vector<std::string> archive_players;
     if (!parsed.player.empty()) {
+        archive_players.push_back(parsed.player);
+    } else {
+        // A plain public game link does not carry a username, but its public page does. Use
+        // those player names to look up the canonical PGN in the Chess.com archive before
+        // falling back to scraping the page. This keeps hosted imports tenant-local while
+        // retaining the archive's exact game-id binding.
         try {
-            ChessComArchiveClient client(transport_, sleeper_);
-            const ChessComArchiveGame found = client.find_game(
-                parsed.player, parsed.game_id, parsed.year, parsed.month, cancellation);
-            return ImportedGame{chess::parse_pgn(found.pgn), parsed.canonical, found.pgn,
-                                ImportMethod::PublicApi};
+            const auto players = discover_players(parsed.canonical, cancellation);
+            archive_players = {players.white, players.black};
         } catch (const ChessComClientError& error) {
             if (error.failure() == ChessComFailure::Cancelled)
                 throw;
-            archive_failure = std::current_exception();
         } catch (const Error&) {
-            archive_failure = std::current_exception();
+            // Restricted/older public pages may not expose player metadata. The page fallback
+            // below remains available for those links.
+        }
+    }
+    if (!archive_players.empty()) {
+        ChessComArchiveClient client(transport_, sleeper_);
+        std::set<std::string> attempted_players;
+        for (const auto& player : archive_players) {
+            const std::string normalized = lowercase(player);
+            if (!attempted_players.emplace(normalized).second)
+                continue;
+            try {
+                const ChessComArchiveGame found = client.find_game(
+                    player, parsed.game_id, parsed.year, parsed.month, cancellation);
+                return ImportedGame{chess::parse_pgn(found.pgn), parsed.canonical, found.pgn,
+                                    ImportMethod::PublicApi};
+            } catch (const ChessComClientError& error) {
+                if (error.failure() == ChessComFailure::Cancelled)
+                    throw;
+                if (!archive_failure)
+                    archive_failure = std::current_exception();
+            } catch (const Error&) {
+                if (!archive_failure)
+                    archive_failure = std::current_exception();
+            }
         }
     }
 

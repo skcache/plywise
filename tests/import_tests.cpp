@@ -63,3 +63,25 @@ TEST_CASE("archive import selects the matching game URL") {
         service.from_url("https://chess.com/game/live/123?player=Alex&year=2026&month=06");
     CHECK(imported.method == ImportMethod::PublicApi);
 }
+
+TEST_CASE("plain game links discover players before the page fallback") {
+    const std::string archive =
+        R"json({"archives":["https://api.chess.com/pub/player/Alex/games/2026/06"]})json";
+    const std::string month =
+        R"json({"games":[{"url":"https://www.chess.com/game/live/123","pgn":"[Event \"Imported\"]\n[Site \"Chess.com\"]\n[Date \"2026.06.17\"]\n[White \"Alex\"]\n[Black \"Morgan\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0"}]})json";
+    ImportService service([&](const HttpRequest& request) {
+        if (request.url == "https://www.chess.com/game/live/123")
+            return HttpResponse{200, {}, request.url,
+                                "<title>Chess: Alex vs Morgan - Chess.com</title>"};
+        if (request.url == "https://api.chess.com/pub/player/Alex/games/archives")
+            return HttpResponse{200, {}, request.url, archive};
+        if (request.url == "https://api.chess.com/pub/player/Alex/games/2026/06")
+            return HttpResponse{200, {}, request.url, month};
+        throw std::runtime_error("unexpected Chess.com request: " + request.url);
+    });
+
+    const ImportedGame imported = service.from_url("https://www.chess.com/game/live/123");
+    CHECK(imported.method == ImportMethod::PublicApi);
+    CHECK_EQ(imported.game.tag("White"), "Alex");
+    CHECK_EQ(imported.game.tag("Black"), "Morgan");
+}

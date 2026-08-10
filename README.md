@@ -51,6 +51,10 @@ The checked-in `vercel.mjs` rejects a production deployment without one of those
 keeps API responses out of caches, and builds the CSP from the configured public origins. The
 service itself refuses to start when the hosted C++ configuration is incomplete.
 
+Before pointing Vercel at a host, run `scripts/hosted-api-smoke.sh` with the API URL, app origin,
+and a short-lived account token. It checks readiness, JSON responses, exact CORS, the unauthenticated
+boundary, an authenticated game request, and the WebSocket handshake without printing the token.
+
 ## What's left
 
 - Make the current experience work safely on the web.

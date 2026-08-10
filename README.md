@@ -48,6 +48,12 @@ scripts/hosted-api-up.sh
 `hosted-api-up.sh` validates the TLS, identity, storage, origin, and digest requirements before it
 pulls or replaces a running service. It then waits for the public HTTPS readiness endpoint. It does
 not print credentials or enable billing.
+
+Keep the previous image digest beside the host's deployment notes. To roll back, replace
+`PCT_API_IMAGE` with that last-known-good digest and run `scripts/hosted-api-up.sh` again; Compose
+will pull only that API image, leave the TLS edge in place, and wait for readiness before returning.
+Run `scripts/hosted-api-smoke.sh` after the rollback with the same API origin, app origin, and
+short-lived account token used for a normal launch.
 For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
 `PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then choose one API connection mode in Vercel:
 

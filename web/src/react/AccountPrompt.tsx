@@ -246,7 +246,7 @@ export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
       {complete ? <>
         <p className="account-prompt-status" role="status">{message || "Your password has been updated."}</p>
         <button type="button" className="account-primary account-form-submit" onClick={onClose}>Continue to Plywise</button>
-      </> : <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
+      </> : <form className="account-form" aria-describedby={message ? "password-reset-status" : undefined} onSubmit={(event) => void submit(event)}>
         <div className="account-field">
           <label htmlFor="account-new-password">New password</label>
           <div className="account-password-field">
@@ -255,7 +255,7 @@ export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
           </div>
         </div>
         <button type="submit" className="account-primary account-form-submit" disabled={!auth.configured || busy}>{busy ? "Updating…" : "Update password"}</button>
-        {message && <p className="account-prompt-status" role="status" aria-live="polite">{message}</p>}
+        {message && <p id="password-reset-status" className="account-prompt-status" role="status" aria-live="polite">{message}</p>}
       </form>}
     </section>
   </div></main>;

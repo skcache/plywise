@@ -17,9 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Require a version tag before publishing
         env:
           RELEASE_REF: ${{ github.ref }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -eu
           case "$RELEASE_REF" in
@@ -29,6 +33,11 @@ jobs:
               exit 1
               ;;
           esac
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" FETCH_HEAD; then
+            echo "Release tags must point to a commit already reachable from main" >&2
+            exit 1
+          fi
 
   macos-package:
     needs: release-guard

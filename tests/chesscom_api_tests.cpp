@@ -39,15 +39,19 @@ struct ChessComApiFixture {
     app::IngestManager ingest;
     service::Api api;
 
-    ChessComApiFixture()
+    explicit ChessComApiFixture(import::HttpTransport custom_transport = {})
         : path(std::filesystem::temp_directory_path() /
                ("pct-chesscom-api-" + std::to_string(::getpid()) + ".log")),
           log((std::filesystem::remove(path), path)), repository(log),
-          transport([](const import::HttpRequest& request) {
-              if (request.url.ends_with("/archives"))
-                  return import::HttpResponse{200, {}, request.url, R"({"archives":[]})"};
-              return import::HttpResponse{200, {}, request.url, "<html>no pgn</html>"};
-          }), importer(transport), analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 2, 1}),
+          transport(custom_transport ? std::move(custom_transport)
+                                     : import::HttpTransport([](const import::HttpRequest& request) {
+                                           if (request.url.ends_with("/archives"))
+                                               return import::HttpResponse{200, {}, request.url,
+                                                                            R"({"archives":[]})"};
+                                           return import::HttpResponse{200, {}, request.url,
+                                                                        "<html>no pgn</html>"};
+                                       })),
+          importer(transport), analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 2, 1}),
           jobs(repository, analyzer), ingest(importer, repository, jobs, transport),
           api(importer, repository, jobs, {}, {}, &ingest) {}
 };
@@ -174,6 +178,54 @@ TEST_CASE("legacy manual PGN import remains compatible while remote URL returns 
         json::Value::Object{{"url", "https://www.chess.com/game/live/171626462440"}}));
     CHECK_EQ(remote.status, 202);
     CHECK(json::parse(remote.body).as_object().contains("resolution_id"));
+}
+
+TEST_CASE("hosted scoped import resolves a client-rendered game through the callback endpoint") {
+    const std::string game_id = "171626462440";
+    const std::string callback = json::dump(json::Value::Object{
+        {"game", json::Value::Object{
+                      {"id", static_cast<double>(171626462440ULL)},
+                      {"moveList", "mC0Kgv5Q"},
+                      {"plyCount", 4},
+                      {"pgnHeaders", json::Value::Object{
+                                           {"Event", "Live Chess"},
+                                           {"White", "Alice"},
+                                           {"Black", "Bob"},
+                                           {"Result", "1-0"},
+                                       }},
+                  }},
+    });
+    ChessComApiFixture fixture([&](const import::HttpRequest& request) {
+        if (request.url == "https://www.chess.com/game/live/" + game_id)
+            return import::HttpResponse{200, {}, request.url, "<html>no pgn</html>"};
+        if (request.url == "https://www.chess.com/callback/live/game/" + game_id)
+            return import::HttpResponse{200, {}, request.url, callback};
+        throw std::runtime_error("unexpected Chess.com request: " + request.url);
+    });
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        return token == "test-token" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                      : std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+        if (owner != fixture.repository.owner())
+            return std::nullopt;
+        return service::ApiScope{&fixture.repository, &fixture.jobs, {}};
+    };
+    auth.allow_shared_ingest = false;
+    service::Api hosted_api(fixture.importer, fixture.repository, fixture.jobs, {}, {},
+                            &fixture.ingest, {}, std::move(auth));
+    service::Request request = json_request(
+        "POST", "/api/import",
+        json::Value::Object{{"url", "https://www.chess.com/game/live/" + game_id}});
+    request.headers.emplace("authorization", "Bearer test-token");
+
+    const auto imported = hosted_api.handle(request);
+    CHECK_EQ(imported.status, 202);
+    const auto body = json::parse(imported.body);
+    CHECK_EQ(body.at("status").as_string(), "imported");
+    CHECK(!body.at("game_id").as_string().empty());
 }
 
 TEST_CASE("cached URL import accepts current Chess.com generic Site PGN") {

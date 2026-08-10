@@ -24,6 +24,7 @@ struct ChessComUrl {
     std::string player;
     std::string year;
     std::string month;
+    std::string game_type;
 };
 
 struct ChessComGamePlayers {

@@ -63,6 +63,45 @@ TEST_CASE("Chess.com exact live daily and analysis URL shapes") {
         "https://www.chess.com/foo/game/live/171626462440"));
 }
 
+TEST_CASE("finished links fall back to the exact Chess.com callback move list") {
+    const std::string callback = json::dump(json::Value::Object{
+        {"game", json::Value::Object{
+                      {"id", static_cast<double>(171626462440ULL)},
+                      {"moveList", "mC0Kgv5Q"},
+                      {"plyCount", 4},
+                      {"pgnHeaders", json::Value::Object{
+                                           {"Event", "Live Chess"},
+                                           {"Site", "Chess.com"},
+                                           {"Date", "2026.06.17"},
+                                           {"White", "Alex"},
+                                           {"Black", "Morgan"},
+                                           {"Result", "1-0"},
+                                       }},
+                  }},
+    });
+    int requests = 0;
+    ImportService service(HttpTransport{[&](const HttpRequest& request) {
+        ++requests;
+        if (request.url == "https://api.chess.com/pub/player/Alex/games/2026/06")
+            return HttpResponse{200, {}, request.url, R"json({"games":[]})json"};
+        if (request.url == "https://www.chess.com/callback/live/game/171626462440")
+            return HttpResponse{200, {}, request.url, callback};
+        return HttpResponse{200, {}, request.url, "<html>no game here</html>"};
+    }});
+
+    const ImportedGame imported = service.from_url(
+        "https://www.chess.com/game/live/171626462440?player=Alex&year=2026&month=06");
+    CHECK(imported.method == ImportMethod::PublicApi);
+    CHECK_EQ(imported.game.tag("White"), "Alex");
+    CHECK_EQ(imported.game.tag("Black"), "Morgan");
+    CHECK_EQ(imported.game.plies.size(), 4ULL);
+    CHECK_EQ(imported.game.plies[0].san, "e4");
+    CHECK_EQ(imported.game.plies[1].san, "e5");
+    CHECK_EQ(imported.game.plies[2].san, "Nf3");
+    CHECK_EQ(imported.game.plies[3].san, "Nc6");
+    CHECK_EQ(requests, 2);
+}
+
 TEST_CASE("Chess.com URL and archive validation rejects authority and path attacks") {
     const std::vector<std::string> attacks = {
         "https://www.chess.com@evil.example/game/live/171626462440",
@@ -271,7 +310,7 @@ TEST_CASE("public fallback failure does not replace archive failure") {
             "https://www.chess.com/game/live/171626462440?player=Alex&year=2026&month=06"));
     });
     CHECK(error.failure() == ChessComFailure::ServerError);
-    CHECK_EQ(requests, 4);
+    CHECK_EQ(requests, 5);
 }
 
 TEST_CASE("curl transport returns 304 and follows only explicit redirect statuses") {

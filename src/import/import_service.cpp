@@ -1,13 +1,19 @@
 #include "pct/import/import_service.hpp"
 
+#include "pct/chess/san.hpp"
 #include "pct/common/error.hpp"
 #include "pct/common/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <exception>
+#include <limits>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <set>
 #include <vector>
 
@@ -154,6 +160,223 @@ std::optional<std::string> pgn_from_json(const json::Value& value,
         }
     }
     return std::nullopt;
+}
+
+// Chess.com serves some finished-game pages as a client-rendered shell. The callback endpoint
+// contains the canonical TCN move list, so decode it into the same validated PGN path used by
+// archive and page imports. Keep the endpoint bounded and bind every response to the requested
+// numeric game id before it reaches the chess parser.
+constexpr std::string_view tcn_alphabet =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?{~}(^)[_]@#$,./&-*++=";
+constexpr std::string_view tcn_promotion_pieces = "qnrbkp";
+constexpr std::size_t max_callback_ply_count = 4096;
+
+std::optional<std::string> callback_string(const json::Value::Object& object,
+                                           std::string_view key) {
+    const auto found = object.find(std::string(key));
+    if (found == object.end() || !found->second.is_string())
+        return std::nullopt;
+    return found->second.as_string();
+}
+
+std::string pgn_tag_value(const json::Value::Object& object, std::string_view key) {
+    const auto found = object.find(std::string(key));
+    if (found == object.end())
+        return {};
+    if (found->second.is_string())
+        return found->second.as_string();
+    if (found->second.is_number()) {
+        const double number = found->second.as_number();
+        if (std::isfinite(number) && std::floor(number) == number &&
+            number >= static_cast<double>(std::numeric_limits<long long>::min()) &&
+            number <= static_cast<double>(std::numeric_limits<long long>::max()))
+            return std::to_string(static_cast<long long>(number));
+    }
+    throw Error(ErrorCode::ParseError,
+                "Chess.com callback field '" + std::string(key) + "' has an invalid type");
+}
+
+std::string escape_pgn_tag(std::string_view value) {
+    if (value.size() > 512)
+        throw Error(ErrorCode::ParseError, "Chess.com callback tag is too long");
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char raw_character : value) {
+        const unsigned char character = static_cast<unsigned char>(raw_character);
+        if (character < 0x20U || character == 0x7fU)
+            throw Error(ErrorCode::ParseError, "Chess.com callback tag contains control data");
+        if (character == '\\' || character == '"')
+            escaped.push_back('\\');
+        escaped.push_back(static_cast<char>(character));
+    }
+    return escaped;
+}
+
+chess::PieceType promotion_type(char symbol) {
+    switch (symbol) {
+    case 'q': return chess::PieceType::Queen;
+    case 'r': return chess::PieceType::Rook;
+    case 'b': return chess::PieceType::Bishop;
+    case 'n': return chess::PieceType::Knight;
+    default: return chess::PieceType::None;
+    }
+}
+
+std::string callback_square(int index) {
+    if (index < 0 || index >= 64)
+        throw Error(ErrorCode::ParseError, "Chess.com callback move contains an invalid square");
+    return std::string(1, static_cast<char>('a' + index % 8)) +
+           std::to_string(index / 8 + 1);
+}
+
+std::string callback_game_type_url(const ChessComUrl& parsed) {
+    return "https://www.chess.com/callback/" + parsed.game_type + "/game/" + parsed.game_id;
+}
+
+std::string callback_pgn(const HttpResponse& response, const ChessComUrl& parsed) {
+    if (response.body.size() > chesscom_max_body_size)
+        throw ChessComClientError(ChessComFailure::BodyTooLarge, ErrorCode::NetworkError,
+                                  "Chess.com callback response exceeded the 10 MiB limit");
+    if (response.status != 200)
+        throw ChessComClientError(response.status == 404 ? ChessComFailure::NotFound
+                                                         : ChessComFailure::Transport,
+                                  response.status == 404 ? ErrorCode::NotFound
+                                                         : ErrorCode::NetworkError,
+                                  "Chess.com callback returned HTTP " +
+                                      std::to_string(response.status), response.status);
+    const std::string expected_url = callback_game_type_url(parsed);
+    if (!response.effective_url.empty() && response.effective_url != expected_url)
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::NetworkError,
+                                  "Chess.com callback changed the requested game");
+
+    const json::Value root = json::parse(response.body);
+    if (!root.is_object())
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback returned an invalid game object");
+    const auto game_member = root.as_object().find("game");
+    if (game_member == root.as_object().end() || !game_member->second.is_object())
+        throw ChessComClientError(ChessComFailure::NotFound, ErrorCode::NotFound,
+                                  "Chess.com callback did not return the requested game");
+    const auto& game = game_member->second.as_object();
+
+    std::uint64_t requested_id = 0;
+    const auto parsed_id = std::from_chars(parsed.game_id.data(),
+                                           parsed.game_id.data() + parsed.game_id.size(),
+                                           requested_id);
+    if (parsed_id.ec != std::errc{} ||
+        parsed_id.ptr != parsed.game_id.data() + parsed.game_id.size())
+        throw Error(ErrorCode::InvalidArgument, "Chess.com game identifier is out of range");
+    const auto id = game.find("id");
+    if (id == game.end())
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback game has no identifier");
+    if (id->second.is_number()) {
+        const double number = id->second.as_number();
+        if (!std::isfinite(number) || number < 0 || std::floor(number) != number ||
+            number > static_cast<double>(std::numeric_limits<std::uint64_t>::max()) ||
+            static_cast<std::uint64_t>(number) != requested_id)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::NetworkError,
+                                      "Chess.com callback game identifier did not match");
+    } else if (id->second.is_string()) {
+        if (id->second.as_string() != parsed.game_id)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::NetworkError,
+                                      "Chess.com callback game identifier did not match");
+    } else {
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback game identifier has an invalid type");
+    }
+
+    const auto headers_member = game.find("pgnHeaders");
+    const auto move_list = callback_string(game, "moveList");
+    if (headers_member == game.end() || !headers_member->second.is_object() || !move_list ||
+        move_list->empty() || move_list->size() % 2 != 0 ||
+        move_list->size() / 2 > max_callback_ply_count)
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback game data is incomplete");
+    if (const auto ply_count = game.find("plyCount"); ply_count != game.end()) {
+        if (!ply_count->second.is_number())
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback ply count has an invalid type");
+        const double value = ply_count->second.as_number();
+        if (!std::isfinite(value) || std::floor(value) != value || value < 0 ||
+            value > static_cast<double>(max_callback_ply_count) ||
+            static_cast<std::size_t>(value) != move_list->size() / 2)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback ply count did not match its move list");
+    }
+    const auto& headers = headers_member->second.as_object();
+    const std::string white = pgn_tag_value(headers, "White");
+    const std::string black = pgn_tag_value(headers, "Black");
+    const std::string result = pgn_tag_value(headers, "Result");
+    if (white.empty() || black.empty() || result.empty())
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback game headers are incomplete");
+    if (result == "*")
+        throw Error(ErrorCode::Unsupported, "Chess.com game is not finished");
+    if (result != "1-0" && result != "0-1" && result != "1/2-1/2")
+        throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                  "Chess.com callback game has an invalid result");
+
+    chess::Board board = chess::Board::initial();
+    const std::string fen = pgn_tag_value(headers, "FEN");
+    const std::string setup = pgn_tag_value(headers, "SetUp");
+    if (setup == "1") {
+        if (fen.empty())
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback setup game has no FEN");
+        board = chess::Board::from_fen(fen);
+    }
+
+    std::ostringstream moves;
+    for (std::size_t offset = 0; offset < move_list->size(); offset += 2) {
+        const std::size_t source = tcn_alphabet.find((*move_list)[offset]);
+        const std::size_t target_symbol = tcn_alphabet.find((*move_list)[offset + 1]);
+        if (source == std::string_view::npos || target_symbol == std::string_view::npos)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback move uses an invalid TCN symbol");
+        int target = static_cast<int>(target_symbol);
+        if (source > 75)
+            throw Error(ErrorCode::Unsupported, "Chess.com variant moves are not supported");
+        chess::PieceType promotion = chess::PieceType::None;
+        if (target > 63) {
+            const std::size_t promotion_index = static_cast<std::size_t>((target - 64) / 3);
+            if (promotion_index >= tcn_promotion_pieces.size())
+                throw ChessComClientError(ChessComFailure::InvalidResponse,
+                                          ErrorCode::ParseError,
+                                          "Chess.com callback promotion is invalid");
+            promotion = promotion_type(tcn_promotion_pieces[promotion_index]);
+            const int direction = source < 16 ? -8 : 8;
+            target = static_cast<int>(source) + direction + ((target - 1) % 3) - 1;
+        }
+        if (target < 0 || target >= 64)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback move target is invalid");
+        const chess::Square from = chess::parse_square(callback_square(static_cast<int>(source)));
+        const chess::Square to = chess::parse_square(callback_square(target));
+        const auto move = board.find_legal_move(from, to, promotion);
+        if (!move)
+            throw ChessComClientError(ChessComFailure::InvalidResponse, ErrorCode::ParseError,
+                                      "Chess.com callback contained an illegal move");
+        if (board.side_to_move() == chess::Color::White)
+            moves << board.fullmove_number() << ". ";
+        else if (offset == 0)
+            moves << board.fullmove_number() << "... ";
+        moves << chess::to_san(board, *move) << ' ';
+        board.make_move(*move);
+    }
+    moves << result;
+
+    std::ostringstream pgn;
+    constexpr std::array<std::string_view, 14> tag_keys = {
+        "Event", "Site", "Date", "Round", "White", "Black", "Result", "ECO",
+        "WhiteElo", "BlackElo", "TimeControl", "Termination", "SetUp", "FEN"};
+    for (const std::string_view key : tag_keys) {
+        const std::string value = pgn_tag_value(headers, key);
+        if (!value.empty())
+            pgn << '[' << key << " \"" << escape_pgn_tag(value) << "\"]\n";
+    }
+    pgn << "[Link \"" << escape_pgn_tag(parsed.canonical) << "\"]\n\n" << moves.str();
+    return pgn.str();
 }
 
 std::string html_unescape(std::string value) {
@@ -310,8 +533,10 @@ ChessComUrl ImportService::parse_chesscom_url(std::string_view input) {
         }
     }
 
+    const std::string_view game_type = parts[0] == "game" ? parts[1] : parts[2];
     return ChessComUrl{"https://www.chess.com" + std::string(path), std::string(game_id),
-                       std::move(player), std::move(year), std::move(month)};
+                       std::move(player), std::move(year), std::move(month),
+                       std::string(game_type)};
 }
 
 std::string ImportService::extract_pgn(std::string_view response,
@@ -348,6 +573,7 @@ ImportedGame ImportService::from_url(std::string_view url,
                                      CancellationToken cancellation) const {
     const ChessComUrl parsed = parse_chesscom_url(url);
     std::exception_ptr archive_failure;
+    bool archive_not_found = false;
     std::vector<std::string> archive_players;
     if (!parsed.player.empty()) {
         archive_players.push_back(parsed.player);
@@ -382,6 +608,9 @@ ImportedGame ImportService::from_url(std::string_view url,
             } catch (const ChessComClientError& error) {
                 if (error.failure() == ChessComFailure::Cancelled)
                     throw;
+                if (error.failure() == ChessComFailure::NotFound ||
+                    error.failure() == ChessComFailure::Gone)
+                    archive_not_found = true;
                 if (!archive_failure)
                     archive_failure = std::current_exception();
             } catch (const Error&) {
@@ -391,6 +620,40 @@ ImportedGame ImportService::from_url(std::string_view url,
         }
     }
 
+    const auto callback_import = [&]() {
+        const std::string callback_url = callback_game_type_url(parsed);
+        const HttpResponse callback = transport_(HttpRequest{callback_url, {},
+                                                              chesscom_max_body_size,
+                                                              cancellation});
+        if (cancellation.stop_requested())
+            throw ChessComClientError(ChessComFailure::Cancelled, ErrorCode::NetworkError,
+                                      "Chess.com request was cancelled");
+        const std::string pgn = callback_pgn(callback, parsed);
+        return ImportedGame{chess::parse_pgn(pgn), parsed.canonical, pgn,
+                            ImportMethod::PublicApi};
+    };
+
+    std::exception_ptr callback_failure;
+    bool callback_attempted = false;
+    // A player's archive is frequently absent for a freshly-finished or client-rendered game.
+    // Try the exact callback as soon as that bounded lookup confirms a miss.
+    if (archive_not_found) {
+        callback_attempted = true;
+        try {
+            return callback_import();
+        } catch (const ChessComClientError& error) {
+            if (error.failure() == ChessComFailure::Cancelled)
+                throw;
+            callback_failure = std::current_exception();
+        } catch (const Error&) {
+            if (cancellation.stop_requested())
+                throw ChessComClientError(ChessComFailure::Cancelled, ErrorCode::NetworkError,
+                                          "Chess.com request was cancelled");
+            callback_failure = std::current_exception();
+        }
+    }
+
+    std::exception_ptr page_failure;
     try {
         if (cancellation.stop_requested())
             throw ChessComClientError(ChessComFailure::Cancelled, ErrorCode::NetworkError,
@@ -422,19 +685,41 @@ ImportedGame ImportService::from_url(std::string_view url,
     } catch (const ChessComClientError& error) {
         if (error.failure() == ChessComFailure::Cancelled)
             throw;
-        if (archive_failure)
-            std::rethrow_exception(archive_failure);
-        throw;
+        page_failure = std::current_exception();
     } catch (const Error&) {
         if (cancellation.stop_requested())
             throw ChessComClientError(ChessComFailure::Cancelled, ErrorCode::NetworkError,
                                       "Chess.com request was cancelled");
-        if (archive_failure)
-            std::rethrow_exception(archive_failure);
-        throw;
+        page_failure = std::current_exception();
     } catch (...) {
         throw;
     }
+
+    // Some public pages are only a React shell. The callback is the canonical last fallback,
+    // and its response is still parsed through the C++ chess truth boundary above.
+    if (!callback_attempted) {
+        callback_attempted = true;
+        try {
+            return callback_import();
+        } catch (const ChessComClientError& error) {
+            if (error.failure() == ChessComFailure::Cancelled)
+                throw;
+            callback_failure = std::current_exception();
+        } catch (const Error&) {
+            if (cancellation.stop_requested())
+                throw ChessComClientError(ChessComFailure::Cancelled, ErrorCode::NetworkError,
+                                          "Chess.com request was cancelled");
+            callback_failure = std::current_exception();
+        }
+    }
+
+    if (archive_failure)
+        std::rethrow_exception(archive_failure);
+    if (page_failure)
+        std::rethrow_exception(page_failure);
+    if (callback_failure)
+        std::rethrow_exception(callback_failure);
+    throw Error(ErrorCode::NotFound, "the requested Chess.com game could not be imported");
 }
 
 ImportedGame ImportService::from_pgn(std::string_view pgn, std::string_view source_url) const {

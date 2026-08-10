@@ -34,6 +34,20 @@ constexpr std::size_t max_body_size = 10 * 1024 * 1024;
 constexpr timeval client_io_timeout{10, 0};
 constexpr std::string_view websocket_auth_protocol = "plywise-auth";
 
+std::string peer_address(const sockaddr_storage& peer) {
+    char address[INET6_ADDRSTRLEN]{};
+    if (peer.ss_family == AF_INET) {
+        const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(&peer);
+        if (inet_ntop(AF_INET, &ipv4->sin_addr, address, sizeof(address)) != nullptr)
+            return address;
+    } else if (peer.ss_family == AF_INET6) {
+        const auto* ipv6 = reinterpret_cast<const sockaddr_in6*>(&peer);
+        if (inet_ntop(AF_INET6, &ipv6->sin6_addr, address, sizeof(address)) != nullptr)
+            return address;
+    }
+    return "unknown";
+}
+
 std::int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -863,7 +877,11 @@ bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
     const std::size_t limit = kind == QuotaKind::Import
                                   ? auth_.hosted_imports_per_window
                                   : auth_.hosted_analysis_starts_per_window;
-    if (limit == 0 || amount > limit || auth_.hosted_quota_window <= std::chrono::seconds::zero())
+    const std::size_t global_limit = kind == QuotaKind::Import
+                                         ? auth_.hosted_global_imports_per_window
+                                         : auth_.hosted_global_analysis_starts_per_window;
+    if (limit == 0 || global_limit == 0 || amount > limit || amount > global_limit ||
+        auth_.hosted_quota_window <= std::chrono::seconds::zero())
         return false;
 
     const auto now = std::chrono::steady_clock::now();
@@ -899,11 +917,18 @@ bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
     auto& events = kind == QuotaKind::Import ? window.imports : window.analysis_starts;
     while (!events.empty() && expired(events.front()))
         events.pop_front();
-    if (events.size() > limit - amount)
+    auto& global_events = kind == QuotaKind::Import ? global_quota_window_.imports
+                                                     : global_quota_window_.analysis_starts;
+    while (!global_events.empty() && expired(global_events.front()))
+        global_events.pop_front();
+    if (events.size() > limit - amount || global_events.size() > global_limit - amount)
         return false;
-    for (std::size_t index = 0; index < amount; ++index)
+    for (std::size_t index = 0; index < amount; ++index) {
         events.push_back(now);
+        global_events.push_back(now);
+    }
     window.last_used = now;
+    global_quota_window_.last_used = now;
     return true;
 }
 
@@ -1148,9 +1173,9 @@ Response Api::handle(const Request& request) {
                 !consume_hosted_quota(*authenticated_owner, QuotaKind::Import, amount))
                 throw Error(ErrorCode::QuotaExceeded, "hosted import rate limit reached");
         };
-        const auto enforce_hosted_analysis_quota = [&]() {
+        const auto enforce_hosted_analysis_quota = [&](std::size_t amount = 1) {
             if (authenticated_owner &&
-                !consume_hosted_quota(*authenticated_owner, QuotaKind::AnalysisStart))
+                !consume_hosted_quota(*authenticated_owner, QuotaKind::AnalysisStart, amount))
                 throw Error(ErrorCode::QuotaExceeded, "hosted analysis rate limit reached");
         };
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
@@ -1621,6 +1646,7 @@ Response Api::handle(const Request& request) {
                 if (std::find(queued_game_ids.begin(), queued_game_ids.end(), game_id) ==
                     queued_game_ids.end())
                     queued_game_ids.push_back(game_id);
+            enforce_hosted_analysis_quota(queued_game_ids.size());
             std::size_t queued_count = 0;
             for (const auto& job : jobs_.start_batch(queued_game_ids)) {
                 jobs.push_back(app::to_json(job));
@@ -1849,6 +1875,7 @@ Response Api::handle(const Request& request) {
                     if (current == variation->nodes.end())
                         throw Error(ErrorCode::Corruption,
                                     "variation cursor does not reference a node");
+                    enforce_hosted_analysis_quota();
                     return json_response(
                         200, engine_result_json(jobs_.analyze_variation_position(
                                  current->second.fen)));
@@ -1920,6 +1947,11 @@ Response Api::handle(const Request& request) {
 HttpServer::HttpServer(Api& api, app::JobManager& jobs, ServerOptions options,
                        app::IngestManager* ingest)
     : api_(api), jobs_(jobs), ingest_(ingest), options_(std::move(options)) {
+    if (options_.requests_per_peer_window == 0 || options_.requests_per_window == 0 ||
+        options_.request_rate_window <= std::chrono::seconds::zero() ||
+        options_.max_rate_limit_peers == 0) {
+        throw Error(ErrorCode::InvalidArgument, "HTTP rate-limit settings must be positive");
+    }
     in_addr parsed_address{};
     if (inet_pton(AF_INET, options_.bind_address.c_str(), &parsed_address) != 1) {
         throw Error(ErrorCode::InvalidArgument,
@@ -2002,13 +2034,25 @@ void HttpServer::run() {
     log(LogLevel::Info, "http", "listening on http://" + options_.bind_address + ":" +
                                  std::to_string(actual_port));
     while (!stopped_.load(std::memory_order_acquire)) {
-        const int client = accept(listen_fd, nullptr, nullptr);
+        sockaddr_storage peer{};
+        socklen_t peer_length = sizeof(peer);
+        const int client = accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &peer_length);
         if (client < 0) {
             if (stopped_.load(std::memory_order_acquire) || errno == EBADF || errno == EINVAL)
                 break;
             if (errno == EINTR)
                 continue;
             log(LogLevel::Warning, "http", std::string("accept failed: ") + std::strerror(errno));
+            continue;
+        }
+        if (!consume_request_rate_limit(peer_address(peer))) {
+            const auto retry_after = std::max<std::int64_t>(1, options_.request_rate_window.count());
+            const std::string limited =
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: " +
+                std::to_string(retry_after) +
+                "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            static_cast<void>(send_all(client, limited.data(), limited.size()));
+            close(client);
             continue;
         }
         {
@@ -2034,6 +2078,52 @@ void HttpServer::run() {
         }).detach();
     }
     close_listener();
+}
+
+bool HttpServer::consume_request_rate_limit(std::string_view peer) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto expired = [&](const auto stamp) {
+        return now - stamp >= options_.request_rate_window;
+    };
+    std::lock_guard lock(rate_limit_mutex_);
+
+    auto& global_requests = rate_limit_global_.requests;
+    while (!global_requests.empty() && expired(global_requests.front()))
+        global_requests.pop_front();
+    if (global_requests.size() >= options_.requests_per_window)
+        return false;
+
+    const std::string key(peer);
+    auto existing = rate_limit_peers_.find(key);
+    if (existing == rate_limit_peers_.end() &&
+        rate_limit_peers_.size() >= options_.max_rate_limit_peers) {
+        // Evict only empty windows. Active peers stay protected and a key-flood fails closed.
+        for (auto iterator = rate_limit_peers_.begin(); iterator != rate_limit_peers_.end();) {
+            auto& requests = iterator->second.requests;
+            while (!requests.empty() && expired(requests.front()))
+                requests.pop_front();
+            if (requests.empty())
+                iterator = rate_limit_peers_.erase(iterator);
+            else
+                ++iterator;
+            if (rate_limit_peers_.size() < options_.max_rate_limit_peers)
+                break;
+        }
+        if (rate_limit_peers_.size() >= options_.max_rate_limit_peers)
+            return false;
+        existing = rate_limit_peers_.end();
+    }
+
+    auto& peer_requests =
+        existing == rate_limit_peers_.end() ? rate_limit_peers_[key].requests : existing->second.requests;
+    while (!peer_requests.empty() && expired(peer_requests.front()))
+        peer_requests.pop_front();
+    if (peer_requests.size() >= options_.requests_per_peer_window)
+        return false;
+
+    peer_requests.push_back(now);
+    global_requests.push_back(now);
+    return true;
 }
 
 void HttpServer::stop() noexcept {

@@ -55,11 +55,14 @@ struct HostedApiFixture {
     service::Api api;
 
     HostedApiFixture(std::size_t import_limit = 100, std::size_t analysis_limit = 30,
-                     std::size_t storage_limit = app::hosted_game_storage_limit)
+                     std::size_t storage_limit = app::hosted_game_storage_limit,
+                     std::size_t global_import_limit = 200,
+                     std::size_t global_analysis_limit = 30)
         : log((std::filesystem::remove(path), path)), repository(log), analyzer(engine, cache),
           jobs(repository, analyzer),
           api(importer, repository, jobs, {}, {}, nullptr, {}, [this, import_limit, analysis_limit,
-                                                                storage_limit] {
+                                                                storage_limit, global_import_limit,
+                                                                global_analysis_limit] {
               service::AuthConfig auth;
               auth.required = true;
               auth.allow_guest_access = false;
@@ -76,6 +79,8 @@ struct HostedApiFixture {
               };
               auth.hosted_imports_per_window = import_limit;
               auth.hosted_analysis_starts_per_window = analysis_limit;
+              auth.hosted_global_imports_per_window = global_import_limit;
+              auth.hosted_global_analysis_starts_per_window = global_analysis_limit;
               auth.hosted_game_storage_limit = storage_limit;
               return auth;
           }()) {}
@@ -134,6 +139,42 @@ TEST_CASE("hosted API bounds repeated analysis starts") {
         hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
     CHECK_EQ(second.status, 429);
     CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+}
+
+TEST_CASE("hosted API applies process-wide import and analysis ceilings") {
+    HostedApiFixture imports(100, 30, 100, 1, 30);
+    const std::string pgn = "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0";
+    const auto first = imports.api.handle(hosted_account_request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+    CHECK_EQ(first.status, 202);
+    const auto second = imports.api.handle(hosted_account_request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+    CHECK_EQ(second.status, 429);
+    CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+
+    HostedApiFixture analysis(100, 30, 100, 200, 1);
+    const auto imported = analysis.api.handle(hosted_account_request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const auto started = analysis.api.handle(
+        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+    CHECK_EQ(started.status, 202);
+    const auto blocked = analysis.api.handle(
+        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+    CHECK_EQ(blocked.status, 429);
+    CHECK_EQ(json::parse(blocked.body).at("code").as_string(), "quota_exceeded");
+
+    HostedApiFixture batch(100, 30, 100, 200, 1);
+    const std::string batch_body = json::dump(json::Value::Object{
+        {"pgns", json::Value::Array{
+                     "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0",
+                     "[White \"C\"]\n[Black \"D\"]\n[Result \"1-0\"]\n\n1. d4 d5 1-0",
+                 }},
+    });
+    const auto batch_response = batch.api.handle(
+        hosted_account_request("POST", "/api/import/batch", batch_body));
+    CHECK_EQ(batch_response.status, 429);
+    CHECK_EQ(json::parse(batch_response.body).at("code").as_string(), "quota_exceeded");
 }
 
 TEST_CASE("API imports PGN and returns navigable game data immediately") {

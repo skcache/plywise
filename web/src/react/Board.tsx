@@ -6,7 +6,7 @@ const pieceKinds: Record<string, string> = {
   "♚": "king", "♛": "queen", "♜": "rook", "♝": "bishop", "♞": "knight", "♟": "pawn",
 };
 
-export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = "", interactive = false, showArrow = false, compact = false, onSquare }: {
+export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = "", interactive = false, showArrow = false, compact = false, showCoordinates = true, onSquare }: {
   fen: string;
   orientation: BoardOrientation;
   activeUci?: string;
@@ -14,6 +14,7 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
   interactive?: boolean;
   showArrow?: boolean;
   compact?: boolean;
+  showCoordinates?: boolean;
   onSquare?: (square: string) => void;
 }) {
   const highlighted = uciSquares(activeUci);
@@ -35,8 +36,8 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
         aria-label={interactive ? `Choose ${square.name}` : `${kind ? `${kind} on` : "empty"} ${square.name}`}
         onClick={interactive ? () => onSquare?.(square.name) : undefined}
       >
-        {!compact && index % 8 === 0 && <span className="rank-label">{square.rank}</span>}
-        {!compact && index >= 56 && <span className="file-label">{square.file}</span>}
+        {!compact && showCoordinates && index % 8 === 0 && <span className="rank-label">{square.rank}</span>}
+        {!compact && showCoordinates && index >= 56 && <span className="file-label">{square.file}</span>}
         {kind && (
           <img className="board-piece" src={`/pieces/lasker/${side}_${kind}.svg`} alt="" draggable={false}/>
         )}

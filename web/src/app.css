@@ -257,8 +257,14 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .landing-preview-header span { display: flex; align-items: center; gap: 8px; font-weight: 650; }
 .landing-preview-header small { color: var(--text-faint); font-size: 9px; }
 .landing-preview-body { display: grid; grid-template-columns: minmax(300px, 1.26fr) minmax(195px, .74fr); align-items: stretch; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 23px; background: var(--surface-low); box-shadow: inset 5px 5px 12px var(--shadow-dark), inset -3px -3px 9px var(--shadow-light); }
+.landing-preview-board-wrap { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; }
 .landing-preview-board { display: grid; min-width: 0; align-items: center; pointer-events: auto; cursor: pointer; }
 .landing-preview-board .chess-board { width: min(100%, 410px); margin: 0 auto; border-radius: 16px; box-shadow: 9px 11px 22px var(--shadow-dark); }
+.landing-demo-eval-bar { position: relative; width: 18px; height: min(100%, 410px); min-height: 180px; align-self: stretch; }
+.landing-demo-eval-stack { position: absolute; inset: 0; display: grid; grid-template-rows: 42% 58%; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-high); box-shadow: inset 2px 2px 5px var(--shadow-dark), 2px 3px 8px var(--shadow-dark); }
+.landing-demo-eval-white { background: #f1f0e8; }
+.landing-demo-eval-black { background: #3d403c; }
+.landing-demo-eval-bar strong { position: absolute; top: 42%; left: 50%; display: grid; place-items: center; width: 31px; height: 18px; transform: translate(-50%, -50%); border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface-high); box-shadow: 2px 3px 6px var(--shadow-dark); font-size: 7px; font-weight: 700; line-height: 1; }
 .landing-preview-inspector { display: grid; align-content: start; gap: 12px; min-width: 0; padding: 6px 2px 4px 16px; border-left: 1px solid var(--line); }
 .landing-demo-tabs { display: flex; align-items: center; gap: 18px; min-height: 27px; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 10px; }
 .landing-demo-tabs strong { align-self: stretch; display: grid; place-items: center start; border-bottom: 2px solid var(--text); color: var(--text); font-weight: 700; }
@@ -929,6 +935,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .landing-preview:hover { box-shadow: 10px 14px 25px var(--shadow-dark), -6px -6px 15px var(--shadow-light), inset 1px 1px var(--shadow-light); }
 .landing-preview:active { --preview-lift: 2px; }
 .landing-preview-body { grid-template-columns: minmax(0, 1.26fr) minmax(195px, .74fr); }
+.landing-preview-board-wrap { grid-template-columns: 18px minmax(0, 1fr); }
 .landing-preview-board .chess-board { width: min(100%, 410px); margin: 0 auto; border-radius: 18px; box-shadow: 10px 13px 24px var(--shadow-dark); }
 @keyframes landing-thinking-sweep {
   0%, 12% { opacity: 0; clip-path: polygon(-25% 0, -5% 0, 15% 100%, -5% 100%); }
@@ -992,6 +999,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .landing-hero { gap: 30px; padding-block: 45px 55px; }
   .landing-copy h1 { font-size: clamp(40px, 13vw, 58px); }
   .landing-preview-body { grid-template-columns: 1fr; padding: 14px; }
+  .landing-preview-board-wrap { grid-template-columns: 18px minmax(0, 1fr); max-width: 410px; margin: 0 auto; }
   .landing-preview-board .chess-board { max-width: 360px; }
   .landing-preview-inspector { padding: 14px 4px 4px; border-top: 1px solid var(--line); border-left: 0; }
   .landing-flow-stage + .landing-flow-stage { border-top: 1px solid var(--line); border-left: 0; }

@@ -3,6 +3,7 @@ import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
 const reviewFen = "r1b1r1k1/ppq2ppp/3p1n2/3Pp3/2P5/5NP1/PPQ2PBP/R3R1K1 w - - 0 18";
+const demoFen = "r2q1rk1/ppp1bppp/2np1n2/8/2BPP3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 10";
 
 function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
   const preview = event.currentTarget;
@@ -58,13 +59,22 @@ export function LandingView({ onStart, onSignIn }: {
         >
           <span className="landing-preview-header"><span>Game analysis</span><small>Report</small></span>
           <div className="landing-preview-body">
-            <div className="landing-preview-board">
-              <ChessBoard fen={reviewFen} orientation="white" compact={false} interactive activeUci="c2f5" showArrow onSquare={onStart} />
+            <div className="landing-preview-board-wrap">
+              <div className="landing-demo-eval-bar" role="img" aria-label="Evaluation favors White by 0.42 pawns">
+                <div className="landing-demo-eval-stack" aria-hidden="true">
+                  <span className="landing-demo-eval-white" />
+                  <span className="landing-demo-eval-black" />
+                </div>
+                <strong>+0.42</strong>
+              </div>
+              <div className="landing-preview-board">
+                <ChessBoard fen={demoFen} orientation="white" compact={false} showCoordinates={false} interactive activeUci="c4f7" showArrow onSquare={onStart} />
+              </div>
             </div>
             <aside className="landing-preview-inspector" aria-label="Analysis report preview">
               <div className="landing-demo-tabs"><strong>Report</strong><span>Moves</span></div>
               <div className="landing-demo-controls" aria-hidden="true"><Icon name="first" /><Icon name="previous" /><Icon name="play" /><Icon name="next" /><Icon name="last" /><Icon name="more" /></div>
-              <div className="landing-demo-opening"><span>Opening</span><strong>Queen's Gambit</strong></div>
+              <div className="landing-demo-opening"><span>Position</span><strong>Middlegame · move 10</strong></div>
               <div className="landing-demo-graph">
                 <div><span>+0.42</span><small>Evaluation</small></div>
                 <svg viewBox="0 0 220 58" preserveAspectRatio="none" aria-hidden="true"><path d="M0 36 18 35 35 37 52 30 68 34 84 24 100 28 116 21 132 24 149 19 165 25 182 20 199 23 220 15" /></svg>

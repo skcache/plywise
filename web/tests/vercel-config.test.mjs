@@ -7,6 +7,7 @@ function env(overrides = {}) {
     PCT_PLYWISE_API_ORIGIN: "https://api.example.test",
     VITE_PLYWISE_EVENT_ORIGIN: "wss://events.example.test",
     VITE_SUPABASE_URL: "https://auth.example.test",
+    VITE_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
     ...overrides,
   };
 }
@@ -43,6 +44,14 @@ assert.throws(
 assert.throws(
   () => createConfig(env({ PCT_PLYWISE_API_ORIGIN: "http://api.example.test" })),
   /credential-free https: origin/,
+);
+assert.throws(
+  () => createConfig(env({ VITE_SUPABASE_URL: "" })),
+  /require VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY/,
+);
+assert.throws(
+  () => createConfig(env({ VITE_SUPABASE_PUBLISHABLE_KEY: "" })),
+  /require VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY/,
 );
 
 console.log("vercel config tests passed");

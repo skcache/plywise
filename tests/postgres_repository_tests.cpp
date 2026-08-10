@@ -162,6 +162,64 @@ TEST_CASE("PostgreSQL imported identity decisions stay owner scoped and durable"
         "Identity A", "pgn", training::PlayerIdentityDecision::Confirmed, 0}));
 }
 
+TEST_CASE("PostgreSQL Chess.com archive index is owner scoped and durable") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    const app::ChessComArchiveEntry entry{
+        "archive-1001",
+        "https://www.chess.com/game/live/1001",
+        "[Event \"Archive\"]\n[Site \"Chess.com\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0",
+        "alice",
+        "2026-07",
+        "rapid",
+        1'783'000'000'000,
+        1'783'000'001'000,
+        "https://api.chess.com/pub/player/alice/games/2026/07"};
+
+    app::PostgresRepository owner_a(connection, app::OwnerId::account("account_test_a"));
+    CHECK_EQ(owner_a.index_chesscom_archive_chunk({entry}), 1ULL);
+    CHECK_EQ(owner_a.index_chesscom_archive_chunk({entry}), 0ULL);
+    CHECK(owner_a.chesscom_archive_entry(entry.game_id).has_value());
+    CHECK_EQ(owner_a.chesscom_archive_entry(entry.game_id)->username, "alice");
+
+    app::ChessComArchiveSearch search;
+    search.username = "ALICE";
+    search.include_pgn = true;
+    const auto page = owner_a.search_chesscom_archive(search);
+    CHECK_EQ(page.entries.size(), 1ULL);
+    CHECK_EQ(page.entries.front().game_id, entry.game_id);
+    CHECK_EQ(page.entries.front().canonical_url, entry.canonical_url);
+    CHECK_EQ(page.entries.front().pgn, entry.pgn);
+    CHECK_EQ(page.entries.front().username, entry.username);
+    CHECK_EQ(page.entries.front().month, entry.month);
+    CHECK_EQ(page.entries.front().time_class, entry.time_class);
+    CHECK_EQ(page.entries.front().end_time_ms, entry.end_time_ms);
+    CHECK_EQ(page.entries.front().fetched_at_ms, entry.fetched_at_ms);
+    CHECK_EQ(page.entries.front().source_url, entry.source_url);
+    CHECK(!page.has_more);
+
+    owner_a.checkpoint_chesscom_month(
+        {"alice", "2026-07", entry.source_url, 1, entry.fetched_at_ms});
+    CHECK(owner_a.chesscom_month_checkpoint("ALICE", "2026-07").has_value());
+    CHECK_EQ(owner_a.chesscom_month_checkpoints("alice").size(), 1ULL);
+    owner_a.save_chesscom_sync_state(
+        {"running", "Alice", "v1;days=30", "2026-07", 1, 1, 10, 20, ""});
+
+    app::PostgresRepository reopened(connection, app::OwnerId::account("account_test_a"));
+    CHECK(reopened.chesscom_archive_entry(entry.game_id).has_value());
+    CHECK_EQ(reopened.chesscom_month_checkpoints().size(), 1ULL);
+    CHECK_EQ(reopened.chesscom_sync_state().status, "running");
+    CHECK_EQ(reopened.chesscom_sync_state().username, "alice");
+
+    app::PostgresRepository other(connection, app::OwnerId::account("account_test_b"));
+    CHECK(!other.chesscom_archive_entry(entry.game_id).has_value());
+    CHECK(other.search_chesscom_archive().entries.empty());
+    CHECK(other.chesscom_month_checkpoints().empty());
+    CHECK_EQ(other.chesscom_sync_state().status, "idle");
+}
+
 TEST_CASE("Hosted identity creates accounts and atomically claims guest reviews") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
     if (connection == nullptr || connection[0] == '\0')

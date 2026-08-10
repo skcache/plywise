@@ -129,6 +129,12 @@ until curl --fail --silent "$WEB_URL/" >/dev/null; do
   sleep 1
 done
 
+PCT_API_BASE_URL="$API_URL" \
+PCT_APP_ORIGIN="$WEB_URL" \
+PCT_EXPECT_AUTH_REQUIRED=false \
+PCT_ALLOW_INSECURE_LOCAL=true \
+  "$ROOT/scripts/hosted-api-smoke.sh"
+
 # Use the Vite origin in the request headers to exercise the same CORS path a browser uses.
 CORS_RESPONSE=$(curl --fail --silent --include \
   --request OPTIONS \

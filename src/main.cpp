@@ -220,6 +220,17 @@ Options parse_options(int argc, char** argv) {
     if (options.bind_address != "127.0.0.1" && !options.require_auth &&
         options.allow_insecure_remote)
         std::cerr << "warning: unauthenticated remote HTTP bind explicitly enabled\n";
+    if (options.bind_address != "127.0.0.1" && options.require_auth &&
+        (options.postgres_connection.empty() || options.oidc_issuer.empty() ||
+         options.oidc_jwks_url.empty()))
+        throw std::runtime_error(
+            "authenticated remote HTTP binds require PCT_POSTGRES_URL and "
+            "PCT_OIDC_ISSUER/PCT_OIDC_JWKS_URL (or PCT_SUPABASE_URL)");
+    if (options.bind_address != "127.0.0.1" && options.require_auth &&
+        (options.trusted_hosts.empty() || options.allowed_origins.empty()))
+        throw std::runtime_error(
+            "authenticated remote HTTP binds require PCT_TRUSTED_HOSTS and "
+            "PCT_ALLOWED_ORIGINS");
     return options;
 }
 

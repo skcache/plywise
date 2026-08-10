@@ -834,8 +834,8 @@ export default function App() {
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
-    header = <TopBar title={gameName} detail={opening} meta={selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
-      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? `${activeBrowserProgress.complete}/${activeBrowserProgress.total}` : selectedJob?.status === "running" ? `${selectedJob.progress.message} ${selectedJob.progress.complete}/${selectedJob.progress.total}` : "Analyze"}</SoftButton>}
+    header = <TopBar title={gameName} detail={opening} meta={activeBrowserProgress ? undefined : selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
+      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? "Analyzing…" : selectedJob?.status === "running" ? "Analyzing…" : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => setOverviewOpen((value) => !value)}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
         <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
@@ -968,17 +968,15 @@ function AnalysisView(props: AnalysisProps) {
   const currentVariationNode = variation?.nodes.find((node) => node.id === variation.current_node_id);
   const fen = reviewMode === "variation" ? currentVariationNode?.fen ?? variation?.root_fen ?? initialFen : reviewMode === "try_move" || reviewMode === "revealed_move" ? move?.fen_before ?? ply?.fen_before ?? initialFen : ply?.fen_after ?? initialFen;
   const activeUci = reviewMode === "variation" ? currentVariationNode?.uci ?? "" : props.highlightedUci || ply?.uci || "";
-  return <div className="analysis-layout">
-    {props.browserProgress ? <div className="analysis-progress"><span>{props.browserProgress.message}</span><progress aria-label="Browser analysis progress" max={props.browserProgress.total} value={props.browserProgress.complete}/><strong>{props.browserProgress.complete}/{props.browserProgress.total}</strong><button onClick={props.onCancelBrowserAnalysis}>Cancel</button></div> : props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
+  const jobActive = props.selectedJob?.status === "running" || props.selectedJob?.status === "queued";
+  const analysisActive = Boolean(props.browserProgress || jobActive);
+  return <div className={`analysis-layout ${analysisActive ? "analysis-active" : ""}`}>
+    {analysisActive && <AnalysisActivity game={game} progress={props.browserProgress} job={props.selectedJob} onCancel={props.browserProgress ? props.onCancelBrowserAnalysis : props.onCancelJob}/>}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
-      <EvaluationBar value={move?.evaluation_after}/>
+      <EvaluationBar value={analysisActive ? undefined : move?.evaluation_after}/>
       <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={reviewMode === "try_move" || reviewMode === "variation"} showArrow={reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
     </section>
-    <aside className="review-rail">
-      <ReviewCard move={move}/>
-      <BestMoveCard {...props}/>
-      <MoveList game={game} selectedPly={selectedPly} expanded={props.moveListExpanded} onSelect={props.onSelectPly} onToggle={props.onToggleMoves}/>
-    </aside>
+    <ReviewInspector {...props} analysisActive={analysisActive}/>
     <Playback game={game} selectedPly={selectedPly} playing={isPlaying(reviewMode)} onNavigate={props.onNavigate} onPlay={props.onTogglePlayback} onFlip={props.onFlip}/>
     {props.overviewOpen && (
       <OverviewDrawer {...props}/>
@@ -986,37 +984,58 @@ function AnalysisView(props: AnalysisProps) {
   </div>;
 }
 
-function ReviewCard({ move }: { move?: MoveAssessment }) {
-  if (!move) return <section className="review-card"><header>Current Move</header><div className="card-empty">Analysis appears here when ready.</div></section>;
-  return <section className={`review-card current-card class-${classificationClass(move.classification)}`}>
-    <header><span>Current Move</span><small>{move.move_number}{move.side === "white" ? "." : "…"}</small></header>
-    <div className="verdict-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{moveExplanation(move)}</p></div></div>
+function progressPercent(complete: number, total: number) {
+  return total > 0 ? Math.max(0, Math.min(100, Math.round((complete / total) * 100))) : 0;
+}
+
+function analysisStageLabel(stage: BrowserReviewProgress["stage"] | undefined, status?: Job["status"]) {
+  if (stage === "starting") return "Preparing the review";
+  if (stage === "analyzing") return "Scanning positions";
+  if (stage === "submitting") return "Validating positions";
+  if (stage === "finalizing") return "Building the review";
+  return status === "queued" ? "Queued for analysis" : "Analyzing your game";
+}
+
+function AnalysisActivity({ game, progress, job, onCancel }: { game: StoredGame; progress: BrowserReviewProgress | null; job: Job | null; onCancel: () => void }) {
+  const complete = progress?.complete ?? job?.progress.complete ?? 0;
+  const total = progress?.total ?? job?.progress.total ?? 0;
+  const percent = progressPercent(complete, total);
+  const title = analysisStageLabel(progress?.stage, job?.status);
+  const position = progress ? `Position ${progress.ply + 1} · ${progress.position}` : `${game.game.plies.length} positions in this game`;
+  const detail = progress?.message ?? job?.progress.message ?? "Preparing the analysis service";
+  return <section className="analysis-activity" aria-label="Analysis in progress" aria-live="polite">
+    <div className="analysis-activity-copy"><span className="analysis-live-mark" aria-hidden="true"/><div><strong>{title}</strong><p>{detail}</p></div></div>
+    <div className="analysis-activity-status"><span>{position}</span><span className="analysis-engine">Engine · {progress?.profile ?? "server"}</span><b>{percent}%</b><button onClick={onCancel}>Cancel</button></div>
+    <div className="analysis-activity-track" role="progressbar" aria-label="Analysis progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><span style={{ width: `${percent}%` }}/></div>
   </section>;
 }
 
-function BestMoveCard(props: AnalysisProps) {
+function ReviewInspector(props: AnalysisProps & { analysisActive: boolean }) {
   const move = props.selectedMove;
-  if (!move) return <section className="review-card best-card"><header>Best Move</header><div className="card-empty">Waiting for analysis.</div></section>;
-  if (props.reviewMode === "try_move") return <section className="review-card mode-card"><header><span>Retry Move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><Icon name="retry"/><h3>Find a stronger move</h3><p>The board is restored to the position before {move.played_san || move.san}. Choose two squares or enter UCI.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section>;
-  if (props.reviewMode === "variation") return <section className="review-card mode-card variation-card"><header><span>Variation</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><Icon name="branch"/><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section>;
-  return <section className="review-card best-card class-best"><header><span>Best Move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="verdict-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Best Move</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>Maintains the position at {formatEval(move.evaluation_after_best)}, compared with {formatEval(move.evaluation_after)} after the played move.</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>;
+  const game = props.selectedGame;
+  if (!game) return null;
+  const moves = game.analysis?.moves ?? [];
+  const plies = game.game.plies;
+  const start = props.moveListExpanded ? 0 : Math.max(0, props.selectedPly - 3);
+  const end = props.moveListExpanded ? plies.length : Math.min(plies.length, props.selectedPly + 4);
+  return <aside className={`review-rail ${props.analysisActive ? "review-rail-active" : ""}`}>
+    <section className="inspector-surface">
+      <header className="inspector-header"><div><span>{props.analysisActive ? "Analysis Inspector" : "Game review"}</span><strong>{props.analysisActive ? "Working through the game" : "What changed here"}</strong></div><small>{props.analysisActive ? "Live" : `${plies.length} plies`}</small></header>
+      {props.analysisActive ? <div className="inspector-analysis-state"><div className="inspector-state-icon"><Icon name="analysis"/></div><strong>{analysisStageLabel(props.browserProgress?.stage, props.selectedJob?.status)}</strong><p>{props.browserProgress?.message ?? props.selectedJob?.progress.message ?? "The review will appear here when the engine is done."}</p>{props.browserProgress && <dl><div><dt>Position</dt><dd>{props.browserProgress.ply + 1} · {props.browserProgress.position}</dd></div><div><dt>Depth</dt><dd>{props.browserProgress.depth ? `${props.browserProgress.depth}/${props.browserProgress.targetDepth ?? "—"}` : "Starting"}</dd></div><div><dt>Engine</dt><dd>{props.browserProgress.profile}</dd></div></dl>}</div> : <>
+        <section className={`inspector-block inspector-current class-${classificationClass(move?.classification || "pending")}`}>
+          <header><span>Current move</span><small>{move ? `${move.move_number}${move.side === "white" ? "." : "…"}` : "Not ready"}</small></header>
+          {move ? <div className="inspector-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{moveExplanation(move)}</p></div></div> : <p className="inspector-empty">Analysis appears here when the review is ready.</p>}
+        </section>
+        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode"><header><span>Variation</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && <section className="inspector-block inspector-best class-best"><header><span>Best move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Best move</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>Maintains the position at {formatEval(move.evaluation_after_best)}, compared with {formatEval(move.evaluation_after)} after the played move.</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
+        <section className="inspector-block inspector-moves"><header><span>Move list</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((item, offset) => { const index = start + offset; const assessment = moves[index]; return <button key={index} className={index === props.selectedPly ? "current" : ""} onClick={() => props.onSelectPly(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{item.san}</strong><em>{assessment?.classification || "Pending"}</em>{index === props.selectedPly && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>; })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={props.onToggleMoves}>{props.moveListExpanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>
+      </>}
+    </section>
+  </aside>;
 }
 
 function RetryForm({ message, onSubmit }: { message: string; onSubmit: (uci: string) => void }) {
   const [value, setValue] = useState("");
   return <form className="retry-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value); }}><label><span className="sr-only">Move in UCI</span><input value={value} onChange={(event) => setValue(event.target.value)} pattern="[a-h][1-8][a-h][1-8][qrbn]?" placeholder="e2e4" required/></label><button>Check</button>{message && <small role="status">{message}</small>}</form>;
-}
-
-function MoveList({ game, selectedPly, expanded, onSelect, onToggle }: { game: StoredGame; selectedPly: number; expanded: boolean; onSelect: (ply: number) => void; onToggle: () => void }) {
-  const moves = game.analysis?.moves ?? [];
-  const plies = game.game.plies;
-  const start = expanded ? 0 : Math.max(0, selectedPly - 3);
-  const end = expanded ? plies.length : Math.min(plies.length, selectedPly + 4);
-  return <section className="review-card moves-card"><header><span>Move List</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((ply, offset) => {
-    const index = start + offset;
-    const assessment = moves[index];
-    return <button key={index} className={index === selectedPly ? "current" : ""} onClick={() => onSelect(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{ply.san}</strong><em>{assessment?.classification || "Pending"}</em>{index === selectedPly && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>;
-  })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={onToggle}>{expanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>;
 }
 
 function Playback({ game, selectedPly, playing, onNavigate, onPlay, onFlip }: { game: StoredGame; selectedPly: number; playing: boolean; onNavigate: AnalysisProps["onNavigate"]; onPlay: () => void; onFlip: () => void }) {

@@ -1943,6 +1943,8 @@ void HttpServer::handle_client(int client_fd) {
             response.headers.insert_or_assign("Access-Control-Allow-Origin", origin->second);
             response.headers.insert_or_assign("Vary", "Origin");
         }
+        if (request->path.starts_with("/api/"))
+            response.headers.insert_or_assign("Cache-Control", "no-store");
         response.headers.insert_or_assign("Content-Length", std::to_string(response.body.size()));
         response.headers.insert_or_assign("Connection", "close");
         response.headers.insert_or_assign("X-Content-Type-Options", "nosniff");

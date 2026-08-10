@@ -92,6 +92,8 @@ until curl --fail --silent "$API_URL/api/ready" >/dev/null; do
   fi
   sleep 1
 done
+READY_HEADERS=$(curl --fail --silent --include -H "Origin: $WEB_URL" "$API_URL/api/ready")
+printf '%s' "$READY_HEADERS" | grep -qi 'Cache-Control: no-store'
 
 (
   cd "$ROOT/web"

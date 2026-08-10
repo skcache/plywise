@@ -253,21 +253,17 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .landing-secondary:hover { color: var(--text); }
 .landing-status { margin: 13px 0 0; color: var(--text-soft); font-size: 11px; }
 .landing-preview { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 32px; background: linear-gradient(145deg, var(--surface-high), var(--surface-low)); box-shadow: 20px 24px 48px var(--shadow-dark), -9px -9px 26px var(--shadow-light), inset 1px 1px var(--shadow-light); }
-.landing-preview-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 9px 17px; color: var(--text-soft); font-size: 11px; }
-.landing-preview-header span { display: flex; align-items: center; gap: 8px; font-weight: 650; }
-.landing-preview-header small { color: var(--text-faint); font-size: 9px; }
+.landing-preview-header { display: block; padding: 4px 9px 17px; color: var(--text-soft); font-size: 12px; font-weight: 650; letter-spacing: -.015em; }
 .landing-preview-body { display: grid; grid-template-columns: minmax(300px, 1.16fr) minmax(225px, .84fr); align-items: stretch; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 23px; background: var(--surface-low); box-shadow: inset 5px 5px 12px var(--shadow-dark), inset -3px -3px 9px var(--shadow-light); }
 .landing-preview-board { display: grid; min-width: 0; align-items: center; pointer-events: auto; cursor: pointer; }
 .landing-preview-board .chess-board { width: min(100%, 410px); margin: 0 auto; border-radius: 16px; box-shadow: 9px 11px 22px var(--shadow-dark); }
-.landing-preview-inspector { display: grid; align-content: start; gap: 12px; min-width: 0; padding: 6px 2px 4px 16px; border-left: 1px solid var(--line); }
-.landing-demo-tabs { display: flex; align-items: center; gap: 18px; min-height: 27px; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 10px; }
-.landing-demo-tabs strong { align-self: stretch; display: grid; place-items: center start; border-bottom: 2px solid var(--text); color: var(--text); font-weight: 700; }
-.landing-demo-classifications { display: grid; gap: 0; padding-top: 4px; color: var(--text-soft); font-size: 9px; }
-.landing-demo-classification-head, .landing-demo-classification-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; align-items: center; gap: 8px; min-height: 25px; border-bottom: 1px solid var(--line); }
-.landing-demo-classification-head { min-height: 31px; color: var(--text-faint); font-size: 9px; }
+.landing-preview-inspector { display: grid; align-content: center; min-width: 0; padding: 6px 2px 4px 18px; border-left: 1px solid var(--line); }
+.landing-demo-classifications { display: grid; gap: 0; color: var(--text-soft); font-size: 11px; }
+.landing-demo-classification-head, .landing-demo-classification-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; align-items: center; gap: 9px; min-height: 29px; border-bottom: 1px solid var(--line); }
+.landing-demo-classification-head { min-height: 33px; color: var(--text-faint); font-size: 9px; letter-spacing: .02em; }
 .landing-demo-classification-head span:not(:first-child), .landing-demo-classification-row b { text-align: right; }
 .landing-demo-classification-row span { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.landing-demo-classification-row i { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.landing-demo-classification-row i { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
 .landing-demo-classification-row i.is-brilliant { background: var(--class-brilliant); }
 .landing-demo-classification-row i.is-great { background: var(--class-great); }
 .landing-demo-classification-row i.is-best { background: var(--class-best); }

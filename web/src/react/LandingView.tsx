@@ -5,6 +5,18 @@ import { Icon } from "./Icon";
 const reviewFen = "r1b1r1k1/ppq2ppp/3p1n2/3Pp3/2P5/5NP1/PPQ2PBP/R3R1K1 w - - 0 18";
 const demoFen = "r2q1rk1/ppp1bppp/2np1n2/8/2BPP3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 10";
 
+const previewClassifications = [
+  ["Brilliant", "is-brilliant", 0, 0],
+  ["Very good", "is-great", 0, 0],
+  ["Best", "is-best", 14, 9],
+  ["Excellent", "is-excellent", 11, 15],
+  ["Good", "is-good", 3, 6],
+  ["Theoretical", "is-book", 5, 5],
+  ["Inaccuracy", "is-inaccuracy", 1, 0],
+  ["Mistake", "is-mistake", 1, 1],
+  ["Blunder", "is-blunder", 0, 0],
+] as const;
+
 function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
   const preview = event.currentTarget;
   if (reset) {
@@ -57,24 +69,17 @@ export function LandingView({ onStart, onSignIn }: {
           onPointerMove={setPreviewTilt}
           onPointerLeave={(event) => setPreviewTilt(event, true)}
         >
-          <span className="landing-preview-header"><span>Game analysis</span><small>Report</small></span>
+          <span className="landing-preview-header">Game analysis</span>
           <div className="landing-preview-body">
             <div className="landing-preview-board">
               <ChessBoard fen={demoFen} orientation="white" compact={false} showCoordinates={false} interactive activeUci="c4f7" showArrow onSquare={onStart} />
             </div>
-            <aside className="landing-preview-inspector" aria-label="Analysis report preview">
-              <div className="landing-demo-tabs"><strong>Report</strong><span>Moves</span></div>
+            <aside className="landing-preview-inspector" aria-label="Move quality preview">
               <div className="landing-demo-classifications" aria-label="Illustrative move classifications">
                 <div className="landing-demo-classification-head"><span>Move quality</span><span>White</span><span>Black</span></div>
-                <div className="landing-demo-classification-row"><span><i className="is-brilliant" />Brilliant</span><b>0</b><b>0</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-great" />Great</span><b>0</b><b>0</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-best" />Best</span><b>14</b><b>9</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-excellent" />Excellent</span><b>11</b><b>15</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-good" />Good</span><b>3</b><b>6</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-book" />Book</span><b>5</b><b>5</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-inaccuracy" />Inaccuracy</span><b>1</b><b>0</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-mistake" />Mistake</span><b>1</b><b>1</b></div>
-                <div className="landing-demo-classification-row"><span><i className="is-blunder" />Blunder</span><b>0</b><b>0</b></div>
+                {previewClassifications.map(([label, marker, white, black]) => <div className="landing-demo-classification-row" key={label}>
+                  <span><i className={marker} />{label}</span><b>{white}</b><b>{black}</b>
+                </div>)}
               </div>
             </aside>
           </div>

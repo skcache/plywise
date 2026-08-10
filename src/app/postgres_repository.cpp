@@ -1273,8 +1273,9 @@ HostedIdentityStore::HostedIdentityStore(std::string connection_string)
 
 HostedIdentityStore::~HostedIdentityStore() = default;
 
-HostedAccount HostedIdentityStore::ensure_account(std::string auth_provider,
-                                                  std::string auth_subject) {
+HostedAccount HostedIdentityStore::ensure_account(
+    std::string auth_provider, std::string auth_subject,
+    std::optional<std::int64_t> issued_at_ms) {
     validate_identity_text("authentication provider", auth_provider, 128);
     validate_identity_text("authentication subject", auth_subject, 512);
     std::lock_guard lock(impl_->mutex);
@@ -1299,7 +1300,8 @@ HostedAccount HostedIdentityStore::ensure_account(std::string auth_provider,
     const std::string subject_hash = sha256_bytea(auth_subject);
     const Result tombstone = execute(
         impl_->connection,
-        "SELECT account_id FROM plywise.account_deletion_receipts "
+        "SELECT account_id, (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint "
+        "FROM plywise.account_deletion_receipts "
         "WHERE auth_provider = $1 AND auth_subject_hash = $2::bytea "
         "AND expires_at > now() ORDER BY completed_at DESC LIMIT 1",
         {auth_provider, subject_hash});
@@ -1307,6 +1309,8 @@ HostedAccount HostedIdentityStore::ensure_account(std::string auth_provider,
         const std::string id = value_at(tombstone, 0, 0);
         if (id.empty())
             throw Error(ErrorCode::Corruption, "account deletion receipt has no account id");
+        if (issued_at_ms && *issued_at_ms <= integer_at(tombstone, 0, 1))
+            throw Error(ErrorCode::NotFound, "account bearer predates deletion");
         const Result owner = execute(
             impl_->connection,
             "INSERT INTO plywise.owners (owner_kind, owner_id) VALUES ('account', $1) "

@@ -95,6 +95,13 @@ bool finite_integer(double value) {
            value <= static_cast<double>(std::numeric_limits<std::int64_t>::max());
 }
 
+std::optional<std::int64_t> epoch_milliseconds(double seconds) {
+    constexpr auto max_seconds_integer = std::numeric_limits<std::int64_t>::max() / 1000;
+    if (!finite_integer(seconds) || seconds > static_cast<double>(max_seconds_integer))
+        return std::nullopt;
+    return static_cast<std::int64_t>(seconds) * 1000;
+}
+
 std::optional<std::string> string_claim(const json::Value& object, std::string_view key,
                                         std::size_t maximum) {
     const json::Value value = object.get(key, json::Value{});
@@ -212,7 +219,8 @@ struct OidcTokenVerifier::Impl {
         if (!options.issuer.starts_with("https://") || !bounded_text(options.issuer, 2048) ||
             !bounded_text(options.audience, 512) ||
             !bounded_text(options.provider, 128) || !options.load_jwks ||
-            !options.resolve_account || options.clock_skew_seconds > 300 ||
+            (!options.resolve_account && !options.resolve_account_at) ||
+            options.clock_skew_seconds > 300 ||
             options.max_token_lifetime <= std::chrono::seconds::zero() ||
             options.max_token_lifetime > std::chrono::hours(24 * 7)) {
             throw Error(ErrorCode::InvalidArgument, "OIDC verifier configuration is invalid");
@@ -365,6 +373,10 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
              not_before.as_number() > now + skew))
             return std::nullopt;
 
+        const auto issued_at_ms = epoch_milliseconds(issued_at.as_number());
+        if (!issued_at_ms)
+            return std::nullopt;
+
         const auto key = impl_->key_for(*kid);
         if (!key) {
             return std::nullopt;
@@ -373,7 +385,10 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
         if (!verify_rsa_sha256(*key, signed_data, *signature)) {
             return std::nullopt;
         }
-        const auto owner = impl_->options.resolve_account(impl_->options.provider, *subject);
+        const auto owner = impl_->options.resolve_account_at
+                               ? impl_->options.resolve_account_at(impl_->options.provider,
+                                                                   *subject, *issued_at_ms)
+                               : impl_->options.resolve_account(impl_->options.provider, *subject);
         if (!owner || owner->kind() != app::OwnerKind::Account)
             return std::nullopt;
         return owner;

@@ -58,7 +58,9 @@ class HostedIdentityStore final {
     HostedIdentityStore& operator=(const HostedIdentityStore&) = delete;
 
     [[nodiscard]] HostedAccount ensure_account(std::string auth_provider,
-                                               std::string auth_subject);
+                                               std::string auth_subject,
+                                               std::optional<std::int64_t> issued_at_ms =
+                                                   std::nullopt);
     [[nodiscard]] GuestSession create_guest_session(
         std::string guest_id, const std::array<unsigned char, 32>& token_hash,
         std::int64_t expires_at_ms);

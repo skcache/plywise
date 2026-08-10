@@ -176,15 +176,23 @@ struct HostedRuntime::Impl {
             [url = options.oidc_jwks_url] { return fetch_jwks(url); },
             [this](std::string_view provider,
                    std::string_view subject) { return resolve_account(provider, subject); },
+            [this](std::string_view provider, std::string_view subject,
+                   std::int64_t issued_at_ms) {
+                return resolve_account(provider, subject, issued_at_ms);
+            },
         });
     }
 
     std::optional<app::OwnerId> resolve_account(std::string_view provider,
-                                                 std::string_view subject) {
+                                                 std::string_view subject,
+                                                 std::optional<std::int64_t> issued_at_ms =
+                                                     std::nullopt) {
         if (provider != options.oidc_provider)
             return std::nullopt;
         try {
-            return identity->ensure_account(std::string(provider), std::string(subject)).owner();
+            return identity
+                ->ensure_account(std::string(provider), std::string(subject), issued_at_ms)
+                .owner();
         } catch (...) {
             // Identity-store failures are deliberately indistinguishable from an invalid token
             // at this boundary; no provider or database details reach the HTTP response.

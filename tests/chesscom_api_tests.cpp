@@ -305,7 +305,13 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
             "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
         static_cast<void>(send(accepted, request.data(), request.size(), 0));
         accepted_response = receive_available(accepted);
+        for (int attempt = 0; attempt < 20 &&
+                               accepted_response.find("jobs_snapshot") == std::string::npos;
+             ++attempt)
+            accepted_response += receive_available(accepted);
+        server.broadcast(R"({"type":"broadcast-smoke"})");
     }
+    const std::string broadcast_response = accepted >= 0 ? receive_available(accepted) : "";
 
     server.stop();
     server.stop();
@@ -336,6 +342,7 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
     CHECK(rejected_response.starts_with("HTTP/1.1 403 Forbidden"));
     CHECK(accepted >= 0);
     CHECK(accepted_response.starts_with("HTTP/1.1 101 Switching Protocols"));
+    CHECK(broadcast_response.find("broadcast-smoke") != std::string::npos);
     CHECK(peer_closed);
     CHECK(!server_error);
     CHECK(service::HttpServer::valid_websocket_origin("http://localhost:8787"));

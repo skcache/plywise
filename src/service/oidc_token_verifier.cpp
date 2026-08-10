@@ -28,6 +28,7 @@ constexpr std::size_t max_jwks_size = 512U * 1024U;
 constexpr std::size_t max_key_count = 32;
 constexpr std::size_t max_kid_size = 256;
 constexpr std::size_t max_subject_size = 512;
+constexpr std::size_t max_missing_kid_count = 128;
 constexpr std::chrono::minutes key_cache_ttl{10};
 constexpr std::chrono::seconds key_refresh_cooldown{30};
 
@@ -224,10 +225,24 @@ struct OidcTokenVerifier::Impl {
         {
             std::lock_guard lock(mutex);
             had_loaded_keys = keys_loaded;
-            const auto found = keys.find(std::string(kid));
+            const std::string kid_value(kid);
+            const auto found = keys.find(kid_value);
             const bool cache_fresh = keys_loaded && now - keys_loaded_at <= key_cache_ttl;
             if (cache_fresh && found != keys.end())
                 return found->second;
+            const auto missing = missing_kids.find(kid_value);
+            if (missing != missing_kids.end()) {
+                if (now - missing->second < key_refresh_cooldown)
+                    return std::nullopt;
+                missing_kids.erase(missing);
+            }
+            // A slow or stalled JWKS provider must not create overlapping refreshes. Known
+            // cached keys remain usable while the one allowed refresh is in flight.
+            if (refresh_in_flight) {
+                if (found != keys.end())
+                    return found->second;
+                return std::nullopt;
+            }
             // A key miss must not turn an untrusted kid into an outbound request on every
             // bearer attempt. One refresh attempt per cooldown is enough for normal key rotation
             // while bounding random-kid amplification and failed-provider retries.
@@ -237,6 +252,7 @@ struct OidcTokenVerifier::Impl {
                 return std::nullopt;
             }
             last_refresh_attempt = now;
+            refresh_in_flight = true;
         }
         std::optional<JwkSet> loaded;
         try {
@@ -244,16 +260,31 @@ struct OidcTokenVerifier::Impl {
         } catch (...) {
             loaded = std::nullopt;
         }
-        if (!loaded)
-            return std::nullopt;
         std::lock_guard lock(mutex);
-        keys = std::move(*loaded);
-        keys_loaded = true;
-        keys_loaded_at = std::chrono::steady_clock::now();
-        if (!had_loaded_keys)
-            last_refresh_attempt = {};
-        const auto found = keys.find(std::string(kid));
-        return found == keys.end() ? std::nullopt : std::optional<Jwk>(found->second);
+        refresh_in_flight = false;
+        const auto refreshed_at = std::chrono::steady_clock::now();
+        if (loaded) {
+            keys = std::move(*loaded);
+            keys_loaded = true;
+            keys_loaded_at = refreshed_at;
+            missing_kids.clear();
+            const auto found = keys.find(std::string(kid));
+            // A cold-cache request for a known key may immediately perform one rotation refresh
+            // on a following miss. A cold-cache miss itself stays inside the cooldown.
+            if (!had_loaded_keys && found != keys.end())
+                last_refresh_attempt = {};
+            if (found != keys.end())
+                return found->second;
+        }
+        if (missing_kids.size() >= max_missing_kid_count) {
+            const auto oldest = std::min_element(
+                missing_kids.begin(), missing_kids.end(),
+                [](const auto& left, const auto& right) { return left.second < right.second; });
+            if (oldest != missing_kids.end())
+                missing_kids.erase(oldest);
+        }
+        missing_kids[std::string(kid)] = refreshed_at;
+        return std::nullopt;
     }
 
     OidcTokenVerifierOptions options;
@@ -261,6 +292,8 @@ struct OidcTokenVerifier::Impl {
     mutable bool keys_loaded{false};
     mutable std::chrono::steady_clock::time_point keys_loaded_at{};
     mutable std::chrono::steady_clock::time_point last_refresh_attempt{};
+    mutable bool refresh_in_flight{false};
+    mutable std::map<std::string, std::chrono::steady_clock::time_point> missing_kids;
     mutable JwkSet keys;
 };
 

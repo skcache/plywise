@@ -170,6 +170,32 @@ TEST_CASE("OIDC verifier accepts a valid RS256 token and resolves its account") 
     CHECK_EQ(loads, 2ULL);
 }
 
+TEST_CASE("OIDC verifier does not refresh repeatedly for cold-cache unknown kids") {
+    const SigningKey key = make_signing_key("key-1");
+    const double now = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    std::size_t loads = 0;
+    service::OidcTokenVerifier verifier(service::OidcTokenVerifierOptions{
+        "https://issuer.example",
+        "plywise-web",
+        "test",
+        0,
+        [&] {
+            ++loads;
+            return std::optional<std::string>(key.jwks);
+        },
+        [](std::string_view, std::string_view) {
+            return std::optional<app::OwnerId>(app::OwnerId::account("acct-test"));
+        },
+    });
+
+    CHECK(!verifier.verify(sign_token(key.pkey.get(), "missing-a", now + 300)).has_value());
+    CHECK(!verifier.verify(sign_token(key.pkey.get(), "missing-b", now + 300)).has_value());
+    CHECK_EQ(loads, 1ULL);
+}
+
 TEST_CASE("OIDC verifier rejects expired, forged, and wrongly issued tokens") {
     const SigningKey key = make_signing_key("key-1");
     const double now = static_cast<double>(

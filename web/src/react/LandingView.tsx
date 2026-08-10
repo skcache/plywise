@@ -1,17 +1,16 @@
-import { type PointerEvent } from "react";
+import { type KeyboardEvent, type PointerEvent } from "react";
 import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
 const reviewFen = "r1b1r1k1/ppq2ppp/3p1n2/3Pp3/2P5/5NP1/PPQ2PBP/R3R1K1 w - - 0 18";
-const demoFen = "r2q1rk1/ppp1bppp/2np1n2/8/2BPP3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 10";
+const demoFen = "2r2rk1/pp1nbppp/3p1n2/q1pP4/2P1P3/2N1BN2/PP1N1PPP/1R1QR1K1 w - - 1 15";
 
 const previewClassifications = [
   ["Brilliant", "is-brilliant", 0, 0],
-  ["Very good", "is-great", 0, 0],
+  ["Textbook", "is-book", 8, 9],
   ["Best", "is-best", 14, 9],
   ["Excellent", "is-excellent", 11, 15],
   ["Good", "is-good", 3, 6],
-  ["Theoretical", "is-book", 5, 5],
   ["Inaccuracy", "is-inaccuracy", 1, 0],
   ["Mistake", "is-mistake", 1, 1],
   ["Blunder", "is-blunder", 0, 0],
@@ -39,6 +38,11 @@ export function LandingView({ onStart, onSignIn }: {
   onSignIn: () => void;
 }) {
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const openPreview = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onStart();
+  };
 
   return <main className="landing-page">
     <div className="landing-shell">
@@ -71,14 +75,23 @@ export function LandingView({ onStart, onSignIn }: {
         >
           <span className="landing-preview-header">Game analysis</span>
           <div className="landing-preview-body">
-            <div className="landing-preview-board">
-              <ChessBoard fen={demoFen} orientation="white" compact={false} showCoordinates={false} interactive activeUci="c4f7" showArrow onSquare={onStart} />
+            <div
+              className="landing-preview-board"
+              role="button"
+              tabIndex={0}
+              aria-label="Open a free analysis from the preview"
+              onClick={onStart}
+              onKeyDown={openPreview}
+            >
+              <div aria-hidden="true">
+                <ChessBoard fen={demoFen} orientation="white" compact={false} showCoordinates={false} activeUci="f3e5" showArrow />
+              </div>
             </div>
             <aside className="landing-preview-inspector" aria-label="Move quality preview">
               <div className="landing-demo-classifications" aria-label="Illustrative move classifications">
-                <div className="landing-demo-classification-head"><span>Move quality</span><span>White</span><span>Black</span></div>
+                <div className="landing-demo-classification-head"><span>Move markers</span><span>White</span><span>Black</span></div>
                 {previewClassifications.map(([label, marker, white, black]) => <div className="landing-demo-classification-row" key={label}>
-                  <span><i className={marker} />{label}</span><b>{white}</b><b>{black}</b>
+                  <span><i className={marker} aria-hidden="true" />{label}</span><b>{white}</b><b>{black}</b>
                 </div>)}
               </div>
             </aside>

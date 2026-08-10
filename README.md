@@ -32,9 +32,17 @@ React dev server against it on loopback. No hosted service or billing account is
 Vercel only serves the React site. The C++ API is a long-running container, so run `docker compose
 up --build -d` on an always-on Linux host and put a TLS reverse proxy in front of port `8787`.
 For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
-`PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then set the Vercel build variable
-`VITE_PLYWISE_API_ORIGIN` to the HTTPS API origin. The service refuses to start when that hosted
-configuration is incomplete.
+`PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then choose one API connection mode in Vercel:
+
+- Direct: set `VITE_PLYWISE_API_ORIGIN` to the HTTPS API origin and
+  `VITE_PLYWISE_EVENT_ORIGIN` to its `wss://` origin.
+- Same-origin proxy: set the non-public `PCT_PLYWISE_API_ORIGIN` to the HTTPS API origin. Vercel
+  will proxy `/api/*` through the site, and set `VITE_PLYWISE_EVENT_ORIGIN` to the API's `wss://`
+  origin so live server-job updates do not try to use Vercel's static host.
+
+The checked-in `vercel.mjs` rejects a production deployment without one of those API modes,
+keeps API responses out of caches, and builds the CSP from the configured public origins. The
+service itself refuses to start when the hosted C++ configuration is incomplete.
 
 ## What's left
 

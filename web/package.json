@@ -18,7 +18,8 @@
     "test:auth": "tsc tests/auth-redirect.test.ts src/auth-redirect.ts --outDir /tmp/pct-web-auth --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-auth/tests/auth-redirect.test.js",
     "test:engine": "tsc tests/browser-engine.test.ts src/browser-engine.ts src/engine-profile.ts --outDir /tmp/pct-web-engine --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-engine/tests/browser-engine.test.js",
     "test:browser-review": "tsc tests/browser-review.test.ts src/browser-review.ts src/browser-engine.ts src/engine-profile.ts src/types.ts --outDir /tmp/pct-web-browser-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-browser-review/tests/browser-review.test.js",
-    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:auth && npm run test:engine && npm run test:browser-review"
+    "test:vercel": "node tests/vercel-config.test.mjs",
+    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:auth && npm run test:engine && npm run test:browser-review && npm run test:vercel"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

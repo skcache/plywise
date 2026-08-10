@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build*/
 .netlify/
+.vercel/
 *.o
 *.a
 *.so

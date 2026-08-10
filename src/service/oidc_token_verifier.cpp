@@ -5,6 +5,7 @@
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
 
@@ -124,8 +125,11 @@ bool audience_matches(const json::Value& payload, std::string_view expected) {
 }
 
 struct Jwk {
+    enum class Algorithm { rs256, es256 } algorithm;
     Bytes modulus;
     Bytes exponent;
+    Bytes x;
+    Bytes y;
 };
 
 using JwkSet = std::map<std::string, Jwk>;
@@ -145,21 +149,43 @@ std::optional<JwkSet> parse_jwks(std::string_view text) {
             const auto kid = string_claim(value, "kid", max_kid_size);
             const auto kty = string_claim(value, "kty", 16);
             const auto alg = string_claim(value, "alg", 16);
-            const auto modulus = string_claim(value, "n", 1024);
-            const auto exponent = string_claim(value, "e", 32);
-            if (!kid || !kty || *kty != "RSA" || (alg && *alg != "RS256") || !modulus ||
-                !exponent)
+            const auto use = string_claim(value, "use", 16);
+            if (!kid || !kty || (use && *use != "sig"))
                 continue;
-            const auto decoded_modulus = decode_base64url(*modulus);
-            const auto decoded_exponent = decode_base64url(*exponent);
-            // Keep RSA work bounded and require at least a 2048-bit modulus.
-            if (!decoded_modulus || decoded_modulus->size() < 256 ||
-                decoded_modulus->size() > 512 || !decoded_exponent ||
-                decoded_exponent->empty() || decoded_exponent->size() > 8 ||
-                (decoded_exponent->back() & 1U) == 0U ||
-                (decoded_exponent->size() == 1U && decoded_exponent->front() <= 1U))
+            if (*kty == "RSA") {
+                const auto modulus = string_claim(value, "n", 1024);
+                const auto exponent = string_claim(value, "e", 32);
+                if ((alg && *alg != "RS256") || !modulus || !exponent)
+                    continue;
+                const auto decoded_modulus = decode_base64url(*modulus);
+                const auto decoded_exponent = decode_base64url(*exponent);
+                // Keep RSA work bounded and require at least a 2048-bit modulus.
+                if (!decoded_modulus || decoded_modulus->size() < 256 ||
+                    decoded_modulus->size() > 512 || !decoded_exponent ||
+                    decoded_exponent->empty() || decoded_exponent->size() > 8 ||
+                    (decoded_exponent->back() & 1U) == 0U ||
+                    (decoded_exponent->size() == 1U && decoded_exponent->front() <= 1U))
+                    continue;
+                if (!result.emplace(*kid, Jwk{Jwk::Algorithm::rs256, *decoded_modulus,
+                                              *decoded_exponent, {}, {}})
+                         .second)
+                    return std::nullopt;
                 continue;
-            if (!result.emplace(*kid, Jwk{*decoded_modulus, *decoded_exponent}).second)
+            }
+            if (*kty != "EC")
+                continue;
+            const auto curve = string_claim(value, "crv", 32);
+            const auto x = string_claim(value, "x", 128);
+            const auto y = string_claim(value, "y", 128);
+            if ((alg && *alg != "ES256") || !curve || *curve != "P-256" || !x || !y)
+                continue;
+            const auto decoded_x = decode_base64url(*x);
+            const auto decoded_y = decode_base64url(*y);
+            if (!decoded_x || decoded_x->size() != 32 || !decoded_y || decoded_y->size() != 32)
+                continue;
+            if (!result.emplace(*kid,
+                                Jwk{Jwk::Algorithm::es256, {}, {}, *decoded_x, *decoded_y})
+                         .second)
                 return std::nullopt;
         }
         return result.empty() ? std::nullopt : std::optional<JwkSet>(std::move(result));
@@ -210,6 +236,96 @@ bool verify_rsa_sha256(const Jwk& jwk, std::string_view signed_data, const Bytes
     const bool verified = updated && EVP_DigestVerifyFinal(context, signature.data(), signature.size()) == 1;
     EVP_MD_CTX_free(context);
     return verified;
+}
+
+EVP_PKEY* ec_public_key(const Jwk& jwk) {
+    if (jwk.x.size() != 32 || jwk.y.size() != 32)
+        return nullptr;
+    Bytes public_point;
+    public_point.reserve(65);
+    public_point.push_back(0x04U);
+    public_point.insert(public_point.end(), jwk.x.begin(), jwk.x.end());
+    public_point.insert(public_point.end(), jwk.y.begin(), jwk.y.end());
+
+    std::unique_ptr<OSSL_PARAM_BLD, decltype(&OSSL_PARAM_BLD_free)> builder(
+        OSSL_PARAM_BLD_new(), &OSSL_PARAM_BLD_free);
+    if (builder == nullptr ||
+        OSSL_PARAM_BLD_push_utf8_string(builder.get(), OSSL_PKEY_PARAM_GROUP_NAME, "prime256v1",
+                                        0) != 1 ||
+        OSSL_PARAM_BLD_push_octet_string(builder.get(), OSSL_PKEY_PARAM_PUB_KEY,
+                                         public_point.data(), public_point.size()) != 1)
+        return nullptr;
+    std::unique_ptr<OSSL_PARAM, decltype(&OSSL_PARAM_free)> parameters(
+        OSSL_PARAM_BLD_to_param(builder.get()), &OSSL_PARAM_free);
+    if (parameters == nullptr)
+        return nullptr;
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
+        EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr), &EVP_PKEY_CTX_free);
+    if (context == nullptr || EVP_PKEY_fromdata_init(context.get()) != 1)
+        return nullptr;
+    EVP_PKEY* key = nullptr;
+    if (EVP_PKEY_fromdata(context.get(), &key, EVP_PKEY_PUBLIC_KEY, parameters.get()) != 1)
+        return nullptr;
+    return key;
+}
+
+std::optional<Bytes> der_ecdsa_signature(const Bytes& jose_signature) {
+    if (jose_signature.size() != 64)
+        return std::nullopt;
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> r(
+        BN_bin2bn(jose_signature.data(), 32, nullptr), &BN_free);
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> s(
+        BN_bin2bn(jose_signature.data() + 32, 32, nullptr), &BN_free);
+    if (r == nullptr || s == nullptr)
+        return std::nullopt;
+    std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)> ecdsa(ECDSA_SIG_new(), &ECDSA_SIG_free);
+    if (ecdsa == nullptr)
+        return std::nullopt;
+    BIGNUM* raw_r = r.release();
+    BIGNUM* raw_s = s.release();
+    if (ECDSA_SIG_set0(ecdsa.get(), raw_r, raw_s) != 1) {
+        BN_free(raw_r);
+        BN_free(raw_s);
+        return std::nullopt;
+    }
+    const int encoded_size = i2d_ECDSA_SIG(ecdsa.get(), nullptr);
+    if (encoded_size <= 0)
+        return std::nullopt;
+    Bytes der(static_cast<std::size_t>(encoded_size));
+    unsigned char* cursor = der.data();
+    if (i2d_ECDSA_SIG(ecdsa.get(), &cursor) != encoded_size)
+        return std::nullopt;
+    return der;
+}
+
+bool verify_es256(const Jwk& jwk, std::string_view signed_data, const Bytes& signature) {
+    const auto der_signature = der_ecdsa_signature(signature);
+    if (!der_signature)
+        return false;
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(ec_public_key(jwk), &EVP_PKEY_free);
+    if (key == nullptr)
+        return false;
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (context == nullptr)
+        return false;
+    const bool initialized =
+        EVP_DigestVerifyInit(context, nullptr, EVP_sha256(), nullptr, key.get()) == 1;
+    const bool updated = initialized &&
+                         EVP_DigestVerifyUpdate(context, signed_data.data(), signed_data.size()) ==
+                             1;
+    const bool verified =
+        updated && EVP_DigestVerifyFinal(context, der_signature->data(), der_signature->size()) == 1;
+    EVP_MD_CTX_free(context);
+    return verified;
+}
+
+bool verify_signature(const Jwk& jwk, std::string_view algorithm, std::string_view signed_data,
+                      const Bytes& signature) {
+    if (algorithm == "RS256" && jwk.algorithm == Jwk::Algorithm::rs256)
+        return verify_rsa_sha256(jwk, signed_data, signature);
+    if (algorithm == "ES256" && jwk.algorithm == Jwk::Algorithm::es256)
+        return verify_es256(jwk, signed_data, signature);
+    return false;
 }
 
 } // namespace
@@ -340,7 +456,8 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
         const auto kid = string_claim(header, "kid", max_kid_size);
         const auto issuer = string_claim(payload, "iss", 2048);
         const auto subject = string_claim(payload, "sub", max_subject_size);
-        if (!algorithm || *algorithm != "RS256" || !kid || !issuer || *issuer != impl_->options.issuer ||
+        if (!algorithm || (*algorithm != "RS256" && *algorithm != "ES256") || !kid || !issuer ||
+            *issuer != impl_->options.issuer ||
             !subject || !audience_matches(payload, impl_->options.audience)) {
             return std::nullopt;
         }
@@ -382,7 +499,7 @@ std::optional<app::OwnerId> OidcTokenVerifier::verify(std::string_view token) co
             return std::nullopt;
         }
         const std::string signed_data(token.substr(0, token.size() - encoded_signature.size() - 1));
-        if (!verify_rsa_sha256(*key, signed_data, *signature)) {
+        if (!verify_signature(*key, *algorithm, signed_data, *signature)) {
             return std::nullopt;
         }
         const auto owner = impl_->options.resolve_account_at

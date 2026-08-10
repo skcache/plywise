@@ -32,7 +32,7 @@ import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, revie
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
 import { runBrowserReview, type BrowserReviewProgress } from "../browser-review";
-import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, loadAuthIntent, saveAuthIntent, signInWithProvider, signOut, subscribeAuth, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
+import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, isAuthCallbackPath, isPasswordResetPath, loadAuthIntent, requestPasswordReset, saveAuthIntent, signInWithPassword, signInWithProvider, signOut, signUpWithPassword, subscribeAuth, updatePassword, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -42,14 +42,14 @@ import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
 import { LandingView } from "./LandingView";
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
-import { AccountPrompt } from "./AccountPrompt";
+import { AccountPrompt, PasswordResetPrompt } from "./AccountPrompt";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "line" | "method";
 type IdentityPromptState = { gameId: string; names: string[]; source: PlayerIdentity["source"] };
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const routes = new Set<Route>(["landing", "home", "recent", "analysis", "explore", "progress", "settings"]);
+const routes = new Set<Route>(["landing", "sign-up", "sign-in", "home", "recent", "analysis", "explore", "progress", "settings"]);
 
 function routeFromHash(): Route {
   const candidate = window.location.hash.replace(/^#\/?/, "") as Route;
@@ -99,15 +99,17 @@ export default function App() {
   const [accountPromptOpen, setAccountPromptOpen] = useState(false);
   const [accountEntryMode, setAccountEntryMode] = useState<AuthEntryMode>("sign-up");
   const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>(currentAuthSnapshot);
+  const [authInitializing, setAuthInitializing] = useState(true);
   const [authMessage, setAuthMessage] = useState("");
   const [authBusy, setAuthBusy] = useState<AuthProvider | null>(null);
+  const [passwordResetMessage, setPasswordResetMessage] = useState("");
   const [authRevision, setAuthRevision] = useState(0);
   const [browserAnalysisProgress, setBrowserAnalysisProgress] = useState<BrowserReviewProgress | null>(null);
   const [serviceError, setServiceError] = useState("");
   const autoplayTimer = useRef<number | null>(null);
   const browserEngineRef = useRef<ReturnType<typeof createBrowserEngine> | null>(null);
   const browserAnalysisAbort = useRef<AbortController | null>(null);
-  const accountFlowRequested = useRef(false);
+  const accountFlowRequested = useRef<"review" | "home" | null>(null);
 
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
   const selectedMove = selectedGame?.analysis?.moves[selectedPly];
@@ -160,19 +162,24 @@ export default function App() {
       setServiceError(refreshError instanceof Error ? refreshError.message : "Plywise could not reach the account service.");
     }
     if (accountFlowRequested.current) {
+      const destination = accountFlowRequested.current;
       setAccountPromptOpen(false);
       setRoute("home");
-      setImportOpen(true);
+      if (destination === "review") setImportOpen(true);
       clearAuthIntent();
-      accountFlowRequested.current = false;
+      accountFlowRequested.current = null;
     }
   }, [authSnapshot.session, refreshAccountLibrary]);
 
   useEffect(() => {
     const intent = loadAuthIntent();
     if (intent) {
-      accountFlowRequested.current = true;
+      accountFlowRequested.current = intent.destination;
       setAccountEntryMode(intent.mode);
+      setAccountPromptOpen(true);
+    } else if (route === "sign-up" || route === "sign-in") {
+      accountFlowRequested.current = route === "sign-up" ? "review" : "home";
+      setAccountEntryMode(route);
       setAccountPromptOpen(true);
     }
     const redirectMessage = consumeAuthRedirectMessage();
@@ -181,7 +188,7 @@ export default function App() {
       setAuthSnapshot(snapshot);
       if (snapshot.event) setAuthRevision((value) => value + 1);
       if (snapshot.event === "SIGNED_OUT") {
-        accountFlowRequested.current = false;
+        accountFlowRequested.current = null;
         clearAuthIntent();
         setGames([]);
         setJobs([]);
@@ -198,7 +205,10 @@ export default function App() {
         setAuthMessage(snapshot.message);
       }
     });
-    void initializeAuth().then(setAuthSnapshot);
+    void initializeAuth().then((snapshot) => {
+      setAuthSnapshot(snapshot);
+      setAuthInitializing(false);
+    });
     return unsubscribe;
   }, []);
 
@@ -559,11 +569,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [leaveVariation, navigate, resetTransient, route, selectedMove, startVariation, togglePlayback, variation]);
 
+  const openAccountPrompt = useCallback((mode: AuthEntryMode = "sign-up") => {
+    accountFlowRequested.current = mode === "sign-up" ? "review" : "home";
+    setAccountEntryMode(mode);
+    setAccountPromptOpen(true);
+    setRoute(mode);
+    setAuthMessage("");
+  }, []);
+
   const runImport = useCallback(async (url: string, pgn: string) => {
     if (!authSnapshot.session) {
       setImportOpen(false);
-      setAccountPromptOpen(true);
-      accountFlowRequested.current = true;
+      openAccountPrompt("sign-up");
       return;
     }
     if (!url.trim() && !pgn.trim()) { setError("Paste a Chess.com game URL or PGN."); return; }
@@ -603,7 +620,7 @@ export default function App() {
       setImportBusy(false);
       setImportStage("");
     }
-  }, [authSnapshot.session, refreshGame]);
+  }, [authSnapshot.session, openAccountPrompt, refreshGame]);
 
   const decideImportedIdentity = useCallback(async (decision: PlayerIdentity["decision"], playerName: string) => {
     if (!identityPrompt) return;
@@ -625,13 +642,6 @@ export default function App() {
       setIdentityBusy(false);
     }
   }, [identityPrompt]);
-
-  const openAccountPrompt = useCallback((mode: AuthEntryMode = "sign-up") => {
-    accountFlowRequested.current = true;
-    setAccountEntryMode(mode);
-    setAccountPromptOpen(true);
-    setAuthMessage("");
-  }, []);
 
   const setAppRoute = useCallback((next: Route) => {
     if (!authSnapshot.session) {
@@ -656,6 +666,7 @@ export default function App() {
     saveAuthIntent({
       context: "landing",
       mode: accountEntryMode,
+      destination: accountEntryMode === "sign-up" ? "review" : "home",
     });
     const result = await signInWithProvider(provider, accountEntryMode);
     setAuthMessage(result.message);
@@ -665,6 +676,30 @@ export default function App() {
     }
   }, [accountEntryMode]);
 
+  const startPasswordSignUp = useCallback(async (name: string, email: string, password: string) => {
+    const result = await signUpWithPassword(name, email, password);
+    setAuthMessage(result.message);
+    return result;
+  }, []);
+
+  const startPasswordSignIn = useCallback(async (email: string, password: string) => {
+    const result = await signInWithPassword(email, password);
+    setAuthMessage(result.message);
+    return result;
+  }, []);
+
+  const startPasswordReset = useCallback(async (email: string) => {
+    const result = await requestPasswordReset(email);
+    setAuthMessage(result.message);
+    return result;
+  }, []);
+
+  const completePasswordReset = useCallback(async (password: string) => {
+    const result = await updatePassword(password);
+    setPasswordResetMessage(result.message);
+    return result;
+  }, []);
+
   const handleSignOut = useCallback(async () => {
     setAuthBusy(null);
     const result = await signOut();
@@ -673,10 +708,11 @@ export default function App() {
   }, []);
 
   const closeAccountPrompt = useCallback(() => {
-    accountFlowRequested.current = false;
+    accountFlowRequested.current = null;
     clearAuthIntent();
     setAccountPromptOpen(false);
-  }, []);
+    if (!authSnapshot.session) setRoute("landing");
+  }, [authSnapshot.session]);
 
   const accountPrompt = accountPromptOpen && <AccountPrompt
     auth={authSnapshot}
@@ -685,13 +721,24 @@ export default function App() {
     busyProvider={authBusy}
     message={authMessage}
     onProvider={(provider) => void startProviderSignIn(provider)}
-    onModeChange={(mode) => { setAccountEntryMode(mode); setAuthMessage(""); }}
+    onModeChange={(mode) => { setAccountEntryMode(mode); setAuthMessage(""); setRoute(mode); accountFlowRequested.current = mode === "sign-up" ? "review" : "home"; }}
+    onPasswordSignUp={startPasswordSignUp}
+    onPasswordSignIn={startPasswordSignIn}
+    onPasswordReset={startPasswordReset}
     onSignOut={() => void handleSignOut()}
     onClose={closeAccountPrompt}
   />;
 
+  if (authInitializing && (isAuthCallbackPath() || isPasswordResetPath())) {
+    return <main className="account-page"><div className="account-page-shell"><p className="account-loading" role="status" aria-live="polite">Finishing your account session…</p></div></main>;
+  }
+
+  if (isPasswordResetPath() && authSnapshot.session) {
+    return <PasswordResetPrompt auth={authSnapshot} message={passwordResetMessage} onSubmit={completePasswordReset} onClose={() => void handleSignOut()} />;
+  }
+
   if (!authSnapshot.session) {
-    return accountPromptOpen
+    return accountPromptOpen || route === "sign-up" || route === "sign-in"
       ? accountPrompt
       : <LandingView onStart={startLandingReview} onSignIn={() => openAccountPrompt("sign-in")}/>;
   }

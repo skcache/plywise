@@ -181,7 +181,10 @@ void Stockfish::start() {
 void Stockfish::stop() noexcept {
     if (input_fd_ >= 0) {
         const char quit[] = "quit\n";
-        static_cast<void>(write(input_fd_, quit, sizeof(quit) - 1));
+        // Shutdown is best effort: the child may already have closed the pipe. Keep the return
+        // value consumed so GCC's warn_unused_result does not turn this noexcept cleanup into a
+        // build failure.
+        [[maybe_unused]] const ssize_t written = write(input_fd_, quit, sizeof(quit) - 1);
         close(input_fd_);
         input_fd_ = -1;
     }

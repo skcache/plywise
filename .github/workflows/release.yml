@@ -28,7 +28,6 @@ jobs:
           if-no-files-found: error
 
   container-image:
-    needs: macos-package
     runs-on: ubuntu-latest
     permissions:
       contents: read

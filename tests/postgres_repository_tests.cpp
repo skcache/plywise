@@ -483,6 +483,53 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
     CHECK(!verify(session->token).has_value());
 }
 
+TEST_CASE("Hosted runtime evicts only idle owner resources at capacity") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    HostedRuntimeEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache);
+    service::HostedRuntime runtime(
+        service::HostedRuntimeOptions{
+            connection,
+            "https://project.supabase.co/auth/v1",
+            "authenticated",
+            "supabase",
+            "https://project.supabase.co/auth/v1/.well-known/jwks.json",
+            2,
+            std::chrono::minutes(10),
+        },
+        analyzer,
+        app::JobManagerOptions{1, 8, 0});
+    app::HostedIdentityStore identity(connection);
+    const auto alice = identity.ensure_account("test", "resource-eviction-alice");
+    const auto bob = identity.ensure_account("test", "resource-eviction-bob");
+    const auto carol = identity.ensure_account("test", "resource-eviction-carol");
+    const auto resolve = runtime.scope_resolver();
+
+    const auto alice_scope = resolve(alice.owner());
+    CHECK(alice_scope.has_value());
+    {
+        const auto bob_scope = resolve(bob.owner());
+        CHECK(bob_scope.has_value());
+    }
+
+    // Alice is still pinned by an active scope, so the idle Bob resource is the only safe
+    // candidate when Carol arrives at the two-owner capacity.
+    const auto carol_scope = resolve(carol.owner());
+    CHECK(carol_scope.has_value());
+
+    bool rejected = false;
+    try {
+        static_cast<void>(resolve(bob.owner()));
+    } catch (const Error& error) {
+        rejected = error.code() == ErrorCode::QuotaExceeded;
+    }
+    CHECK(rejected);
+}
+
 TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by owner") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
     if (connection == nullptr || connection[0] == '\0')

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -24,6 +25,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace pct::service {
 namespace {
@@ -31,7 +33,6 @@ namespace {
 #if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
 
 constexpr std::size_t max_jwks_bytes = 512U * 1024U;
-constexpr std::size_t max_owner_resources = 128;
 constexpr std::int64_t guest_lifetime_ms = 24LL * 60 * 60 * 1000;
 
 template <std::size_t Size>
@@ -136,6 +137,23 @@ struct HostedRuntime::Impl {
         std::unique_ptr<app::PostgresRepository> repository;
         std::unique_ptr<app::JobManager> jobs;
         bool retired{false};
+        std::atomic<std::size_t> active_leases{0};
+        std::chrono::steady_clock::time_point last_used{};
+    };
+
+    // ApiScope contains raw repository/job pointers for the hot path. This lease is the lifetime
+    // token that keeps those pointers valid through an HTTP request or owner WebSocket observer.
+    struct ScopeLease {
+        explicit ScopeLease(std::shared_ptr<OwnerResources> input)
+            : resources(std::move(input)) {
+            resources->active_leases.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        ~ScopeLease() {
+            resources->active_leases.fetch_sub(1, std::memory_order_relaxed);
+        }
+
+        std::shared_ptr<OwnerResources> resources;
     };
 
     Impl(HostedRuntimeOptions input, analysis::Analyzer& input_analyzer,
@@ -144,7 +162,8 @@ struct HostedRuntime::Impl {
           job_options(input_job_options) {
         if (options.postgres_connection.empty() || options.oidc_issuer.empty() ||
             options.oidc_audience.empty() || options.oidc_provider.empty() ||
-            !valid_jwks_url(options.oidc_jwks_url))
+            !valid_jwks_url(options.oidc_jwks_url) || options.max_owner_resources == 0 ||
+            options.owner_resource_idle_ttl <= std::chrono::seconds::zero())
             throw Error(ErrorCode::InvalidArgument, "hosted runtime configuration is invalid");
         identity = std::make_unique<app::HostedIdentityStore>(options.postgres_connection);
         browser_observations =
@@ -289,28 +308,71 @@ struct HostedRuntime::Impl {
     std::optional<ApiScope> scope_for_owner(const app::OwnerId& owner) {
         if (owner.kind() != app::OwnerKind::Account && owner.kind() != app::OwnerKind::Guest)
             return std::nullopt;
+        // Keep evicted resources alive until after resources_mutex is released. JobManager's
+        // destructor waits for workers and must never run while the scope registry is locked.
+        std::vector<std::shared_ptr<OwnerResources>> released;
         std::lock_guard lock(resources_mutex);
+        const auto now = std::chrono::steady_clock::now();
         const std::string key =
             (owner.kind() == app::OwnerKind::Account ? "account:" : "guest:") +
             std::string(owner.value());
         if (const auto existing = resources.find(key); existing != resources.end()) {
             if (existing->second->retired)
                 return std::nullopt;
-            const auto& owner_resources = existing->second;
+            auto& owner_resources = existing->second;
+            owner_resources->last_used = now;
+            auto lease = std::make_shared<ScopeLease>(owner_resources);
             return ApiScope{owner_resources->repository.get(), owner_resources->jobs.get(),
-                            owner_resources};
+                            std::move(lease)};
         }
-        if (resources.size() >= max_owner_resources)
-            throw Error(ErrorCode::QuotaExceeded, "hosted owner resource capacity is full");
+
+        // Reclaim the oldest resource only when it has no active request/observer and no work
+        // still running. Completed jobs reload from PostgreSQL on demand, so this does not lose
+        // durable state and keeps a burst of new accounts from exhausting DB connections.
+        const auto evict_idle = [&](bool ignore_ttl) {
+            auto candidate = resources.end();
+            for (auto iterator = resources.begin(); iterator != resources.end(); ++iterator) {
+                const auto& value = iterator->second;
+                if (value->retired || value->active_leases.load(std::memory_order_relaxed) != 0)
+                    continue;
+                bool work_pending = false;
+                for (const auto& job : value->jobs->list()) {
+                    if (job.status == app::JobStatus::Queued ||
+                        job.status == app::JobStatus::Running) {
+                        work_pending = true;
+                        break;
+                    }
+                }
+                if (work_pending ||
+                    (!ignore_ttl && now - value->last_used < options.owner_resource_idle_ttl))
+                    continue;
+                if (candidate == resources.end() ||
+                    value->last_used < candidate->second->last_used)
+                    candidate = iterator;
+            }
+            if (candidate == resources.end())
+                return false;
+            candidate->second->retired = true;
+            released.push_back(candidate->second);
+            resources.erase(candidate);
+            return true;
+        };
+
+        if (resources.size() >= options.max_owner_resources) {
+            if (!evict_idle(false) && !evict_idle(true))
+                throw Error(ErrorCode::QuotaExceeded, "hosted owner resource capacity is full");
+        }
 
         auto created = std::make_shared<OwnerResources>();
+        created->last_used = now;
         created->repository =
             std::make_unique<app::PostgresRepository>(options.postgres_connection, owner);
         created->jobs = std::make_unique<app::JobManager>(*created->repository, analyzer,
                                                           job_options);
         const auto [inserted, _] = resources.emplace(key, std::move(created));
+        auto lease = std::make_shared<ScopeLease>(inserted->second);
         return ApiScope{inserted->second->repository.get(), inserted->second->jobs.get(),
-                        inserted->second};
+                        std::move(lease)};
     }
 
     AccountExportResult export_account(const app::OwnerId& owner,

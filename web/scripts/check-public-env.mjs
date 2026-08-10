@@ -5,6 +5,8 @@ const allowedPublicVariables = new Set([
   "VITE_PLYWISE_EVENT_ORIGIN",
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_PUBLISHABLE_KEY",
+  // Vercel injects this public JSON for its optional observability integrations.
+  "VITE_VERCEL_OBSERVABILITY_CLIENT_CONFIG",
 ]);
 
 const modeFlag = process.argv.indexOf("--mode");

@@ -7,8 +7,10 @@
 #include "pct/import/import_service.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -128,6 +130,12 @@ struct AuthConfig {
     // owner-scoped persistent adapter is wired, so hosted main disables the async profile/sync
     // routes while direct single-game imports remain available through the scoped repository.
     bool allow_shared_ingest{false};
+    // Hosted limits keep the free service predictable for a small private alpha. They are only
+    // applied when resolve_scope is configured; local mode remains unlimited for compatibility.
+    std::size_t hosted_imports_per_window{100};
+    std::size_t hosted_analysis_starts_per_window{30};
+    std::chrono::seconds hosted_quota_window{std::chrono::minutes(1)};
+    std::size_t hosted_game_storage_limit{app::hosted_game_storage_limit};
 };
 
 class Api {
@@ -153,12 +161,22 @@ class Api {
     }
 
   private:
+    enum class QuotaKind { Import, AnalysisStart };
+
+    struct OwnerQuotaWindow {
+        std::deque<std::chrono::steady_clock::time_point> imports;
+        std::deque<std::chrono::steady_clock::time_point> analysis_starts;
+        std::chrono::steady_clock::time_point last_used{};
+    };
+
     struct Authentication {
         std::optional<app::OwnerId> owner;
         std::optional<Response> denial;
     };
 
     [[nodiscard]] Authentication authenticate(const Request& request) const;
+    [[nodiscard]] bool consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
+                                             std::size_t amount = 1);
 
     import::ImportService& importer_;
     app::IRepository& default_repository_;
@@ -169,6 +187,8 @@ class Api {
     ReadinessCheck readiness_;
     AuthConfig auth_;
     analysis::BrowserObservationLedger browser_observations_;
+    std::mutex quota_mutex_;
+    std::map<std::string, OwnerQuotaWindow> quota_windows_;
 };
 
 struct ServerOptions {

@@ -42,7 +42,99 @@ struct ApiFixture {
     ~ApiFixture() = default;
 };
 
+struct HostedApiFixture {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                  ("pct-hosted-api-" + std::to_string(::getpid()) + ".log");
+    storage::EventLog log;
+    app::Repository repository;
+    import::ImportService importer;
+    ApiEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer;
+    app::JobManager jobs;
+    service::Api api;
+
+    HostedApiFixture(std::size_t import_limit = 100, std::size_t analysis_limit = 30,
+                     std::size_t storage_limit = app::hosted_game_storage_limit)
+        : log((std::filesystem::remove(path), path)), repository(log), analyzer(engine, cache),
+          jobs(repository, analyzer),
+          api(importer, repository, jobs, {}, {}, nullptr, {}, [this, import_limit, analysis_limit,
+                                                                storage_limit] {
+              service::AuthConfig auth;
+              auth.required = true;
+              auth.allow_guest_access = false;
+              auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+                  if (token == "alpha-token")
+                      return app::OwnerId::local();
+                  return std::nullopt;
+              };
+              auth.resolve_scope = [this](const app::OwnerId& owner)
+                  -> std::optional<service::ApiScope> {
+                  if (owner == app::OwnerId::local())
+                      return service::ApiScope{&repository, &jobs};
+                  return std::nullopt;
+              };
+              auth.hosted_imports_per_window = import_limit;
+              auth.hosted_analysis_starts_per_window = analysis_limit;
+              auth.hosted_game_storage_limit = storage_limit;
+              return auth;
+          }()) {}
+};
+
+service::Request hosted_account_request(std::string method, std::string path,
+                                        std::string body = {}) {
+    return service::Request{std::move(method), std::move(path),
+                            {{"authorization", "Bearer alpha-token"}}, std::move(body)};
+}
+
 } // namespace
+
+TEST_CASE("hosted API bounds import work without changing local mode") {
+    HostedApiFixture fixture(1);
+    const std::string pgn =
+        "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0";
+    const auto first = fixture.api.handle(hosted_account_request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+    CHECK_EQ(first.status, 202);
+
+    const auto second = fixture.api.handle(hosted_account_request(
+        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+    CHECK_EQ(second.status, 429);
+    CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+}
+
+TEST_CASE("hosted API bounds saved games before persistence") {
+    HostedApiFixture fixture(100, 30, 1);
+    const auto first = fixture.api.handle(hosted_account_request(
+        "POST", "/api/import",
+        json::dump(json::Value::Object{{"pgn", "[White \"A\"]\n[Black \"B\"]\n"
+                                             "[Result \"1-0\"]\n\n1. e4 e5 1-0"}})));
+    CHECK_EQ(first.status, 202);
+
+    const auto second = fixture.api.handle(hosted_account_request(
+        "POST", "/api/import",
+        json::dump(json::Value::Object{{"pgn", "[White \"A\"]\n[Black \"B\"]\n"
+                                             "[Result \"1-0\"]\n\n1. d4 d5 2. c4 1-0"}})));
+    CHECK_EQ(second.status, 429);
+    CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+    CHECK_EQ(fixture.repository.size(), 1ULL);
+}
+
+TEST_CASE("hosted API bounds repeated analysis starts") {
+    HostedApiFixture fixture(100, 1);
+    const auto imported = fixture.api.handle(hosted_account_request(
+        "POST", "/api/import",
+        json::dump(json::Value::Object{{"pgn", "[White \"A\"]\n[Black \"B\"]\n"
+                                             "[Result \"1-0\"]\n\n1. e4 e5 1-0"}})));
+    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+    const auto first = fixture.api.handle(
+        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+    CHECK_EQ(first.status, 202);
+    const auto second = fixture.api.handle(
+        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+    CHECK_EQ(second.status, 429);
+    CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+}
 
 TEST_CASE("API imports PGN and returns navigable game data immediately") {
     ApiFixture fixture;

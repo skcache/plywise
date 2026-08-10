@@ -76,6 +76,10 @@ inline constexpr std::size_t bulk_game_import_single_pgn_byte_limit = 10U * 1024
 inline constexpr std::size_t bulk_game_import_source_url_limit = 2048;
 inline constexpr std::size_t game_list_page_limit = 100;
 inline constexpr std::size_t game_list_offset_limit = 1'000'000;
+// Hosted accounts are intentionally bounded for the free private-alpha deployment. This is a
+// storage safety ceiling, not a billing tier; production capacity can be raised deliberately once
+// retention and cleanup controls exist.
+inline constexpr std::size_t hosted_game_storage_limit = 10'000;
 
 struct ChessComProfile {
     std::string original_username;

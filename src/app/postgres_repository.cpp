@@ -503,6 +503,13 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
     require_owner(impl_->connection, owner_);
     const std::string owner_kind = owner_kind_name(owner_.kind());
     const std::string owner_id(owner_.value());
+    // Serialize the per-owner capacity check across API workers. The advisory lock is scoped to
+    // this transaction and only coordinates callers for the same owner key; it does not expose
+    // database credentials or change the ownership predicates below.
+    static_cast<void>(execute(
+        impl_->connection,
+        "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+        {owner_kind, owner_id}));
     const std::string source_kind = method_name(imported.method);
     const std::string source_key =
         imported.source_url.empty() ? imported.game.identity : imported.source_url;
@@ -515,6 +522,14 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
         transaction.commit();
         return AddResult::Duplicate;
     }
+
+    const Result owner_game_count = execute(
+        impl_->connection,
+        "SELECT count(*) FROM plywise.game_owners WHERE owner_kind = $1 AND owner_id = $2",
+        {owner_kind, owner_id});
+    if (static_cast<std::size_t>(integer_at(owner_game_count, 0, 0)) >=
+        hosted_game_storage_limit)
+        throw Error(ErrorCode::QuotaExceeded, "hosted game storage limit reached");
 
     const std::string metadata = json::dump(json::Value::Object{
         {"source_url", imported.source_url},

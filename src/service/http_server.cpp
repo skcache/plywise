@@ -822,6 +822,58 @@ std::optional<ApiScope> Api::scope_for_owner(const app::OwnerId& owner) const {
     }
 }
 
+bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
+                               std::size_t amount) {
+    if (!auth_.resolve_scope || amount == 0)
+        return true;
+
+    const std::size_t limit = kind == QuotaKind::Import
+                                  ? auth_.hosted_imports_per_window
+                                  : auth_.hosted_analysis_starts_per_window;
+    if (limit == 0 || amount > limit || auth_.hosted_quota_window <= std::chrono::seconds::zero())
+        return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto expired = [&](const auto& stamp) {
+        return now - stamp >= auth_.hosted_quota_window;
+    };
+    const std::string key = std::to_string(static_cast<int>(owner.kind())) + ":" +
+                            std::string(owner.value());
+    std::lock_guard lock(quota_mutex_);
+
+    // Keep this process-local guard bounded even if an attacker creates many authenticated
+    // identities. Active windows are never evicted; callers fail closed until one becomes idle.
+    constexpr std::size_t max_quota_owners = 4096;
+    if (!quota_windows_.contains(key) && quota_windows_.size() >= max_quota_owners) {
+        for (auto iterator = quota_windows_.begin(); iterator != quota_windows_.end();) {
+            auto& window = iterator->second;
+            while (!window.imports.empty() && expired(window.imports.front()))
+                window.imports.pop_front();
+            while (!window.analysis_starts.empty() && expired(window.analysis_starts.front()))
+                window.analysis_starts.pop_front();
+            if (window.imports.empty() && window.analysis_starts.empty())
+                iterator = quota_windows_.erase(iterator);
+            else
+                ++iterator;
+            if (quota_windows_.size() < max_quota_owners)
+                break;
+        }
+        if (quota_windows_.size() >= max_quota_owners)
+            return false;
+    }
+
+    auto& window = quota_windows_[key];
+    auto& events = kind == QuotaKind::Import ? window.imports : window.analysis_starts;
+    while (!events.empty() && expired(events.front()))
+        events.pop_front();
+    if (events.size() > limit - amount)
+        return false;
+    for (std::size_t index = 0; index < amount; ++index)
+        events.push_back(now);
+    window.last_used = now;
+    return true;
+}
+
 Response Api::handle(const Request& request) {
     try {
         const auto parts = path_parts(request.path);
@@ -1025,6 +1077,25 @@ Response Api::handle(const Request& request) {
                 return auth_response(503, "browser analysis staging is not configured",
                                      "browser_staging_unavailable");
             return std::nullopt;
+        };
+        const auto enforce_hosted_storage = [&](std::size_t incoming) {
+            if (!auth_.resolve_scope || !authenticated_owner)
+                return;
+            if (auth_.hosted_game_storage_limit == 0 || incoming > auth_.hosted_game_storage_limit)
+                throw Error(ErrorCode::QuotaExceeded, "hosted game storage limit reached");
+            const std::size_t current = repository_.size();
+            if (current > auth_.hosted_game_storage_limit - incoming)
+                throw Error(ErrorCode::QuotaExceeded, "hosted game storage limit reached");
+        };
+        const auto enforce_hosted_import_quota = [&](std::size_t amount = 1) {
+            if (authenticated_owner &&
+                !consume_hosted_quota(*authenticated_owner, QuotaKind::Import, amount))
+                throw Error(ErrorCode::QuotaExceeded, "hosted import rate limit reached");
+        };
+        const auto enforce_hosted_analysis_quota = [&]() {
+            if (authenticated_owner &&
+                !consume_hosted_quota(*authenticated_owner, QuotaKind::AnalysisStart))
+                throw Error(ErrorCode::QuotaExceeded, "hosted analysis rate limit reached");
         };
         if (request.method == "GET" && parts == std::vector<std::string>{"api", "health"}) {
             const Readiness state = readiness_ ? readiness_() : Readiness{};
@@ -1361,6 +1432,7 @@ Response Api::handle(const Request& request) {
                                                            {"resource_id", parts[2]}});
         }
         if (parts == std::vector<std::string>{"api", "import"} && request.method == "POST") {
+            enforce_hosted_import_quota();
             const json::Value body = json::parse(request.body);
             import::ImportedGame imported;
             if (body.as_object().contains("url")) {
@@ -1386,6 +1458,9 @@ Response Api::handle(const Request& request) {
             } else {
                 throw Error(ErrorCode::InvalidArgument, "request requires url or pgn");
             }
+            // The adapter repeats this check inside its transaction. This early check avoids
+            // doing more upstream/PGN work once a hosted account has reached its cap.
+            enforce_hosted_storage(1);
             const app::AddResult added = repository_.add(imported);
             return json_response(added == app::AddResult::Added ? 202 : 200,
                                  json::Value::Object{
@@ -1444,6 +1519,8 @@ Response Api::handle(const Request& request) {
             if (pgns.size() + urls.size() > 100)
                 throw Error(ErrorCode::InvalidArgument,
                             "batch exceeds the 100-game backpressure limit");
+            enforce_hosted_import_quota(pgns.size() + urls.size());
+            enforce_hosted_storage(pgns.size() + urls.size());
             json::Value::Array game_ids;
             std::vector<std::string> batch_game_ids;
             json::Value::Array jobs;
@@ -1523,6 +1600,7 @@ Response Api::handle(const Request& request) {
                                 "game is too long for the browser analysis contract");
                 if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
                     return *quota;
+                enforce_hosted_analysis_quota();
                 run.expected_observations = game->imported.game.plies.size() * 2;
                 if (const auto staging = require_browser_staging(); staging)
                     return *staging;
@@ -1626,6 +1704,7 @@ Response Api::handle(const Request& request) {
                                 "analysis requires a completed game");
                 if (const auto quota = enforce_guest_analysis_quota(parts[2]); quota)
                     return *quota;
+                enforce_hosted_analysis_quota();
                 return json_response(202, app::to_json(jobs_.start(parts[2])));
             }
             if (parts.size() == 4 && parts[3] == "analysis" && request.method == "GET") {

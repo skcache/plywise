@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace pct;
@@ -168,6 +169,46 @@ TEST_CASE("OIDC verifier accepts a valid RS256 token and resolves its account") 
     CHECK(!verifier.verify(unknown_key).has_value());
     CHECK(!verifier.verify(unknown_key).has_value());
     CHECK_EQ(loads, 2ULL);
+}
+
+TEST_CASE("OIDC verifier passes signed issuance time to account resolution") {
+    const SigningKey key = make_signing_key("key-1");
+    const double now = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    const auto deletion_ms = static_cast<std::int64_t>(now - 5) * 1000;
+    std::optional<std::int64_t> observed_issued_at_ms;
+    service::OidcTokenVerifierOptions options{
+        "https://issuer.example",
+        "plywise-web",
+        "test",
+        0,
+        [&] { return std::optional<std::string>(key.jwks); },
+        {},
+    };
+    options.resolve_account_at = [&](std::string_view provider, std::string_view subject,
+                                     std::int64_t issued_at_ms)
+        -> std::optional<app::OwnerId> {
+        observed_issued_at_ms = issued_at_ms;
+        if (provider != "test" || subject != "subject-123" || issued_at_ms <= deletion_ms)
+            return std::nullopt;
+        return app::OwnerId::account("acct-test");
+    };
+    service::OidcTokenVerifier verifier(std::move(options));
+
+    CHECK(!verifier
+               .verify(sign_token(key.pkey.get(), "key-1", now + 300,
+                                  "https://issuer.example", "plywise-web", std::nullopt,
+                                  now - 10))
+               .has_value());
+    CHECK(observed_issued_at_ms.has_value());
+    CHECK_EQ(*observed_issued_at_ms, static_cast<std::int64_t>(now - 10) * 1000);
+    CHECK(verifier
+              .verify(sign_token(key.pkey.get(), "key-1", now + 300,
+                                 "https://issuer.example", "plywise-web", std::nullopt,
+                                 now - 1))
+              .has_value());
 }
 
 TEST_CASE("OIDC verifier does not refresh repeatedly for cold-cache unknown kids") {

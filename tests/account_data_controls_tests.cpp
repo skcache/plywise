@@ -153,7 +153,10 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_EQ(deletion_json.at("backup_retention_days").as_int(), 30);
     CHECK_THROWS(repository.list());
 
-    const auto restored = identity.ensure_account("test", subject);
+    const auto deleted_at_ms =
+        static_cast<std::int64_t>(deletion_json.at("deleted_at_ms").as_number());
+    CHECK_THROWS(identity.ensure_account("test", subject, deleted_at_ms - 1));
+    const auto restored = identity.ensure_account("test", subject, deleted_at_ms + 1);
     CHECK_EQ(restored.id, account.id);
     const auto deletion_replay =
         api.handle(account_request("/api/account/delete", deletion_body, "fresh-token"));

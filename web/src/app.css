@@ -733,6 +733,24 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .account-modal header p { max-width: 390px; margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
 .account-modal header button { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 15px; color: var(--text-soft); background: var(--surface-low); cursor: pointer; }
 .account-modal header svg { width: 18px; }
+.account-form { display: grid; gap: 14px; margin-top: 22px; }
+.account-field { display: grid; gap: 7px; }
+.account-field label { color: var(--text-soft); font-size: 11px; font-weight: 600; }
+.account-field input { width: 100%; height: 46px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 14px; color: var(--text); background: var(--surface-low); box-shadow: inset 3px 3px 8px var(--shadow-dark), inset -2px -2px 6px var(--shadow-light); }
+.account-field input:focus-visible { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
+.account-password-field { position: relative; }
+.account-password-field input { padding-right: 62px; }
+.account-password-toggle { position: absolute; top: 50%; right: 8px; min-height: 30px; padding: 0 7px; border: 0; border-radius: 8px; color: var(--text-soft); background: transparent; cursor: pointer; font-size: 10px; }
+.account-password-toggle:hover { color: var(--text); background: var(--surface-high); }
+.account-field-hint { color: var(--text-faint); font-size: 9px; line-height: 1.4; }
+.account-form-submit { width: 100%; min-height: 46px; border: 1px solid var(--text); border-radius: 15px; cursor: pointer; font-size: 12px; font-weight: 650; }
+.account-text-button { justify-self: center; min-height: 30px; padding: 0 4px; border: 0; color: var(--text-soft); background: transparent; cursor: pointer; font-size: 10px; }
+.account-text-button:hover { color: var(--text); }
+.account-forgot { margin-top: -4px; justify-self: end; }
+.account-divider { display: flex; align-items: center; gap: 10px; margin-top: 23px; color: var(--text-faint); font-size: 10px; }
+.account-divider::before, .account-divider::after { flex: 1; height: 1px; background: var(--line); content: ""; }
+.account-divider span { white-space: nowrap; }
+.account-loading { color: var(--text-soft); font-size: 13px; }
 .account-providers { display: grid; gap: 9px; margin-top: 24px; }
 .account-providers > button { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 58px; padding: 8px 13px 8px 9px; border: 1px solid var(--line); border-radius: 18px; color: var(--text); background: var(--surface-low); box-shadow: 5px 6px 13px var(--shadow-dark), -2px -2px 7px var(--shadow-light), inset 1px 1px var(--shadow-light); cursor: pointer; text-align: left; }
 .account-providers > button:hover { border-color: var(--line-strong); background: var(--surface-high); }

@@ -6,7 +6,8 @@ import {
 } from "@supabase/supabase-js";
 import { authRedirectMessage } from "./auth-redirect";
 
-export type AuthProvider = "google" | "apple" | "github";
+export type AuthProvider = "google" | "github";
+export type AuthEntryMode = "sign-up" | "sign-in";
 
 export type AuthSnapshot = {
   configured: boolean;
@@ -15,14 +16,20 @@ export type AuthSnapshot = {
   message: string;
 };
 
+export type AuthResult = {
+  ok: boolean;
+  message: string;
+};
+
 export type AuthListener = (snapshot: AuthSnapshot) => void;
 export type AuthIntent = {
   context: "landing";
+  mode: AuthEntryMode;
+  destination: "review" | "home";
 };
 
 const providerLabels: Record<AuthProvider, string> = {
   google: "Google",
-  apple: "Apple",
   github: "GitHub",
 };
 
@@ -33,7 +40,10 @@ const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        // OAuth codes are exchanged explicitly on /auth/callback below. This keeps
+        // the callback state visible to one trusted path instead of relying on
+        // automatic URL parsing in the client constructor.
+        detectSessionInUrl: false,
         flowType: "pkce",
         // Keep provider sessions scoped to this tab; the server remains the source of account history.
         persistSession: authStorage !== null,
@@ -83,18 +93,25 @@ export function subscribeAuth(listener: AuthListener): () => void {
 export async function initializeAuth(): Promise<AuthSnapshot> {
   if (!client) return currentAuthSnapshot();
   if (!initialization) {
-    initialization = client.auth.getSession().then(({ data, error }) => {
-      if (error) {
+    initialization = (async () => {
+      const callbackMessage = await completeAuthRedirect();
+      if (callbackMessage) {
         currentSession = null;
-        currentMessage = "Your account session could not be restored. Sign in again.";
+        currentMessage = callbackMessage;
       } else {
-        currentSession = data.session;
-        currentMessage = "";
+        const { data, error } = await client.auth.getSession();
+        if (error) {
+          currentSession = null;
+          currentMessage = "Your account session could not be restored. Sign in again.";
+        } else {
+          currentSession = data.session;
+          currentMessage = "";
+        }
       }
       const snapshot = { ...currentAuthSnapshot(), event: "INITIAL_SESSION" as AuthChangeEvent };
       notify(snapshot);
       return snapshot;
-    }).catch(() => {
+    })().catch(() => {
       currentSession = null;
       currentMessage = "Your account session could not be restored. Sign in again.";
       const snapshot = { ...currentAuthSnapshot(), event: "INITIAL_SESSION" as AuthChangeEvent };
@@ -107,10 +124,8 @@ export async function initializeAuth(): Promise<AuthSnapshot> {
 
 export async function signInWithProvider(
   provider: AuthProvider,
-  returnPath = typeof window === "undefined"
-    ? "/"
-    : `${window.location.pathname}${window.location.search}${window.location.hash}`,
-): Promise<{ ok: boolean; message: string }> {
+  mode: AuthEntryMode = "sign-in",
+): Promise<AuthResult> {
   if (!client) {
     return { ok: false, message: "Hosted account sign-in is not configured yet." };
   }
@@ -118,10 +133,7 @@ export async function signInWithProvider(
     if (typeof window === "undefined") {
       return { ok: false, message: "Sign-in is only available in a browser." };
     }
-    const redirectTo = new URL(returnPath || "/", window.location.origin);
-    if (redirectTo.origin !== window.location.origin) {
-      return { ok: false, message: "The sign-in return path is invalid." };
-    }
+    const redirectTo = new URL("/auth/callback", window.location.origin);
     const { error } = await client.auth.signInWithOAuth({
       provider,
       options: { redirectTo: redirectTo.href },
@@ -132,7 +144,69 @@ export async function signInWithProvider(
   } catch {
     return { ok: false, message: `${authProviderLabel(provider)} sign-in could not start. Try again.` };
   }
-  return { ok: true, message: `Continuing with ${authProviderLabel(provider)}…` };
+  return {
+    ok: true,
+    message: mode === "sign-up"
+      ? `Continuing account setup with ${authProviderLabel(provider)}…`
+      : `Continuing with ${authProviderLabel(provider)}…`,
+  };
+}
+
+export async function signUpWithPassword(name: string, email: string, password: string): Promise<AuthResult> {
+  if (!client) return { ok: false, message: "Hosted account sign-in is not configured yet." };
+  try {
+    const { data, error } = await client.auth.signUp({
+      email: normalizeEmail(email),
+      password,
+      options: { data: { name: name.trim() } },
+    });
+    if (error) return { ok: false, message: "We couldn't create that account. Check your details and try again." };
+    currentSession = data.session;
+    currentMessage = data.session
+      ? "Your account is ready."
+      : "Check your email to confirm your account, then sign in.";
+    notify({ ...currentAuthSnapshot(), event: data.session ? "SIGNED_IN" : null });
+    return { ok: true, message: currentMessage };
+  } catch {
+    return { ok: false, message: "We couldn't create that account. Check your details and try again." };
+  }
+}
+
+export async function signInWithPassword(email: string, password: string): Promise<AuthResult> {
+  if (!client) return { ok: false, message: "Hosted account sign-in is not configured yet." };
+  try {
+    const { data, error } = await client.auth.signInWithPassword({ email: normalizeEmail(email), password });
+    if (error || !data.session) return { ok: false, message: "We couldn't sign you in. Check your email and password, then try again." };
+    currentSession = data.session;
+    currentMessage = "";
+    notify({ ...currentAuthSnapshot(), event: "SIGNED_IN" });
+    return { ok: true, message: "Signed in." };
+  } catch {
+    return { ok: false, message: "We couldn't sign you in. Check your email and password, then try again." };
+  }
+}
+
+export async function requestPasswordReset(email: string): Promise<AuthResult> {
+  if (!client) return { ok: false, message: "Hosted account sign-in is not configured yet." };
+  try {
+    const redirectTo = new URL("/auth/reset", window.location.origin).href;
+    const { error } = await client.auth.resetPasswordForEmail(normalizeEmail(email), { redirectTo });
+    if (error) return { ok: false, message: "We couldn't send a reset email. Try again in a moment." };
+    return { ok: true, message: "If an account matches that email, a reset link is on its way." };
+  } catch {
+    return { ok: false, message: "We couldn't send a reset email. Try again in a moment." };
+  }
+}
+
+export async function updatePassword(password: string): Promise<AuthResult> {
+  if (!client) return { ok: false, message: "Hosted account sign-in is not configured yet." };
+  try {
+    const { error } = await client.auth.updateUser({ password });
+    if (error) return { ok: false, message: "We couldn't update your password. Try again." };
+    return { ok: true, message: "Your password has been updated." };
+  } catch {
+    return { ok: false, message: "We couldn't update your password. Try again." };
+  }
 }
 
 export async function signOut(): Promise<{ ok: boolean; message: string }> {
@@ -176,10 +250,22 @@ export function loadAuthIntent(): AuthIntent | null {
   try {
     const value = JSON.parse(window.sessionStorage.getItem("plywise-auth-intent-v1") ?? "null") as Partial<AuthIntent> | null;
     if (!value || value.context !== "landing") return null;
-    return { context: "landing" };
+    return {
+      context: "landing",
+      mode: value.mode === "sign-in" ? "sign-in" : "sign-up",
+      destination: value.destination === "home" ? "home" : "review",
+    };
   } catch {
     return null;
   }
+}
+
+export function isAuthCallbackPath(): boolean {
+  return typeof window !== "undefined" && window.location.pathname === "/auth/callback";
+}
+
+export function isPasswordResetPath(): boolean {
+  return typeof window !== "undefined" && window.location.pathname === "/auth/reset";
 }
 
 export function clearAuthIntent(): void {
@@ -219,4 +305,53 @@ function safeSessionStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+async function completeAuthRedirect(): Promise<string | null> {
+  if (typeof window === "undefined" || !client) return null;
+  const url = new URL(window.location.href);
+  const isCallback = url.pathname === "/auth/callback";
+  const recoveryTokens = readRecoveryTokens(url.hash);
+
+  if (isCallback) {
+    const errorCode = url.searchParams.get("error_code") ?? url.searchParams.get("error") ?? "";
+    const errorDescription = url.searchParams.get("error_description") ?? "";
+    if (errorCode || errorDescription) {
+      cleanAuthUrl();
+      return authRedirectMessage(errorCode, errorDescription) ?? "The account provider could not complete sign-in. Try again.";
+    }
+    const code = url.searchParams.get("code");
+    if (!code) {
+      cleanAuthUrl();
+      return "The account provider did not return a sign-in code. Try again.";
+    }
+    const { data, error } = await client.auth.exchangeCodeForSession(code);
+    cleanAuthUrl();
+    if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
+    currentSession = data.session;
+    return null;
+  }
+
+  if (isPasswordResetPath() && recoveryTokens) {
+    const { error } = await client.auth.setSession(recoveryTokens);
+    cleanAuthUrl("/auth/reset");
+    if (error) return "That password reset link is no longer valid. Request a new one.";
+  }
+  return null;
+}
+
+function readRecoveryTokens(hash: string): { access_token: string; refresh_token: string } | null {
+  const params = new URLSearchParams(hash.replace(/^#/, ""));
+  const accessToken = params.get("access_token");
+  const refreshToken = params.get("refresh_token");
+  return accessToken && refreshToken ? { access_token: accessToken, refresh_token: refreshToken } : null;
+}
+
+function cleanAuthUrl(path = "/"): void {
+  if (typeof window === "undefined") return;
+  window.history.replaceState(null, "", path);
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
 }

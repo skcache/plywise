@@ -8,3 +8,9 @@
 !src/**
 !deploy
 !deploy/render-healthcheck.sh
+!deploy/render-entrypoint.sh
+!db
+!db/migrations
+!db/migrations/**
+!scripts
+!scripts/postgres-migrate.sh

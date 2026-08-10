@@ -169,6 +169,15 @@ export type BrowserAnalysisFinalizationResponse = {
   readonly analysis: NonNullable<StoredGame["analysis"]>;
 };
 
+export type WebSocketTicketResponse = {
+  readonly ticket: string;
+  readonly expires_at_ms: number;
+};
+
+export function createWebSocketTicket(): Promise<WebSocketTicketResponse> {
+  return request("/api/ws-ticket", { method: "POST", body: "{}" });
+}
+
 export type BrowserObservationResponse = {
   readonly status: "accepted" | "duplicate";
   readonly staging: true;

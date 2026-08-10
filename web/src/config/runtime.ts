@@ -20,7 +20,11 @@ export function eventUrl(path: string): string {
 }
 
 /** WebSocket cannot set Authorization headers; pass the short-lived account proof as a subprotocol. */
-export function eventProtocols(): string[] {
+export function eventProtocols(ticket?: string): string[] {
+  if (ticket) return ["plywise-auth", ticket];
+  // The local C++ server has no hosted identity store, so development can retain the
+  // compatibility bearer path. Production never sends a full account token in the protocol.
+  if (!import.meta.env.DEV) return [];
   const accountToken = cachedAccountAccessToken();
   return accountToken ? ["plywise-auth", accountToken] : [];
 }

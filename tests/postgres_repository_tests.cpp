@@ -574,6 +574,8 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
         return std::nullopt;
     };
     auth.resolve_scope = resolve;
+    auth.issue_websocket_ticket = runtime.websocket_ticket_issuer();
+    auth.verify_websocket_ticket = runtime.websocket_ticket_verifier();
     service::Api api(importer, *alice_scope->repository, *alice_scope->jobs, {}, {}, nullptr, {},
                      auth);
     service::HttpServer server(
@@ -590,7 +592,12 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     const std::uint16_t port = server.bound_port();
 
-    const auto connect_authenticated = [&](std::string_view token) {
+    const auto alice_ticket = auth.issue_websocket_ticket(alice.owner());
+    const auto bob_ticket = auth.issue_websocket_ticket(bob.owner());
+    CHECK(alice_ticket.has_value());
+    CHECK(bob_ticket.has_value());
+
+    const auto connect_authenticated = [&](std::string_view ticket) {
         const int socket_fd = port == 0 ? -1 : connect_loopback(port);
         if (socket_fd < 0)
             return std::pair<int, std::string>{socket_fd, std::string{}};
@@ -598,14 +605,26 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
             "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
             "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: http://127.0.0.1:" +
             std::to_string(port) + "\r\nSec-WebSocket-Protocol: plywise-auth, " +
-            std::string(token) +
+            std::string(ticket) +
             "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
         static_cast<void>(send(socket_fd, request.data(), request.size(), 0));
         return std::pair<int, std::string>{socket_fd, receive_available(socket_fd)};
     };
 
-    const auto alice_connection = connect_authenticated("alice-token");
-    const auto bob_connection = connect_authenticated("bob-token");
+    const auto alice_connection = connect_authenticated(alice_ticket->ticket);
+    const auto bob_connection = connect_authenticated(bob_ticket->ticket);
+    const auto replay_connection = connect_authenticated(alice_ticket->ticket);
+    const int bearer_socket = port == 0 ? -1 : connect_loopback(port);
+    std::string bearer_response;
+    if (bearer_socket >= 0) {
+        const std::string bearer_request =
+            "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
+            "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: http://127.0.0.1:" +
+            std::to_string(port) + "\r\nAuthorization: Bearer alice-token\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+        static_cast<void>(send(bearer_socket, bearer_request.data(), bearer_request.size(), 0));
+        bearer_response = receive_available(bearer_socket);
+    }
     static_cast<void>(receive_until_quiet(alice_connection.first));
     static_cast<void>(receive_until_quiet(bob_connection.first));
     static_cast<void>(alice_scope->jobs->start(imported.game.identity));
@@ -618,17 +637,26 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
         close(alice_connection.first);
     if (bob_connection.first >= 0)
         close(bob_connection.first);
+    if (replay_connection.first >= 0)
+        close(replay_connection.first);
+    if (bearer_socket >= 0)
+        close(bearer_socket);
     server_thread.join();
 
     CHECK(port != 0);
     CHECK(!server_error);
     CHECK(alice_connection.first >= 0);
     CHECK(bob_connection.first >= 0);
+    CHECK(replay_connection.first >= 0);
+    CHECK(bearer_socket >= 0);
     CHECK(alice_connection.second.starts_with("HTTP/1.1 101 Switching Protocols"));
     CHECK(alice_connection.second.find("Sec-WebSocket-Protocol: plywise-auth") !=
           std::string::npos);
     CHECK(alice_connection.second.find("alice-token") == std::string::npos);
     CHECK(bob_connection.second.starts_with("HTTP/1.1 101 Switching Protocols"));
+    CHECK(replay_connection.second.starts_with("HTTP/1.1 401 Unauthorized"));
+    CHECK(replay_connection.second.find("alice-token") == std::string::npos);
+    CHECK(bearer_response.starts_with("HTTP/1.1 401 Unauthorized"));
     CHECK(alice_events.find("\"type\":\"job_update\"") != std::string::npos);
     CHECK(alice_events.find(imported.game.identity) != std::string::npos);
     CHECK(bob_events.find(imported.game.identity) == std::string::npos);

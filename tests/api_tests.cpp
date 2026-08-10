@@ -732,6 +732,50 @@ TEST_CASE("API hosted mode fails closed and scopes authenticated requests") {
     CHECK_EQ(json::parse(unavailable_response.body).at("code").as_string(), "auth_unavailable");
 }
 
+TEST_CASE("API issues and authenticates short-lived WebSocket tickets") {
+    ApiFixture fixture;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        return token == "account-token" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                         : std::nullopt;
+    };
+    auth.issue_websocket_ticket = [](const app::OwnerId& owner)
+        -> std::optional<service::WebSocketTicketCredential> {
+        CHECK(owner == app::OwnerId::local());
+        return service::WebSocketTicketCredential{"ticket-1", 123456789};
+    };
+    auth.verify_websocket_ticket = [](std::string_view ticket)
+        -> std::optional<app::OwnerId> {
+        return ticket == "ticket-1" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                     : std::nullopt;
+    };
+    service::Api hosted(fixture.importer, fixture.repository, fixture.jobs, {}, {}, nullptr, {},
+                        auth);
+
+    const auto issued = hosted.handle(service::Request{
+        "POST", "/api/ws-ticket", {{"authorization", "Bearer account-token"}}, "{}"});
+    CHECK_EQ(issued.status, 201);
+    const auto issued_body = json::parse(issued.body);
+    CHECK_EQ(issued_body.at("ticket").as_string(), "ticket-1");
+    CHECK_EQ(issued_body.at("expires_at_ms").as_number(), 123456789.0);
+
+    const auto non_websocket = hosted.handle(service::Request{
+        "GET", "/api/games", {{"x-plywise-ws-ticket", "ticket-1"}}, {}});
+    CHECK_EQ(non_websocket.status, 401);
+    CHECK_EQ(json::parse(non_websocket.body).at("code").as_string(), "invalid_ws_ticket");
+
+    const auto authenticated = hosted.handle(service::Request{
+        "GET", "/api/games",
+        {{"x-plywise-ws-ticket", "ticket-1"}, {"upgrade", "WebSocket"}}, {}});
+    CHECK_EQ(authenticated.status, 200);
+    const auto invalid = hosted.handle(service::Request{
+        "GET", "/api/games",
+        {{"x-plywise-ws-ticket", "expired-or-replayed"}, {"upgrade", "websocket"}}, {}});
+    CHECK_EQ(invalid.status, 401);
+    CHECK_EQ(json::parse(invalid.body).at("code").as_string(), "invalid_ws_ticket");
+}
+
 TEST_CASE("API exposes a public guest session and account-only claim contract") {
     ApiFixture fixture;
     bool claimed = false;

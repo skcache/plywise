@@ -761,6 +761,40 @@ TEST_CASE("API scoped auth routes each request through its resolved owner resour
     CHECK_EQ(json::parse(unavailable.body).at("code").as_string(), "storage_unavailable");
 }
 
+TEST_CASE("API does not expose process-global callbacks through scoped auth") {
+    ApiFixture fixture;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "owner-token")
+            return app::OwnerId::local();
+        return std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+        if (owner == app::OwnerId::local())
+            return service::ApiScope{&fixture.repository, &fixture.jobs};
+        return std::nullopt;
+    };
+    service::Api scoped(
+        fixture.importer, fixture.repository, fixture.jobs,
+        [] { return json::Value::Object{{"process_secret", "must-not-cross-tenant"}}; },
+        [] { return std::vector<training::Drill>{}; }, nullptr, {}, auth);
+    const std::map<std::string, std::string> headers{{"authorization", "Bearer owner-token"}};
+
+    const auto diagnostics = scoped.handle(service::Request{
+        "GET", "/api/diagnostics", headers, {}});
+    CHECK_EQ(diagnostics.status, 200);
+    const auto diagnostic_body = json::parse(diagnostics.body);
+    CHECK(!diagnostic_body.as_object().contains("process_secret"));
+    CHECK(diagnostic_body.as_object().contains("job_workers"));
+
+    const auto supplemental = scoped.handle(service::Request{
+        "POST", "/api/drills/supplemental", headers, "{}"});
+    CHECK_EQ(supplemental.status, 503);
+    CHECK_EQ(json::parse(supplemental.body).at("code").as_string(),
+             "supplemental_drills_unavailable");
+}
+
 TEST_CASE("API path router decodes identifiers safely") {
     ApiFixture fixture;
     const auto response = fixture.api.handle(

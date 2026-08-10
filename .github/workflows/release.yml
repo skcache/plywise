@@ -5,11 +5,33 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: plywise-api-release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a version tag before publishing
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -eu
+          case "$RELEASE_REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "Release publishing is only allowed from a v* tag; refusing $RELEASE_REF" >&2
+              exit 1
+              ;;
+          esac
+
   macos-package:
+    needs: release-guard
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -28,6 +50,7 @@ jobs:
           if-no-files-found: error
 
   container-image:
+    needs: release-guard
     runs-on: ubuntu-latest
     permissions:
       contents: read

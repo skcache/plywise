@@ -491,7 +491,7 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 
 /* Analysis */
 .analysis-layout { position: relative; display: grid; grid-template-columns: minmax(590px, 1fr) 356px; grid-template-rows: minmax(0, 1fr) 88px; gap: 24px 28px; height: 100%; }
-.analysis-progress { position: absolute; top: 10px; right: 384px; left: 118px; z-index: 20; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px; min-height: 38px; padding: 7px 12px; border-radius: 17px; color: var(--text-soft); background: var(--surface-high); box-shadow: 8px 9px 18px var(--shadow-dark); font-size: 10px; }
+.analysis-progress { position: absolute; top: 10px; right: 384px; left: 20px; z-index: 20; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px; min-height: 38px; padding: 7px 12px; border-radius: 17px; color: var(--text-soft); background: var(--surface-high); box-shadow: 8px 9px 18px var(--shadow-dark); font-size: 10px; }
 .analysis-progress progress { width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 99px; appearance: none; background: var(--surface-ink); }
 .analysis-progress progress::-webkit-progress-bar { background: var(--surface-ink); }
 .analysis-progress progress::-webkit-progress-value { background: var(--text-soft); }
@@ -499,7 +499,7 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .analysis-progress button { border: 0; color: var(--text-soft); background: transparent; cursor: pointer; }
 .board-surface {
   display: grid;
-  grid-template-columns: 90px minmax(0, 640px);
+  grid-template-columns: minmax(0, 640px);
   align-items: center;
   justify-content: center;
   min-width: 0;
@@ -526,13 +526,6 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .best-arrow { position: absolute; inset: 0; z-index: 7; width: 100%; height: 100%; pointer-events: none; }
 .best-arrow line { stroke: var(--class-best); stroke-width: 2.4; filter: drop-shadow(0 2px 4px black); }
 .best-arrow marker path { fill: var(--class-best); stroke: none; }
-.evaluation-column { align-self: stretch; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; justify-items: center; gap: 14px; min-height: 0; padding: 18px 12px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(145deg, var(--surface-high), var(--surface-low)); box-shadow: inset 4px 4px 10px var(--shadow-dark), inset -3px -3px 8px var(--shadow-light); }
-.evaluation-column strong, .evaluation-column small { font: 600 14px ui-monospace, monospace; }
-.evaluation-column small { color: var(--text-soft); }
-.evaluation-track { align-self: stretch; width: 18px; overflow: visible; border-radius: 99px; filter: drop-shadow(2px 2px 6px var(--shadow-dark)); }
-.evaluation-track-base { fill: #080907; }
-.evaluation-track-value { fill: #e6e4dc; }
-.evaluation-track-zero { stroke: var(--text-faint); stroke-width: .5; vector-effect: non-scaling-stroke; }
 .review-rail { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 18px; min-height: 0; }
 .review-card { min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 30px; background: linear-gradient(145deg, var(--surface-high), var(--surface-low)); box-shadow: 14px 16px 32px var(--shadow-dark), -6px -6px 18px var(--shadow-light), inset 1px 1px var(--shadow-light); }
 .review-card > header { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 20px; border-bottom: 1px solid var(--line); color: var(--text-soft); font-size: 12px; }
@@ -798,7 +791,7 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
   .side-rail { margin-left: 18px; border-radius: 32px; }
   .app-stage { padding-left: 34px; padding-right: 18px; }
   .analysis-layout { grid-template-columns: minmax(520px, 1fr) 326px; gap: 20px; }
-  .board-surface { grid-template-columns: 72px minmax(0, 1fr); padding: 14px; }
+  .board-surface { padding: 14px; }
   .review-rail { gap: 13px; }
   .verdict-reading { grid-template-columns: 38px 1fr; gap: 11px; padding: 13px 15px 15px; }
   .class-orb { width: 36px; height: 36px; }

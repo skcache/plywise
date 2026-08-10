@@ -96,7 +96,7 @@ export function AccountPrompt({
       setSubmitMessage("Enter your email address.");
       return;
     }
-    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email.trim())) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       setSubmitError(true);
       setSubmitMessage("Enter a valid email address.");
       return;

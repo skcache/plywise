@@ -317,6 +317,8 @@ int main(int argc, char** argv) {
             auth.verify_fresh = hosted_runtime->fresh_token_verifier();
             auth.export_account = hosted_runtime->account_export_handler();
             auth.delete_account = hosted_runtime->account_deletion_handler();
+            auth.issue_websocket_ticket = hosted_runtime->websocket_ticket_issuer();
+            auth.verify_websocket_ticket = hosted_runtime->websocket_ticket_verifier();
 #else
             throw std::runtime_error(
                 "hosted runtime requires a build with PostgreSQL and OpenSSL support");

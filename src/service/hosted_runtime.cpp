@@ -34,6 +34,8 @@ namespace {
 
 constexpr std::size_t max_jwks_bytes = 512U * 1024U;
 constexpr std::int64_t guest_lifetime_ms = 24LL * 60 * 60 * 1000;
+constexpr std::int64_t websocket_ticket_lifetime_ms = 60LL * 1000;
+constexpr std::size_t max_websocket_tickets = 4096;
 
 template <std::size_t Size>
 std::string hex_encode(const std::array<unsigned char, Size>& bytes) {
@@ -156,6 +158,11 @@ struct HostedRuntime::Impl {
         std::shared_ptr<OwnerResources> resources;
     };
 
+    struct WebSocketTicketRecord {
+        app::OwnerId owner;
+        std::int64_t expires_at_ms{0};
+    };
+
     Impl(HostedRuntimeOptions input, analysis::Analyzer& input_analyzer,
          app::JobManagerOptions input_job_options)
         : options(std::move(input)), analyzer(input_analyzer),
@@ -207,6 +214,63 @@ struct HostedRuntime::Impl {
             return identity->owner_for_guest_token(sha256_token(token));
         } catch (...) {
             return std::nullopt;
+        }
+    }
+
+    std::optional<WebSocketTicketCredential> create_websocket_ticket(
+        const app::OwnerId& owner) {
+        if (owner.kind() != app::OwnerKind::Account && owner.kind() != app::OwnerKind::Guest)
+            return std::nullopt;
+        std::array<unsigned char, 32> token_bytes{};
+        if (RAND_bytes(token_bytes.data(), static_cast<int>(token_bytes.size())) != 1)
+            return std::nullopt;
+        const std::string token = hex_encode(token_bytes);
+        const std::string key = hex_encode(sha256_token(token));
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        const std::int64_t expires_at_ms = now + websocket_ticket_lifetime_ms;
+
+        std::lock_guard lock(websocket_tickets_mutex);
+        for (auto iterator = websocket_tickets.begin(); iterator != websocket_tickets.end();) {
+            if (iterator->second.expires_at_ms <= now)
+                iterator = websocket_tickets.erase(iterator);
+            else
+                ++iterator;
+        }
+        if (websocket_tickets.size() >= max_websocket_tickets)
+            return std::nullopt;
+        websocket_tickets.emplace(key, WebSocketTicketRecord{owner, expires_at_ms});
+        return WebSocketTicketCredential{token, expires_at_ms};
+    }
+
+    std::optional<app::OwnerId> consume_websocket_ticket(std::string_view token) {
+        if (!valid_guest_token(token))
+            return std::nullopt;
+        const std::string key = hex_encode(sha256_token(token));
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        std::lock_guard lock(websocket_tickets_mutex);
+        const auto found = websocket_tickets.find(key);
+        if (found == websocket_tickets.end())
+            return std::nullopt;
+        if (found->second.expires_at_ms <= now) {
+            websocket_tickets.erase(found);
+            return std::nullopt;
+        }
+        const app::OwnerId owner = found->second.owner;
+        websocket_tickets.erase(found);
+        return owner;
+    }
+
+    void revoke_websocket_tickets(const app::OwnerId& owner) {
+        std::lock_guard lock(websocket_tickets_mutex);
+        for (auto iterator = websocket_tickets.begin(); iterator != websocket_tickets.end();) {
+            if (iterator->second.owner == owner)
+                iterator = websocket_tickets.erase(iterator);
+            else
+                ++iterator;
         }
     }
 
@@ -398,6 +462,8 @@ struct HostedRuntime::Impl {
         if (owner.kind() != app::OwnerKind::Account)
             throw Error(ErrorCode::InvalidArgument, "account deletion requires an account owner");
 
+        revoke_websocket_tickets(owner);
+
         const std::string key = "account:" + std::string(owner.value());
         std::shared_ptr<OwnerResources> retired;
         {
@@ -431,6 +497,8 @@ struct HostedRuntime::Impl {
     std::unique_ptr<OidcTokenVerifier> verifier;
     std::mutex resources_mutex;
     std::map<std::string, std::shared_ptr<OwnerResources>> resources;
+    std::mutex websocket_tickets_mutex;
+    std::map<std::string, WebSocketTicketRecord> websocket_tickets;
 #else
     explicit Impl(HostedRuntimeOptions, analysis::Analyzer&, app::JobManagerOptions) {
         throw Error(ErrorCode::Unsupported,
@@ -563,6 +631,28 @@ AuthConfig::AccountDeletionHandler HostedRuntime::account_deletion_handler() con
     Impl* runtime = impl_.get();
     return [runtime](const app::OwnerId& owner, std::string_view idempotency_key) {
         return runtime->delete_account(owner, idempotency_key);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::WebSocketTicketIssuer HostedRuntime::websocket_ticket_issuer() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](const app::OwnerId& owner) {
+        return runtime->create_websocket_ticket(owner);
+    };
+#else
+    return {};
+#endif
+}
+
+AuthConfig::WebSocketTicketVerifier HostedRuntime::websocket_ticket_verifier() const {
+#if defined(PCT_HAS_OIDC) && defined(PCT_HAS_POSTGRES)
+    Impl* runtime = impl_.get();
+    return [runtime](std::string_view ticket) {
+        return runtime->consume_websocket_ticket(ticket);
     };
 #else
     return {};

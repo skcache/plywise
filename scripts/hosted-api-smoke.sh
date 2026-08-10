@@ -165,6 +165,23 @@ if [ "$EXPECT_AUTH" = true ]; then
   assert_status authenticated_games 200
   assert_json authenticated_games
 
+  request websocket_ticket \
+    -X POST \
+    -H "Origin: $APP_ORIGIN" \
+    -H "Authorization: Bearer $BEARER_TOKEN" \
+    -H 'Content-Type: application/json' \
+    --data '{}' \
+    "$BASE_URL/api/ws-ticket"
+  assert_status websocket_ticket 201
+  assert_json websocket_ticket
+  assert_body websocket_ticket '"ticket":"'
+  assert_body websocket_ticket '"expires_at_ms":'
+  WS_TICKET=$(node -e \
+    'let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",()=>process.stdout.write(JSON.parse(body).ticket));' \
+    <"$TEMP_DIR/websocket_ticket.body")
+  [ -n "$WS_TICKET" ] || fail "WebSocket ticket was empty"
+  [ "$WS_TICKET" != "$BEARER_TOKEN" ] || fail "WebSocket ticket reused the bearer token"
+
   WS_HEADERS="$TEMP_DIR/websocket.headers"
   WS_BODY="$TEMP_DIR/websocket.body"
   set +e
@@ -175,7 +192,7 @@ if [ "$EXPECT_AUTH" = true ]; then
     -H 'Upgrade: websocket' \
     -H 'Sec-WebSocket-Version: 13' \
     -H 'Sec-WebSocket-Key: cGx5d2lzZS1wcmVmbGlnaHQ=' \
-    -H "Sec-WebSocket-Protocol: plywise-auth, $BEARER_TOKEN" \
+    -H "Sec-WebSocket-Protocol: plywise-auth, $WS_TICKET" \
     "$BASE_URL/ws"
   websocket_curl_status=$?
   set -e

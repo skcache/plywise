@@ -3,6 +3,7 @@ import {
   ApiError,
   analyzeVariation,
   cancelJob,
+  createWebSocketTicket,
   createVariation,
   deleteVariation,
   extendVariation,
@@ -265,8 +266,21 @@ export default function App() {
     if (!authSnapshot.session) return;
     let reconnect = 0;
     let socket: WebSocket | null = null;
-    const connect = () => {
-      socket = new WebSocket(eventUrl("/ws"), eventProtocols());
+    let active = true;
+    const connect = async () => {
+      let protocols: string[];
+      try {
+        const ticket = await createWebSocketTicket();
+        protocols = eventProtocols(ticket.ticket);
+      } catch {
+        if (!import.meta.env.DEV) {
+          if (active) reconnect = window.setTimeout(() => void connect(), 1500);
+          return;
+        }
+        protocols = eventProtocols();
+      }
+      if (!active) return;
+      socket = new WebSocket(eventUrl("/ws"), protocols);
       socket.addEventListener("message", (event) => {
         const message = JSON.parse(String(event.data)) as ProgressSocketMessage;
         if (message.type === "jobs_snapshot") setJobs(message.jobs);
@@ -276,10 +290,16 @@ export default function App() {
           if (message.job.status === "running") void refreshRuntime();
         }
       });
-      socket.addEventListener("close", () => { reconnect = window.setTimeout(connect, 1500); });
+      socket.addEventListener("close", () => {
+        if (active) reconnect = window.setTimeout(() => void connect(), 1500);
+      });
     };
-    connect();
-    return () => { window.clearTimeout(reconnect); socket?.close(); };
+    void connect();
+    return () => {
+      active = false;
+      window.clearTimeout(reconnect);
+      socket?.close();
+    };
   }, [authSnapshot.session?.access_token, authRevision, refreshGame, refreshRuntime]);
 
   const resetTransient = useCallback((ply = selectedPly) => {

@@ -746,6 +746,39 @@ std::string mime_type(const std::filesystem::path& path) {
 } // namespace
 
 Api::Authentication Api::authenticate(const Request& request) const {
+    if (const auto ticket = request.headers.find("x-plywise-ws-ticket");
+        ticket != request.headers.end()) {
+        const auto upgrade = request.headers.find("upgrade");
+        if (upgrade == request.headers.end() || lowercase(upgrade->second) != "websocket")
+            return Authentication{{}, auth_response(401, "WebSocket ticket is invalid",
+                                                    "invalid_ws_ticket")};
+        if (!auth_.verify_websocket_ticket)
+            return Authentication{{}, auth_response(503, "WebSocket tickets are unavailable",
+                                                    "ws_ticket_unavailable")};
+        const std::string_view value = ticket->second;
+        if (value.empty() || value.size() > 4096 ||
+            std::any_of(value.begin(), value.end(), [](unsigned char character) {
+                return std::isspace(character) != 0 || character < 0x20U || character == 0x7fU;
+            }))
+            return Authentication{{}, auth_response(401, "WebSocket ticket is invalid",
+                                                    "invalid_ws_ticket")};
+        std::optional<app::OwnerId> owner;
+        try {
+            owner = auth_.verify_websocket_ticket(value);
+        } catch (...) {
+            return Authentication{{}, auth_response(401, "WebSocket ticket is invalid",
+                                                    "invalid_ws_ticket")};
+        }
+        if (!owner)
+            return Authentication{{}, auth_response(401, "WebSocket ticket is invalid",
+                                                    "invalid_ws_ticket")};
+        if (owner->kind() == app::OwnerKind::Guest && !auth_.allow_guest_access)
+            return Authentication{{}, auth_response(410,
+                                                    "guest analysis is disabled; sign in to continue",
+                                                    "guest_analysis_disabled")};
+        return Authentication{std::move(owner), {}};
+    }
+
     // A scoped resolver is an authorization boundary even when a caller forgot to set the
     // legacy `required` flag. Never fall back to the default owner's data in that case.
     if (!auth_.required && !auth_.resolve_scope)
@@ -887,6 +920,9 @@ Response Api::handle(const Request& request) {
         const bool account_delete_route =
             request.method == "POST" &&
             parts == std::vector<std::string>{"api", "account", "delete"};
+        const bool websocket_ticket_route =
+            request.method == "POST" &&
+            parts == std::vector<std::string>{"api", "ws-ticket"};
         const bool shared_ingest_forbidden = auth_.resolve_scope && !auth_.allow_shared_ingest;
         const bool public_route = guest_session_route ||
                                   (request.method == "GET" &&
@@ -899,7 +935,7 @@ Response Api::handle(const Request& request) {
             if (authentication.denial)
                 return *authentication.denial;
             authenticated_owner = authentication.owner;
-            if (authentication.owner && !guest_claim_route) {
+            if (authentication.owner && !guest_claim_route && !websocket_ticket_route) {
                 if (auth_.resolve_scope) {
                     std::optional<ApiScope> resolved;
                     try {
@@ -921,6 +957,26 @@ Response Api::handle(const Request& request) {
         }
         if (scope.repository == nullptr || scope.jobs == nullptr)
             return error_response(500, "request scope is unavailable");
+
+        if (websocket_ticket_route) {
+            if (!authenticated_owner)
+                return auth_response(401, "authentication is required", "auth_required");
+            if (!auth_.issue_websocket_ticket)
+                return auth_response(503, "WebSocket tickets are unavailable",
+                                     "ws_ticket_unavailable");
+            if (!request.body.empty()) {
+                const auto body = json::parse(request.body);
+                require_object_keys(body, {}, {}, "WebSocket ticket request");
+            }
+            const auto ticket = auth_.issue_websocket_ticket(*authenticated_owner);
+            if (!ticket)
+                return auth_response(503, "WebSocket tickets are unavailable",
+                                     "ws_ticket_unavailable");
+            return json_response(201, json::Value::Object{
+                                          {"ticket", ticket->ticket},
+                                          {"expires_at_ms", static_cast<double>(ticket->expires_at_ms)},
+                                      });
+        }
 
         if (guest_session_route) {
             if (!auth_.allow_guest_access)
@@ -2087,10 +2143,19 @@ void HttpServer::handle_websocket(int client_fd, const Request& request) {
     std::string selected_protocol;
     const auto authorization = request.headers.find("authorization");
     const auto protocols = request.headers.find("sec-websocket-protocol");
+    if (api_.has_websocket_ticket_verifier() && authorization != request.headers.end()) {
+        send_http_response(auth_response(401, "WebSocket ticket authentication is required",
+                                          "ws_ticket_required"));
+        close(client_fd);
+        return;
+    }
     if (authorization == request.headers.end() && protocols != request.headers.end()) {
         if (const auto token = websocket_bearer_token(protocols->second)) {
-            authenticated_request.headers.insert_or_assign(
-                "authorization", "Bearer " + *token);
+            if (api_.has_websocket_ticket_verifier())
+                authenticated_request.headers.insert_or_assign("x-plywise-ws-ticket", *token);
+            else
+                authenticated_request.headers.insert_or_assign(
+                    "authorization", "Bearer " + *token);
             selected_protocol = std::string(websocket_auth_protocol);
         }
     }

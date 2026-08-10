@@ -82,6 +82,11 @@ struct AccountDeletionResult {
     std::int64_t backup_retention_until_ms{0};
 };
 
+struct WebSocketTicketCredential {
+    std::string ticket;
+    std::int64_t expires_at_ms{0};
+};
+
 struct AuthConfig {
     using TokenVerifier = std::function<std::optional<app::OwnerId>(std::string_view)>;
     using ScopeResolver = std::function<std::optional<ApiScope>(const app::OwnerId&)>;
@@ -103,6 +108,10 @@ struct AuthConfig {
         const app::OwnerId& account, std::string_view idempotency_key)>;
     using AccountDeletionHandler = std::function<AccountDeletionResult(
         const app::OwnerId& account, std::string_view idempotency_key)>;
+    using WebSocketTicketIssuer =
+        std::function<std::optional<WebSocketTicketCredential>(const app::OwnerId& owner)>;
+    using WebSocketTicketVerifier =
+        std::function<std::optional<app::OwnerId>(std::string_view ticket)>;
 
     // Hosted mode must provide a verifier. An empty verifier fails closed with 503.
     bool required{false};
@@ -123,6 +132,10 @@ struct AuthConfig {
     FreshTokenVerifier verify_fresh;
     AccountExportHandler export_account;
     AccountDeletionHandler delete_account;
+    // Hosted WebSockets use a short-lived, single-use ticket instead of putting the full
+    // account bearer token in Sec-WebSocket-Protocol. Local mode can leave these unset.
+    WebSocketTicketIssuer issue_websocket_ticket;
+    WebSocketTicketVerifier verify_websocket_ticket;
     // Guest review is retained for local compatibility tests, but hosted deployments disable it
     // explicitly so every public product flow starts behind account authentication.
     bool allow_guest_access{true};
@@ -156,6 +169,9 @@ class Api {
     [[nodiscard]] std::optional<Response> authorize(
         const Request& request, std::optional<app::OwnerId>* authenticated_owner = nullptr) const;
     [[nodiscard]] std::optional<ApiScope> scope_for_owner(const app::OwnerId& owner) const;
+    [[nodiscard]] bool has_websocket_ticket_verifier() const noexcept {
+        return static_cast<bool>(auth_.verify_websocket_ticket);
+    }
     [[nodiscard]] bool has_scoped_authorization() const noexcept {
         return static_cast<bool>(auth_.resolve_scope);
     }

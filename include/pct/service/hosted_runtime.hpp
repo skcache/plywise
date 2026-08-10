@@ -46,6 +46,8 @@ class HostedRuntime final {
     [[nodiscard]] AuthConfig::FreshTokenVerifier fresh_token_verifier() const;
     [[nodiscard]] AuthConfig::AccountExportHandler account_export_handler() const;
     [[nodiscard]] AuthConfig::AccountDeletionHandler account_deletion_handler() const;
+    [[nodiscard]] AuthConfig::WebSocketTicketIssuer websocket_ticket_issuer() const;
+    [[nodiscard]] AuthConfig::WebSocketTicketVerifier websocket_ticket_verifier() const;
 
   private:
     struct Impl;

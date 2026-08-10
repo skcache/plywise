@@ -102,3 +102,16 @@ jobs:
           node-version: 22.12.0
       - run: chmod +x scripts/container-smoke.sh
       - run: scripts/container-smoke.sh
+
+  hosted-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: chmod +x scripts/hosted-compose-check.sh
+      - run: |
+          PCT_API_DOMAIN=api.example.com \
+          PCT_POSTGRES_URL='postgresql://ci:ci@example.com/plywise?sslmode=require' \
+          PCT_SUPABASE_URL=https://project.supabase.co \
+          PCT_TRUSTED_HOSTS=api.example.com \
+          PCT_ALLOWED_ORIGINS=https://plywise-chess.vercel.app \
+          scripts/hosted-compose-check.sh

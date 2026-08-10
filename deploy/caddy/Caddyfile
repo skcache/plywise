@@ -1,0 +1,6 @@
+{$PCT_API_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy api:8787 {
+        header_up Host {host}
+    }
+}

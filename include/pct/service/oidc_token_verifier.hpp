@@ -37,9 +37,9 @@ struct OidcTokenVerifierOptions {
     std::chrono::seconds max_token_lifetime{std::chrono::hours(24)};
 };
 
-// Verifies compact OIDC JWTs at the C++ authorization boundary. Only RS256 is accepted in this
-// first hosted slice; the caller must provide an HTTPS/JWKS loader and map verified subjects to
-// account owners. Malformed, expired, wrongly-issued, or unverifiable tokens return nullopt.
+// Verifies compact OIDC JWTs at the C++ authorization boundary. RS256 and ES256 (P-256) are
+// accepted; the caller must provide an HTTPS/JWKS loader and map verified subjects to account
+// owners. Malformed, expired, wrongly-issued, or unverifiable tokens return nullopt.
 class OidcTokenVerifier final {
   public:
     explicit OidcTokenVerifier(OidcTokenVerifierOptions options);

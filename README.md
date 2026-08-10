@@ -29,8 +29,10 @@ React dev server against it on loopback. No hosted service or billing account is
 
 ## Run the API yourself
 
-Vercel only serves the React site. The C++ API is a long-running container, so it needs an always-on
-Linux host and a TLS reverse proxy in front of port `8787`. Tagged releases publish
+Vercel only serves the React site. The C++ API runs as a Docker web service. For a free private alpha,
+Render can run it on its free web-service plan and connect it to Supabase for hosted storage. The free
+instance sleeps when idle and its filesystem is temporary, so durable user data must stay in PostgreSQL.
+For a larger or always-on launch, use a Linux host and a TLS reverse proxy in front of port `8787`. Tagged releases publish
 `ghcr.io/skcache/plywise-api` with an immutable `sha-<commit>` tag and a content digest. For a local
 build, run `docker compose up --build -d`. For a hosted launch, pin the exact content digest and use
 the checked-in launcher:
@@ -66,6 +68,18 @@ For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
 The checked-in `vercel.mjs` rejects a production deployment without one of those API modes,
 keeps API responses out of caches, and builds the CSP from the configured public origins. The
 service itself refuses to start when the hosted C++ configuration is incomplete.
+
+### Render free API
+
+The repository includes [`render.yaml`](render.yaml) for a free Render web service. It keeps the
+service on one small worker, waits for passing checks before auto-deploying, exposes `/api/ready` as
+the health check, and never creates a Render database or paid resource. The two values marked
+`sync: false` are the Supabase project URL and PostgreSQL connection string; enter them in Render's
+Environment tab, and include `sslmode=require` (or stronger verification) in the database URL.
+
+After the service is live, set Vercel's `VITE_PLYWISE_API_ORIGIN` to the HTTPS `onrender.com` URL and
+`VITE_PLYWISE_EVENT_ORIGIN` to its `wss://` origin. Run `scripts/hosted-api-smoke.sh` with a short-lived
+account token before inviting anyone else.
 
 For a small always-on Linux host, the checked-in hosted Compose overlay adds a pinned Caddy TLS
 edge in front of the API. Point DNS for an API hostname at the host, then set the values below (the

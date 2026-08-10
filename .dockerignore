@@ -6,3 +6,5 @@
 !resources/**
 !src
 !src/**
+!deploy
+!deploy/render-healthcheck.sh

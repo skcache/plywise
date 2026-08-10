@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+
+services:
+  - type: web
+    name: plywise-api
+    runtime: docker
+    repo: https://github.com/skcache/plywise.git
+    branch: main
+    region: oregon
+    plan: free
+    autoDeployTrigger: checksPass
+    healthCheckPath: /api/ready
+    maxShutdownDelaySeconds: 30
+    envVars:
+      # Render terminates TLS at the edge and forwards requests to this port.
+      - key: PCT_BIND_ADDRESS
+        value: 0.0.0.0
+      - key: PCT_PORT
+        value: "10000"
+      - key: PCT_REQUIRE_AUTH
+        value: "true"
+      - key: PCT_ALLOWED_ORIGINS
+        value: https://plywise-chess.vercel.app
+      - key: PCT_TRUSTED_HOSTS
+        fromService:
+          type: web
+          name: plywise-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: PCT_OIDC_AUDIENCE
+        value: authenticated
+      - key: PCT_OIDC_PROVIDER
+        value: supabase
+      - key: PCT_WORKERS
+        value: "1"
+      - key: PCT_MAX_PENDING
+        value: "8"
+      - key: PCT_RETRY_LIMIT
+        value: "1"
+      # These stay out of source control. Render prompts for them during setup.
+      - key: PCT_POSTGRES_URL
+        sync: false
+      - key: PCT_SUPABASE_URL
+        sync: false

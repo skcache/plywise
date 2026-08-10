@@ -46,6 +46,8 @@ RUN apt-get update \
 
 COPY --from=build /build/personal-chess-tutor /usr/local/bin/personal-chess-tutor
 COPY resources /opt/plywise/resources
+COPY deploy/render-healthcheck.sh /usr/local/bin/plywise-healthcheck
+RUN chmod 0555 /usr/local/bin/plywise-healthcheck
 
 LABEL org.opencontainers.image.title="Plywise C++ service" \
       org.opencontainers.image.description="Completed-game chess analysis and review service" \
@@ -70,6 +72,6 @@ VOLUME ["/var/lib/plywise"]
 EXPOSE 8787
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-    CMD ["curl", "--fail", "--silent", "http://127.0.0.1:8787/api/ready"]
+    CMD ["/usr/local/bin/plywise-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/personal-chess-tutor"]

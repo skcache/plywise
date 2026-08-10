@@ -7,6 +7,7 @@
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
 
@@ -95,13 +96,73 @@ SigningKey make_signing_key(std::string_view kid) {
     return SigningKey{std::move(pkey), jwks};
 }
 
+SigningKey make_ec_signing_key(std::string_view kid) {
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
+        EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr), &EVP_PKEY_CTX_free);
+    CHECK(context != nullptr);
+    CHECK(EVP_PKEY_keygen_init(context.get()) == 1);
+    std::unique_ptr<OSSL_PARAM_BLD, decltype(&OSSL_PARAM_BLD_free)> builder(
+        OSSL_PARAM_BLD_new(), &OSSL_PARAM_BLD_free);
+    CHECK(builder != nullptr);
+    CHECK(OSSL_PARAM_BLD_push_utf8_string(builder.get(), OSSL_PKEY_PARAM_GROUP_NAME,
+                                          "prime256v1", 0) == 1);
+    std::unique_ptr<OSSL_PARAM, decltype(&OSSL_PARAM_free)> parameters(
+        OSSL_PARAM_BLD_to_param(builder.get()), &OSSL_PARAM_free);
+    CHECK(parameters != nullptr);
+    CHECK(EVP_PKEY_CTX_set_params(context.get(), parameters.get()) == 1);
+    PkeyPtr pkey(nullptr, &EVP_PKEY_free);
+    EVP_PKEY* generated = nullptr;
+    CHECK(EVP_PKEY_keygen(context.get(), &generated) == 1);
+    pkey.reset(generated);
+
+    std::size_t point_size = 0;
+    CHECK(EVP_PKEY_get_octet_string_param(pkey.get(), OSSL_PKEY_PARAM_PUB_KEY, nullptr, 0,
+                                          &point_size) == 1);
+    CHECK_EQ(point_size, 65ULL);
+    Bytes point(point_size);
+    CHECK(EVP_PKEY_get_octet_string_param(pkey.get(), OSSL_PKEY_PARAM_PUB_KEY, point.data(),
+                                          point.size(), &point_size) == 1);
+    CHECK_EQ(point_size, 65ULL);
+    CHECK_EQ(point.front(), static_cast<unsigned char>(0x04U));
+    const Bytes x(point.begin() + 1, point.begin() + 33);
+    const Bytes y(point.begin() + 33, point.end());
+    const std::string jwks = json::dump(json::Value::Object{
+        {"keys", json::Value::Array{json::Value::Object{
+                     {"kty", "EC"},
+                     {"alg", "ES256"},
+                     {"crv", "P-256"},
+                     {"kid", std::string(kid)},
+                     {"x", encode_base64url(x)},
+                     {"y", encode_base64url(y)},
+                 }}}});
+    return SigningKey{std::move(pkey), jwks};
+}
+
+std::optional<Bytes> jose_signature(const Bytes& der_signature) {
+    const unsigned char* cursor = der_signature.data();
+    std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)> ecdsa(
+        d2i_ECDSA_SIG(nullptr, &cursor, static_cast<long>(der_signature.size())), &ECDSA_SIG_free);
+    if (ecdsa == nullptr || cursor != der_signature.data() + der_signature.size())
+        return std::nullopt;
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    ECDSA_SIG_get0(ecdsa.get(), &r, &s);
+    if (r == nullptr || s == nullptr || BN_num_bytes(r) > 32 || BN_num_bytes(s) > 32)
+        return std::nullopt;
+    Bytes result(64);
+    if (BN_bn2binpad(r, result.data(), 32) != 32 || BN_bn2binpad(s, result.data() + 32, 32) != 32)
+        return std::nullopt;
+    return result;
+}
+
 std::string sign_token(EVP_PKEY* pkey, std::string_view kid, double expiration,
                        std::string_view issuer = "https://issuer.example",
                        std::string_view audience = "plywise-web",
                        std::optional<double> auth_time = std::nullopt,
-                       std::optional<double> issued_at = std::nullopt) {
+                       std::optional<double> issued_at = std::nullopt,
+                       std::string_view algorithm = "RS256") {
     const std::string header = json::dump(json::Value::Object{
-        {"alg", "RS256"},
+        {"alg", std::string(algorithm)},
         {"kid", std::string(kid)},
         {"typ", "JWT"},
     });
@@ -127,6 +188,11 @@ std::string sign_token(EVP_PKEY* pkey, std::string_view kid, double expiration,
     Bytes signature(signature_size);
     CHECK(EVP_DigestSignFinal(context.get(), signature.data(), &signature_size) == 1);
     signature.resize(signature_size);
+    if (algorithm == "ES256") {
+        const auto jose = jose_signature(signature);
+        CHECK(jose.has_value());
+        signature = *jose;
+    }
     return signed_data + "." + encode_base64url(signature);
 }
 
@@ -169,6 +235,38 @@ TEST_CASE("OIDC verifier accepts a valid RS256 token and resolves its account") 
     CHECK(!verifier.verify(unknown_key).has_value());
     CHECK(!verifier.verify(unknown_key).has_value());
     CHECK_EQ(loads, 2ULL);
+}
+
+TEST_CASE("OIDC verifier accepts a valid ES256 P-256 token and resolves its account") {
+    const SigningKey key = make_ec_signing_key("ec-key-1");
+    const double now = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    std::size_t loads = 0;
+    service::OidcTokenVerifier verifier(service::OidcTokenVerifierOptions{
+        "https://issuer.example",
+        "plywise-web",
+        "test",
+        0,
+        [&] {
+            ++loads;
+            return std::optional<std::string>(key.jwks);
+        },
+        [](std::string_view provider, std::string_view subject) -> std::optional<app::OwnerId> {
+            if (provider == "test" && subject == "subject-123")
+                return app::OwnerId::account("acct-test");
+            return std::nullopt;
+        },
+    });
+
+    const auto owner = verifier.verify(
+        sign_token(key.pkey.get(), "ec-key-1", now + 300, "https://issuer.example", "plywise-web",
+                   std::nullopt, std::nullopt, "ES256"));
+    CHECK(owner.has_value());
+    CHECK_EQ(owner->value(), "acct-test");
+    CHECK(owner->kind() == app::OwnerKind::Account);
+    CHECK_EQ(loads, 1ULL);
 }
 
 TEST_CASE("OIDC verifier passes signed issuance time to account resolution") {

@@ -49,7 +49,7 @@ COPY resources /opt/plywise/resources
 
 LABEL org.opencontainers.image.title="Plywise C++ service" \
       org.opencontainers.image.description="Completed-game chess analysis and review service" \
-      org.opencontainers.image.source="https://github.com/siddhantkuwar/plywise"
+      org.opencontainers.image.source="https://github.com/skcache/plywise"
 
 ENV PCT_BIND_ADDRESS=0.0.0.0 \
     PCT_REQUIRE_AUTH=true \

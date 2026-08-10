@@ -2,7 +2,7 @@ services:
   api:
     build:
       context: .
-    image: plywise-api:local
+    image: ${PCT_API_IMAGE:-plywise-api:local}
     init: true
     read_only: true
     cap_drop:

@@ -4,6 +4,8 @@
 #include "pct/app/job_manager.hpp"
 #include "pct/service/http_server.hpp"
 
+#include <chrono>
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -15,6 +17,10 @@ struct HostedRuntimeOptions {
     std::string oidc_audience{"authenticated"};
     std::string oidc_provider{"supabase"};
     std::string oidc_jwks_url;
+    // Owner resources are retained while active requests, jobs, or event observers use them.
+    // Idle resources can be reclaimed when this bound is reached.
+    std::size_t max_owner_resources{128};
+    std::chrono::seconds owner_resource_idle_ttl{std::chrono::minutes(10)};
 };
 
 // Owns the hosted identity store, verified OIDC boundary, and bounded owner-scoped PostgreSQL

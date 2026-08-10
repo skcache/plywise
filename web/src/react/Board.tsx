@@ -28,20 +28,27 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
       const selected = sourceSquare === square.name;
       const side = blackPieces.has(square.piece) ? "black" : "white";
       const kind = pieceKinds[square.piece];
-      return <button
-        type="button"
-        key={`${square.name}-${index}`}
-        className={`board-square ${light ? "light" : "dark"} ${from ? "from" : ""} ${to ? "to" : ""} ${selected ? "source" : ""}`}
-        tabIndex={interactive ? 0 : -1}
-        aria-label={interactive ? `Choose ${square.name}` : `${kind ? `${kind} on` : "empty"} ${square.name}`}
-        onClick={interactive ? () => onSquare?.(square.name) : undefined}
-      >
+      const squareContent = <>
         {!compact && showCoordinates && index % 8 === 0 && <span className="rank-label">{square.rank}</span>}
         {!compact && showCoordinates && index >= 56 && <span className="file-label">{square.file}</span>}
         {kind && (
           <img className="board-piece" src={`/pieces/lasker/${side}_${kind}.svg`} alt="" draggable={false}/>
         )}
-      </button>;
+      </>;
+      const className = `board-square ${light ? "light" : "dark"} ${from ? "from" : ""} ${to ? "to" : ""} ${selected ? "source" : ""}`;
+      const label = interactive ? `Choose ${square.name}` : `${kind ? `${kind} on` : "empty"} ${square.name}`;
+      return interactive ? <button
+        type="button"
+        key={`${square.name}-${index}`}
+        className={className}
+        aria-label={label}
+        onClick={() => onSquare?.(square.name)}
+      >{squareContent}</button> : <div
+        key={`${square.name}-${index}`}
+        className={className}
+        role="gridcell"
+        aria-label={label}
+      >{squareContent}</div>;
     })}
     {geometry && <svg className="best-arrow" viewBox="0 0 100 100" aria-hidden="true"><defs><marker id="react-arrowhead" markerWidth="4" markerHeight="4" viewBox="0 0 4 4" refX="3.5" refY="2" orient="auto"><path d="M0 0 4 2 0 4Z"/></marker></defs><line x1={geometry.source.x} y1={geometry.source.y} x2={geometry.destination.x} y2={geometry.destination.y} markerEnd="url(#react-arrowhead)"/></svg>}
   </div>;

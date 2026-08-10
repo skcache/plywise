@@ -186,6 +186,11 @@ export default function App() {
     if (redirectMessage) setAuthMessage(redirectMessage);
     const unsubscribe = subscribeAuth((snapshot) => {
       setAuthSnapshot(snapshot);
+      if (snapshot.message && snapshot.event !== "SIGNED_OUT" && !snapshot.session) {
+        setAuthMessage(snapshot.message);
+        setAccountEntryMode("sign-in");
+        setAccountPromptOpen(true);
+      }
       if (snapshot.event) setAuthRevision((value) => value + 1);
       if (snapshot.event === "SIGNED_OUT") {
         accountFlowRequested.current = null;

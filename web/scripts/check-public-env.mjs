@@ -81,6 +81,12 @@ if (Boolean(supabaseUrl) !== Boolean(supabaseKey)) {
   console.error("VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY must be configured together.");
   process.exit(1);
 }
+if (mode === "production" && (!supabaseUrl || !supabaseKey)) {
+  console.error(
+    "Production builds require VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY for account sign-in.",
+  );
+  process.exit(1);
+}
 if (supabaseKey && /service[_-]?role|secret/i.test(supabaseKey)) {
   console.error("VITE_SUPABASE_PUBLISHABLE_KEY must not contain a service-role or secret key.");
   process.exit(1);

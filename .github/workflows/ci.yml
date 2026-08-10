@@ -26,6 +26,11 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    env:
+      # The production build must prove that hosted auth is configured. These are
+      # non-secret fixture values; no CI job talks to this placeholder origin.
+      VITE_SUPABASE_URL: https://auth.example.test
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci
     defaults:
       run:
         working-directory: web

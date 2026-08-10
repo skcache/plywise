@@ -1,5 +1,3 @@
-const DEFAULT_SUPABASE_ORIGIN = "https://zeozqatqgmdleiydfaaj.supabase.co";
-
 function originFromEnv(env, name, protocols, { productionTls = false } = {}) {
   const value = String(env[name] ?? "").trim();
   if (!value) return null;
@@ -85,6 +83,7 @@ export function createConfig(env = process.env) {
     ["http:", "https:"],
     { productionTls: production },
   );
+  const supabasePublishableKey = String(env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
 
   // A production static deployment without either a direct API origin or a
   // same-origin proxy is a healthy-looking landing page with a dead console.
@@ -93,6 +92,12 @@ export function createConfig(env = process.env) {
     throw new Error(
       "Production Vercel deployments require PCT_PLYWISE_API_ORIGIN (proxy) " +
         "or VITE_PLYWISE_API_ORIGIN (direct API).",
+    );
+  }
+  if (production && (!supabaseOrigin || !supabasePublishableKey)) {
+    throw new Error(
+      "Production Vercel deployments require VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY " +
+        "so account sign-in cannot silently fall back.",
     );
   }
   if (production && proxyApiOrigin && !publicEventOrigin) {
@@ -106,7 +111,6 @@ export function createConfig(env = process.env) {
   if (publicEventOrigin) connectSources.add(publicEventOrigin);
   else if (publicApiOrigin) connectSources.add(websocketOrigin(publicApiOrigin));
   if (supabaseOrigin) connectSources.add(supabaseOrigin);
-  else if (env.VITE_SUPABASE_URL === undefined) connectSources.add(DEFAULT_SUPABASE_ORIGIN);
 
   const rewrites = [];
   if (proxyApiOrigin) {

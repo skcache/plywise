@@ -142,39 +142,45 @@ TEST_CASE("hosted API bounds repeated analysis starts") {
 }
 
 TEST_CASE("hosted API applies process-wide import and analysis ceilings") {
-    HostedApiFixture imports(100, 30, 100, 1, 30);
     const std::string pgn = "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0";
-    const auto first = imports.api.handle(hosted_account_request(
-        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
-    CHECK_EQ(first.status, 202);
-    const auto second = imports.api.handle(hosted_account_request(
-        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
-    CHECK_EQ(second.status, 429);
-    CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+    {
+        HostedApiFixture imports(100, 30, 100, 1, 30);
+        const auto first = imports.api.handle(hosted_account_request(
+            "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+        CHECK_EQ(first.status, 202);
+        const auto second = imports.api.handle(hosted_account_request(
+            "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+        CHECK_EQ(second.status, 429);
+        CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
+    }
 
-    HostedApiFixture analysis(100, 30, 100, 200, 1);
-    const auto imported = analysis.api.handle(hosted_account_request(
-        "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
-    const std::string game_id = json::parse(imported.body).at("game_id").as_string();
-    const auto started = analysis.api.handle(
-        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
-    CHECK_EQ(started.status, 202);
-    const auto blocked = analysis.api.handle(
-        hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
-    CHECK_EQ(blocked.status, 429);
-    CHECK_EQ(json::parse(blocked.body).at("code").as_string(), "quota_exceeded");
+    {
+        HostedApiFixture analysis(100, 30, 100, 200, 1);
+        const auto imported = analysis.api.handle(hosted_account_request(
+            "POST", "/api/import", json::dump(json::Value::Object{{"pgn", pgn}})));
+        const std::string game_id = json::parse(imported.body).at("game_id").as_string();
+        const auto started = analysis.api.handle(
+            hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+        CHECK_EQ(started.status, 202);
+        const auto blocked = analysis.api.handle(
+            hosted_account_request("POST", "/api/games/" + game_id + "/analysis"));
+        CHECK_EQ(blocked.status, 429);
+        CHECK_EQ(json::parse(blocked.body).at("code").as_string(), "quota_exceeded");
+    }
 
-    HostedApiFixture batch(100, 30, 100, 200, 1);
-    const std::string batch_body = json::dump(json::Value::Object{
-        {"pgns", json::Value::Array{
-                     "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0",
-                     "[White \"C\"]\n[Black \"D\"]\n[Result \"1-0\"]\n\n1. d4 d5 1-0",
-                 }},
-    });
-    const auto batch_response = batch.api.handle(
-        hosted_account_request("POST", "/api/import/batch", batch_body));
-    CHECK_EQ(batch_response.status, 429);
-    CHECK_EQ(json::parse(batch_response.body).at("code").as_string(), "quota_exceeded");
+    {
+        HostedApiFixture batch(100, 30, 100, 200, 1);
+        const std::string batch_body = json::dump(json::Value::Object{
+            {"pgns", json::Value::Array{
+                         "[White \"A\"]\n[Black \"B\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0",
+                         "[White \"C\"]\n[Black \"D\"]\n[Result \"1-0\"]\n\n1. d4 d5 1-0",
+                     }},
+        });
+        const auto batch_response = batch.api.handle(
+            hosted_account_request("POST", "/api/import/batch", batch_body));
+        CHECK_EQ(batch_response.status, 429);
+        CHECK_EQ(json::parse(batch_response.body).at("code").as_string(), "quota_exceeded");
+    }
 }
 
 TEST_CASE("API imports PGN and returns navigable game data immediately") {

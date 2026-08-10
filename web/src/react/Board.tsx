@@ -54,21 +54,6 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
   </div>;
 }
 
-export function EvaluationBar({ value }: { value?: number }) {
-  const clamped = Math.max(-600, Math.min(600, value ?? 0));
-  const whiteShare = Math.max(4, Math.min(96, 50 + clamped / 12));
-  const label = formatEval(value);
-  return <aside className="evaluation-column" aria-label={`Current engine evaluation ${label}`}>
-    <strong>{label}</strong>
-    <svg className="evaluation-track" viewBox="0 0 10 100" preserveAspectRatio="none" aria-hidden="true">
-      <rect className="evaluation-track-base" x="0" y="0" width="10" height="100" rx="5"/>
-      <rect className="evaluation-track-value" x="0" y={100 - whiteShare} width="10" height={whiteShare} rx="5"/>
-      <line className="evaluation-track-zero" x1="0" y1="50" x2="10" y2="50"/>
-    </svg>
-    <small>{formatEval(value === undefined ? undefined : -value)}</small>
-  </aside>;
-}
-
 export function formatEval(value?: number) {
   if (value === undefined) return "—";
   const pawns = value / 100;

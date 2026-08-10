@@ -51,6 +51,24 @@ The checked-in `vercel.mjs` rejects a production deployment without one of those
 keeps API responses out of caches, and builds the CSP from the configured public origins. The
 service itself refuses to start when the hosted C++ configuration is incomplete.
 
+For a small always-on Linux host, the checked-in hosted Compose overlay adds a pinned Caddy TLS
+edge in front of the API. Point DNS for an API hostname at the host, then set the values below (the
+PostgreSQL URL must include `sslmode=require`, `verify-ca`, or `verify-full`):
+
+```sh
+export PCT_API_DOMAIN=api.example.com
+export PCT_POSTGRES_URL='postgresql://...?...&sslmode=require'
+export PCT_SUPABASE_URL=https://your-project.supabase.co
+export PCT_TRUSTED_HOSTS="$PCT_API_DOMAIN"
+export PCT_ALLOWED_ORIGINS=https://plywise-chess.vercel.app
+scripts/hosted-compose-check.sh
+docker compose -f compose.yaml -f compose.hosted.yaml --profile edge up -d
+```
+
+Caddy obtains and renews the certificate, forwards WebSocket upgrades, and keeps the C++ port on
+the private Compose network. This does not create a hosting account or enable billing; you still
+need an always-on host and DNS record.
+
 Before pointing Vercel at a host, run `scripts/hosted-api-smoke.sh` with the API URL, app origin,
 and a short-lived account token. It checks readiness, JSON responses, exact CORS, the unauthenticated
 boundary, an authenticated game request, and the WebSocket handshake without printing the token.

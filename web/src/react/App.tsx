@@ -38,7 +38,7 @@ import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlayin
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
 import { eventProtocols, eventUrl } from "../config/runtime";
-import { ChessBoard, formatEval } from "./Board";
+import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
 import { LandingView } from "./LandingView";
@@ -971,6 +971,7 @@ function AnalysisView(props: AnalysisProps) {
   return <div className="analysis-layout">
     {props.browserProgress ? <div className="analysis-progress"><span>{props.browserProgress.message}</span><progress aria-label="Browser analysis progress" max={props.browserProgress.total} value={props.browserProgress.complete}/><strong>{props.browserProgress.complete}/{props.browserProgress.total}</strong><button onClick={props.onCancelBrowserAnalysis}>Cancel</button></div> : props.selectedJob && (props.selectedJob.status === "running" || props.selectedJob.status === "queued") && <div className="analysis-progress"><span>{props.selectedJob.progress.message}</span><progress aria-label="Analysis progress" max={props.selectedJob.progress.total || 100} value={props.selectedJob.progress.total ? props.selectedJob.progress.complete : 8}/><strong>{props.selectedJob.progress.complete}/{props.selectedJob.progress.total}</strong><button onClick={props.onCancelJob}>Cancel</button></div>}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
+      <EvaluationBar value={move?.evaluation_after}/>
       <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={reviewMode === "try_move" || reviewMode === "variation"} showArrow={reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
     </section>
     <aside className="review-rail">

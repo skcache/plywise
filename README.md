@@ -22,6 +22,11 @@ practice data, progress, persistence, tests, and the new Home screen are all in 
 
 We are now moving Plywise from a Mac-first local app to a web-first hybrid product.
 
+## Run it locally
+
+Run `npm ci --prefix web`, then `scripts/browser-first-smoke.sh` to build the C++ API and start the
+React dev server against it on loopback. No hosted service or billing account is needed.
+
 ## What's left
 
 - Make the current experience work safely on the web.

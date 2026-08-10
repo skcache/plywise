@@ -47,6 +47,9 @@ struct Options {
     std::vector<std::string> allowed_origins;
     bool require_auth{false};
     bool require_auth_explicit{false};
+    // Only the local/container smoke harness may opt into an unauthenticated remote bind. The
+    // default remains fail-closed so a production config typo cannot expose the API.
+    bool allow_insecure_remote{false};
     std::string postgres_connection;
     std::string oidc_issuer;
     std::string oidc_audience{"authenticated"};
@@ -130,6 +133,8 @@ Options environment_options() {
         options.require_auth = boolean_option(*value, "PCT_REQUIRE_AUTH");
         options.require_auth_explicit = true;
     }
+    if (const auto value = environment("PCT_ALLOW_INSECURE_REMOTE"))
+        options.allow_insecure_remote = boolean_option(*value, "PCT_ALLOW_INSECURE_REMOTE");
     if (const auto value = environment("PCT_POSTGRES_URL"))
         options.postgres_connection = *value;
     if (const auto value = environment("PCT_OIDC_ISSUER"))
@@ -207,6 +212,14 @@ Options parse_options(int argc, char** argv) {
     }
     if (!options.require_auth_explicit && options.bind_address != "127.0.0.1")
         options.require_auth = true;
+    if (options.bind_address != "127.0.0.1" && !options.require_auth &&
+        !options.allow_insecure_remote)
+        throw std::runtime_error(
+            "remote HTTP binds require PCT_REQUIRE_AUTH=true; use 127.0.0.1 for "
+            "unauthenticated development");
+    if (options.bind_address != "127.0.0.1" && !options.require_auth &&
+        options.allow_insecure_remote)
+        std::cerr << "warning: unauthenticated remote HTTP bind explicitly enabled\n";
     return options;
 }
 

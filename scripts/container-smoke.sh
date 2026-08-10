@@ -24,6 +24,7 @@ docker run --detach \
   --env PCT_TRUSTED_HOSTS=api.plywise.test \
   --env PCT_ALLOWED_ORIGINS=https://app.plywise.test \
   --env PCT_REQUIRE_AUTH=false \
+  --env PCT_ALLOW_INSECURE_REMOTE=true \
   --publish 127.0.0.1::8787 \
   "$IMAGE" >/dev/null
 

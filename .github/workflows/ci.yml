@@ -42,6 +42,20 @@ jobs:
       - run: npm run check
       - run: npm run build
 
+  browser-first:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: sudo apt-get update
+      - run: sudo apt-get install --yes --no-install-recommends build-essential cmake curl libcurl4-openssl-dev ninja-build stockfish
+      - run: npm ci --prefix web
+      - run: chmod +x scripts/browser-first-smoke.sh && scripts/browser-first-smoke.sh
+
   postgres:
     runs-on: ubuntu-latest
     services:

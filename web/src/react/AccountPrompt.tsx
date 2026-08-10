@@ -91,6 +91,21 @@ export function AccountPrompt({
       setSubmitMessage("Enter your name.");
       return;
     }
+    if (!email.trim()) {
+      setSubmitError(true);
+      setSubmitMessage("Enter your email address.");
+      return;
+    }
+    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email.trim())) {
+      setSubmitError(true);
+      setSubmitMessage("Enter a valid email address.");
+      return;
+    }
+    if (!resetMode && !password) {
+      setSubmitError(true);
+      setSubmitMessage("Enter your password.");
+      return;
+    }
     if (signUpMode && password.length < 10) {
       setSubmitError(true);
       setSubmitMessage("Use at least 10 characters for your password.");
@@ -142,14 +157,14 @@ export function AccountPrompt({
         <button type="button" className="account-primary" onClick={onClose}>Start a review</button>
       </footer>
     </> : <>
-      {resetMode ? <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
+      {resetMode ? <form className="account-form" noValidate aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
         <div className="account-field">
           <label htmlFor="account-reset-email">Email</label>
           <input id="account-reset-email" name="email" type="email" inputMode="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} disabled={!auth.configured || submitting} />
         </div>
         <button type="submit" className="account-primary account-form-submit" disabled={!auth.configured || submitting}>{submitting ? "Sending…" : "Send reset link"}</button>
         <button type="button" className="account-text-button" onClick={() => { setResetMode(false); setSubmitMessage(""); setSubmitError(false); }}>Back to sign in</button>
-      </form> : <form className="account-form" aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
+      </form> : <form className="account-form" noValidate aria-describedby={submitMessage ? "account-form-status" : undefined} onSubmit={(event) => void submit(event)}>
         {signUpMode && <div className="account-field">
           <label htmlFor="account-name">Name</label>
           <input id="account-name" name="name" type="text" autoComplete="name" required value={name} onChange={(event) => setName(event.target.value)} disabled={!auth.configured || submitting} />

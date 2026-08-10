@@ -62,3 +62,17 @@ jobs:
             --sbom=true \
             --push \
             .
+      - name: Record the immutable API image reference
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${IMAGE_OWNER,,}/plywise-api"
+          SAFE_TAG="${RELEASE_TAG//\//-}"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE:$SAFE_TAG" --format '{{.Manifest.Digest}}')"
+          test -n "$DIGEST"
+          {
+            printf '%s\n' '### C++ API image'
+            printf 'Use `%s@%s` with `scripts/hosted-api-up.sh`.\n' "$IMAGE" "$DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

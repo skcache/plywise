@@ -1173,3 +1173,24 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 @media (prefers-reduced-motion: reduce) {
   .analysis-live-mark, .analysis-activity-track span, .evaluation-rail-white, .evaluation-rail-marker { animation: none; transition: none; }
 }
+
+/* Keep the familiar original Unicode set for the review board. */
+.board-piece {
+  display: grid;
+  place-items: center;
+  width: 86%;
+  height: 86%;
+  color: var(--text);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(24px, 5.6cqw, 72px);
+  font-weight: 400;
+  line-height: 1;
+  filter: drop-shadow(0 4px 3px rgb(0 0 0 / .32));
+  user-select: none;
+}
+.board-piece.white-piece { color: #efede4; text-shadow: 0 1px 0 rgb(0 0 0 / .58), 0 4px 3px rgb(0 0 0 / .45); }
+.board-piece.black-piece { color: #171915; text-shadow: 0 1px 0 rgb(255 255 255 / .22), 0 4px 3px rgb(0 0 0 / .42); }
+
+@media (max-width: 560px) {
+  .board-piece { font-size: clamp(23px, 8.5cqw, 52px); }
+}

@@ -32,7 +32,7 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
         {!compact && showCoordinates && index % 8 === 0 && <span className="rank-label">{square.rank}</span>}
         {!compact && showCoordinates && index >= 56 && <span className="file-label">{square.file}</span>}
         {kind && (
-          <img className="board-piece" src={`/pieces/lasker/${side}_${kind}.svg`} alt="" draggable={false}/>
+          <span className={`board-piece ${side}-piece`} aria-hidden="true">{square.piece}</span>
         )}
       </>;
       const className = `board-square ${light ? "light" : "dark"} ${from ? "from" : ""} ${to ? "to" : ""} ${selected ? "source" : ""}`;

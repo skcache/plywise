@@ -183,7 +183,12 @@ export default function App() {
       setAccountPromptOpen(true);
     }
     const redirectMessage = consumeAuthRedirectMessage();
-    if (redirectMessage) setAuthMessage(redirectMessage);
+    if (redirectMessage) {
+      setAuthMessage(redirectMessage);
+      setAccountEntryMode("sign-in");
+      setAccountPromptOpen(true);
+      setRoute("sign-in");
+    }
     const unsubscribe = subscribeAuth((snapshot) => {
       setAuthSnapshot(snapshot);
       if (snapshot.message && snapshot.event !== "SIGNED_OUT" && !snapshot.session) {
@@ -212,6 +217,11 @@ export default function App() {
     });
     void initializeAuth().then((snapshot) => {
       setAuthSnapshot(snapshot);
+      if (snapshot.message && snapshot.event !== "SIGNED_OUT" && !snapshot.session) {
+        setAuthMessage(snapshot.message);
+        setAccountEntryMode("sign-in");
+        setAccountPromptOpen(true);
+      }
       setAuthInitializing(false);
     });
     return unsubscribe;
@@ -240,6 +250,7 @@ export default function App() {
   }, [browserProfile]);
 
   useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
     const expected = route === "landing" ? "#/" : `#/${route}`;
     if (window.location.hash !== expected) window.history.replaceState(null, "", expected);
   }, [route]);

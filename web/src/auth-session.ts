@@ -312,8 +312,17 @@ async function completeAuthRedirect(): Promise<string | null> {
   const url = new URL(window.location.href);
   const isCallback = url.pathname === "/auth/callback";
   const recoveryTokens = readRecoveryTokens(url.hash);
+  // Supabase can still use the project Site URL while its redirect allowlist is
+  // being updated. Accept an OAuth response on the same origin's root as a
+  // compatibility path, but only when an auth code/token/error is present.
+  const isRootAuthResponse = url.pathname === "/" && (
+    url.searchParams.has("code") ||
+    url.searchParams.has("error") ||
+    url.searchParams.has("error_code") ||
+    Boolean(recoveryTokens)
+  );
 
-  if (isCallback) {
+  if (isCallback || isRootAuthResponse) {
     const errorCode = url.searchParams.get("error_code") ?? url.searchParams.get("error") ?? "";
     const errorDescription = url.searchParams.get("error_description") ?? "";
     if (errorCode || errorDescription) {

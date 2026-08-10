@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { authProviderLabel, type AuthEntryMode, type AuthProvider, type AuthResult, type AuthSnapshot } from "../auth-session";
 import { Icon } from "./Icon";
 
-const providers: Array<{ id: AuthProvider; mark: string }> = [
-  { id: "google", mark: "G" },
-  { id: "github", mark: "GH" },
+const providers: Array<{ id: AuthProvider }> = [
+  { id: "google" },
+  { id: "github" },
 ];
 
 export function AccountPrompt({
@@ -79,9 +79,7 @@ export function AccountPrompt({
   const statusMessage = submitMessage || message || (auth.configured
     ? resetMode
       ? "Enter your email and we will send a reset link if an account matches it."
-      : signUpMode
-        ? "Create one Plywise account, then use the same sign-in method each time."
-        : "Use the email, Google, or GitHub method already connected to your account."
+      : ""
     : "Hosted account entry is not configured in this build.");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -140,8 +138,8 @@ export function AccountPrompt({
         <p id="account-prompt-description">{resetMode
           ? "We will send a time-limited reset link if an account matches that email."
           : signUpMode
-            ? "Free game analysis starts with one account. Save your reviews and pick up where you left off."
-            : "Sign in to see your saved games and continue a review."}</p>
+            ? "Create an account to start free chess analysis."
+            : "Sign in to continue your chess analysis."}</p>
       </div>
       <button ref={closeRef} type="button" aria-label={presentation === "page" ? "Back to landing page" : "Close account prompt"} onClick={onClose}><Icon name="close" /></button>
     </header>
@@ -188,13 +186,13 @@ export function AccountPrompt({
       {!resetMode && <>
         <div className="account-divider"><span>Or continue with</span></div>
         <div className="account-providers" aria-label={signUpMode ? "Sign-up providers" : "Sign-in providers"}>
-          {providers.map(({ id, mark }) => <button
+          {providers.map(({ id }) => <button
             key={id}
             type="button"
             disabled={busyProvider !== null || !auth.configured || submitting}
             onClick={() => onProvider(id)}
           >
-            <span className="account-provider-mark" aria-hidden="true">{mark}</span>
+            <span className="account-provider-mark" aria-hidden="true"><ProviderLogo provider={id} /></span>
             <span><strong>{signUpMode ? "Sign up with" : "Sign in with"} {authProviderLabel(id)}</strong><small>{auth.configured ? "Secure provider authentication" : "Not configured in this build"}</small></span>
             <span className="account-provider-arrow" aria-hidden="true">{busyProvider === id ? "…" : "→"}</span>
           </button>)}
@@ -203,7 +201,7 @@ export function AccountPrompt({
 
       <p id="account-form-status" className={`account-prompt-status ${submitError ? "is-error" : ""}`} role={submitError ? "alert" : "status"} aria-live="polite">{statusMessage}</p>
       <footer>
-        <small>Plywise never receives your provider password.</small>
+        <small>All data is secure.</small>
         <div className="account-entry-actions">
           <button type="button" className="account-mode-switch" onClick={() => { setResetMode(false); setSubmitMessage(""); onModeChange(signUpMode ? "sign-in" : "sign-up"); }}>
             {signUpMode ? "Already have an account? Sign in" : "New to Plywise? Create account"}
@@ -218,6 +216,20 @@ export function AccountPrompt({
     return <main className="account-page"><div className="account-page-shell"><button className="account-page-brand" type="button" onClick={onClose}>Plywise</button>{dialog}</div></main>;
   }
   return <div className="modal-backdrop account-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>{dialog}</div>;
+}
+
+function ProviderLogo({ provider }: { provider: AuthProvider }) {
+  if (provider === "google") {
+    return <svg className="account-provider-logo account-provider-logo-google" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#4285f4" d="M21.35 12.27c0-.79-.07-1.55-.22-2.27H12v4.3h5.24a4.48 4.48 0 0 1-1.94 2.94v2.45h3.14c1.84-1.69 2.91-4.18 2.91-7.42Z" />
+      <path fill="#34a853" d="M12 21.75c2.63 0 4.84-.87 6.45-2.36l-3.14-2.45c-.87.58-1.98.92-3.31.92-2.54 0-4.69-1.72-5.46-4.03H3.3v2.53A9.74 9.74 0 0 0 12 21.75Z" />
+      <path fill="#fbbc05" d="M6.54 13.83A5.86 5.86 0 0 1 6.23 12c0-.64.11-1.26.31-1.83V7.64H3.3A9.75 9.75 0 0 0 2.25 12c0 1.57.38 3.05 1.05 4.36l3.24-2.53Z" />
+      <path fill="#ea4335" d="M12 6.14c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.84 3.26 14.63 2.25 12 2.25a9.74 9.74 0 0 0-8.7 5.39l3.24 2.53C7.31 7.86 9.46 6.14 12 6.14Z" />
+    </svg>;
+  }
+  return <svg className="account-provider-logo account-provider-logo-github" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2.17c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.71 1.25 3.37.95.1-.74.4-1.25.73-1.54-2.57-.29-5.28-1.29-5.28-5.72 0-1.26.45-2.3 1.19-3.11-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.17 1.19a10.98 10.98 0 0 1 5.77 0c2.2-1.5 3.17-1.19 3.17-1.19.63 1.59.23 2.77.11 3.06.74.81 1.19 1.85 1.19 3.11 0 4.44-2.71 5.43-5.29 5.72.42.36.78 1.08.78 2.18v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
+  </svg>;
 }
 
 function displayName(metadata: Record<string, unknown>, email: string | undefined): string {

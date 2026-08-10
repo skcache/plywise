@@ -2,7 +2,6 @@ import { type PointerEvent } from "react";
 import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
-const previewFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const reviewFen = "r1b1r1k1/ppq2ppp/3p1n2/3Pp3/2P5/5NP1/PPQ2PBP/R3R1K1 w - - 0 18";
 
 function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
@@ -44,7 +43,7 @@ export function LandingView({ onStart, onSignIn }: {
       <section className="landing-hero" aria-labelledby="landing-title">
         <div className="landing-copy">
           <h1 id="landing-title">Free chess analysis.</h1>
-          <p className="landing-lede">Bring a public game link or PGN, create an account, and follow the analysis.</p>
+          <p className="landing-lede">Bring a public game link or PGN, then review the game.</p>
           <div className="landing-actions">
             <button className="landing-primary" onClick={onStart}>Sign up to analyze <Icon name="analysis" /></button>
             <button className="landing-secondary" onClick={onSignIn}>Already have an account? Sign in</button>
@@ -57,15 +56,22 @@ export function LandingView({ onStart, onSignIn }: {
           onPointerMove={setPreviewTilt}
           onPointerLeave={(event) => setPreviewTilt(event, true)}
         >
-          <span className="landing-preview-header"><span>A game, reviewed</span><small>Open source</small></span>
+          <span className="landing-preview-header"><span>Game analysis</span><small>Report</small></span>
           <div className="landing-preview-body">
-            <div className="landing-preview-board"><ChessBoard fen={previewFen} orientation="white" compact={false} interactive onSquare={onStart} /></div>
-            <div className="landing-preview-copy">
-              <span>Follow the moments</span>
-              <strong>See what changed.</strong>
-              <p>Start with the position, then open the engine line when you want more detail.</p>
-              <div className="landing-preview-rule"><Icon name="analysis" /><span>Analysis starts after you choose a game.</span></div>
+            <div className="landing-preview-board">
+              <ChessBoard fen={reviewFen} orientation="white" compact={false} interactive activeUci="c2f5" showArrow onSquare={onStart} />
             </div>
+            <aside className="landing-preview-inspector" aria-label="Analysis report preview">
+              <div className="landing-demo-tabs"><strong>Report</strong><span>Moves</span></div>
+              <div className="landing-demo-controls" aria-hidden="true"><Icon name="first" /><Icon name="previous" /><Icon name="play" /><Icon name="next" /><Icon name="last" /><Icon name="more" /></div>
+              <div className="landing-demo-opening"><span>Opening</span><strong>Queen's Gambit</strong></div>
+              <div className="landing-demo-graph">
+                <div><span>+0.42</span><small>Evaluation</small></div>
+                <svg viewBox="0 0 220 58" preserveAspectRatio="none" aria-hidden="true"><path d="M0 36 18 35 35 37 52 30 68 34 84 24 100 28 116 21 132 24 149 19 165 25 182 20 199 23 220 15" /></svg>
+              </div>
+              <div className="landing-demo-players"><span><b>White</b><small>79 accuracy</small></span><span><b>Black</b><small>83 accuracy</small></span></div>
+              <div className="landing-demo-classifications" aria-label="Move classifications"><span><i className="is-best" />Best <b>14</b></span><span><i className="is-good" />Good <b>8</b></span><span><i className="is-mistake" />Mistake <b>1</b></span><span><i className="is-blunder" />Blunder <b>0</b></span></div>
+            </aside>
           </div>
         </section>
       </section>

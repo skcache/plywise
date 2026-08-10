@@ -853,6 +853,39 @@ TEST_CASE("API scoped auth routes each request through its resolved owner resour
     CHECK_EQ(json::parse(unavailable.body).at("code").as_string(), "storage_unavailable");
 }
 
+TEST_CASE("hosted diagnostics and supplemental drills stay tenant scoped") {
+    ApiFixture fixture;
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "hosted-owner")
+            return app::OwnerId::local();
+        return std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner)
+        -> std::optional<service::ApiScope> {
+        if (owner == app::OwnerId::local())
+            return service::ApiScope{&fixture.repository, &fixture.jobs};
+        return std::nullopt;
+    };
+    service::Api hosted(fixture.importer, fixture.repository, fixture.jobs,
+                        [] { return json::Value::Object{{"engine_workers", 99}}; },
+                        [] { return std::vector<training::Drill>{}; }, nullptr, {}, auth);
+
+    const auto diagnostics = hosted.handle(service::Request{
+        "GET", "/api/diagnostics", {{"authorization", "Bearer hosted-owner"}}, {}});
+    CHECK_EQ(diagnostics.status, 200);
+    const auto body = json::parse(diagnostics.body);
+    CHECK(!body.as_object().contains("engine_workers"));
+    CHECK(body.as_object().contains("job_workers"));
+
+    const auto drills = hosted.handle(service::Request{
+        "POST", "/api/drills/supplemental", {{"authorization", "Bearer hosted-owner"}}, "{}"});
+    CHECK_EQ(drills.status, 503);
+    CHECK_EQ(json::parse(drills.body).at("code").as_string(),
+             "supplemental_drills_unavailable");
+}
+
 TEST_CASE("API path router decodes identifiers safely") {
     ApiFixture fixture;
     const auto response = fixture.api.handle(

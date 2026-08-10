@@ -1127,7 +1127,11 @@ Response Api::handle(const Request& request) {
         }
         if (request.method == "GET" &&
             parts == std::vector<std::string>{"api", "diagnostics"}) {
-            json::Value result = diagnostics_ ? diagnostics_() : json::Value::Object{};
+            // The callback is process-scoped (engine counters from the local runtime). Hosted
+            // requests must only see the owner-scoped JobManager values appended below.
+            json::Value result = diagnostics_ && !auth_.resolve_scope
+                                     ? diagnostics_()
+                                     : json::Value::Object{};
             result.as_object().insert_or_assign("job_workers", jobs_.worker_count());
             result.as_object().insert_or_assign("jobs_queued", jobs_.queued_count());
             result.as_object().insert_or_assign("job_queue_capacity", jobs_.queue_capacity());
@@ -1226,6 +1230,12 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "drills", "supplemental"} &&
             request.method == "POST") {
+            // Supplemental drills currently come from a process-wide corpus/profile generator.
+            // Do not mix that global context into a hosted account until the generator accepts an
+            // owner-scoped profile and persistence boundary.
+            if (auth_.resolve_scope)
+                return auth_response(503, "supplemental drills are unavailable for hosted accounts",
+                                     "supplemental_drills_unavailable");
             if (!advanced_drills_)
                 throw Error(ErrorCode::Unsupported, "optional tactical corpus is disabled");
             json::Value::Array generated;

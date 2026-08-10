@@ -108,6 +108,51 @@ TEST_CASE("hosted API bounds import work without changing local mode") {
     CHECK_EQ(json::parse(second.body).at("code").as_string(), "quota_exceeded");
 }
 
+TEST_CASE("hosted API imports a plain Chess.com link without shared ingest state") {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() /
+        ("pct-hosted-url-import-" + std::to_string(::getpid()) + ".log");
+    storage::EventLog log((std::filesystem::remove(path), path));
+    app::Repository repository(log);
+    ApiEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache);
+    app::JobManager jobs(repository, analyzer);
+    const std::string archive =
+        R"json({"archives":["https://api.chess.com/pub/player/Alex/games/2026/06"]})json";
+    const std::string month =
+        R"json({"games":[{"url":"https://www.chess.com/game/live/123","pgn":"[Event \"Imported\"]\n[Site \"Chess.com\"]\n[Date \"2026.06.17\"]\n[White \"Alex\"]\n[Black \"Morgan\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0"}]})json";
+    import::ImportService importer([&](const import::HttpRequest& request) {
+        if (request.url == "https://www.chess.com/game/live/123")
+            return import::HttpResponse{200, {}, request.url,
+                                        "<title>Chess: Alex vs Morgan - Chess.com</title>"};
+        if (request.url == "https://api.chess.com/pub/player/Alex/games/archives")
+            return import::HttpResponse{200, {}, request.url, archive};
+        if (request.url == "https://api.chess.com/pub/player/Alex/games/2026/06")
+            return import::HttpResponse{200, {}, request.url, month};
+        throw std::runtime_error("unexpected Chess.com request: " + request.url);
+    });
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.allow_shared_ingest = false;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        if (token == "alpha-token") return app::OwnerId::local();
+        return std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner)
+        -> std::optional<service::ApiScope> {
+        if (owner == app::OwnerId::local()) return service::ApiScope{&repository, &jobs};
+        return std::nullopt;
+    };
+    service::Api api(importer, repository, jobs, {}, {}, nullptr, {}, std::move(auth));
+    const auto response = api.handle(service::Request{
+        "POST", "/api/import", {{"authorization", "Bearer alpha-token"}},
+        json::dump(json::Value::Object{{"url", "https://www.chess.com/game/live/123"}})});
+    CHECK_EQ(response.status, 202);
+    CHECK_EQ(json::parse(response.body).at("status").as_string(), "imported");
+    CHECK_EQ(repository.size(), 1ULL);
+}
+
 TEST_CASE("hosted API bounds saved games before persistence") {
     HostedApiFixture fixture(100, 30, 1);
     const auto first = fixture.api.handle(hosted_account_request(

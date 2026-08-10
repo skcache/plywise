@@ -358,3 +358,48 @@ TEST_CASE("hosted authority configuration rejects wildcards and public plaintext
         fixture.api, fixture.jobs,
         service::ServerOptions{0, {}, "127.0.0.1", {}, {"http://app.plywise.test"}}));
 }
+
+TEST_CASE("HTTP rate limits every connection before request parsing") {
+    ChessComApiFixture fixture;
+    service::ServerOptions options;
+    options.port = 0;
+    options.requests_per_peer_window = 2;
+    options.requests_per_window = 2;
+    options.request_rate_window = std::chrono::seconds(30);
+    options.max_rate_limit_peers = 8;
+    service::HttpServer server(fixture.api, fixture.jobs, options);
+    std::exception_ptr server_error;
+    std::thread server_thread([&] {
+        try {
+            server.run();
+        } catch (...) {
+            server_error = std::current_exception();
+        }
+    });
+    for (int attempt = 0; attempt < 200 && server.bound_port() == 0; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    const auto request = [&] {
+        const int socket_fd = connect_loopback(server.bound_port());
+        if (socket_fd < 0)
+            return std::string{};
+        const std::string encoded = "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                                    "Connection: close\r\n\r\n";
+        static_cast<void>(send(socket_fd, encoded.data(), encoded.size(), 0));
+        const std::string response = receive_available(socket_fd);
+        close(socket_fd);
+        return response;
+    };
+    const std::string first = request();
+    const std::string second = request();
+    const std::string third = request();
+
+    server.stop();
+    server_thread.join();
+
+    CHECK(first.starts_with("HTTP/1.1 200 OK"));
+    CHECK(second.starts_with("HTTP/1.1 200 OK"));
+    CHECK(third.starts_with("HTTP/1.1 429 Too Many Requests"));
+    CHECK(third.find("Retry-After: 30") != std::string::npos);
+    CHECK(!server_error);
+}

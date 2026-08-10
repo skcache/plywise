@@ -29,15 +29,31 @@ React dev server against it on loopback. No hosted service or billing account is
 
 ## Run the API yourself
 
-Vercel only serves the React site. The C++ API is a long-running container, so run `docker compose
-up --build -d` on an always-on Linux host and put a TLS reverse proxy in front of port `8787`.
-Tagged releases also publish `ghcr.io/skcache/plywise-api`; set `PCT_API_IMAGE` to that image if
-you want to pull the release instead of building it locally:
+Vercel only serves the React site. The C++ API is a long-running container, so it needs an always-on
+Linux host and a TLS reverse proxy in front of port `8787`. Tagged releases publish
+`ghcr.io/skcache/plywise-api` with an immutable `sha-<commit>` tag and a content digest. For a local
+build, run `docker compose up --build -d`. For a hosted launch, pin the exact content digest and use
+the checked-in launcher:
 
 ```sh
-PCT_API_IMAGE=ghcr.io/skcache/plywise-api:latest docker compose pull
-PCT_API_IMAGE=ghcr.io/skcache/plywise-api:latest docker compose up -d
+export PCT_API_IMAGE=ghcr.io/skcache/plywise-api@sha256:<image-digest>
+export PCT_API_DOMAIN=api.example.com
+export PCT_POSTGRES_URL='postgresql://...?...&sslmode=require'
+export PCT_SUPABASE_URL=https://your-project.supabase.co
+export PCT_TRUSTED_HOSTS="$PCT_API_DOMAIN"
+export PCT_ALLOWED_ORIGINS=https://plywise-chess.vercel.app
+scripts/hosted-api-up.sh
 ```
+
+`hosted-api-up.sh` validates the TLS, identity, storage, origin, and digest requirements before it
+pulls or replaces a running service. It then waits for the public HTTPS readiness endpoint. It does
+not print credentials or enable billing.
+
+Keep the previous image digest beside the host's deployment notes. To roll back, replace
+`PCT_API_IMAGE` with that last-known-good digest and run `scripts/hosted-api-up.sh` again; Compose
+will pull only that API image, leave the TLS edge in place, and wait for readiness before returning.
+Run `scripts/hosted-api-smoke.sh` after the rollback with the same API origin, app origin, and
+short-lived account token used for a normal launch.
 For a remote authenticated launch, set `PCT_POSTGRES_URL`, `PCT_SUPABASE_URL`,
 `PCT_TRUSTED_HOSTS`, and `PCT_ALLOWED_ORIGINS`, then choose one API connection mode in Vercel:
 

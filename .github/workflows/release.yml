@@ -5,11 +5,42 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: plywise-api-release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Require a version tag before publishing
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          case "$RELEASE_REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "Release publishing is only allowed from a v* tag; refusing $RELEASE_REF" >&2
+              exit 1
+              ;;
+          esac
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" FETCH_HEAD; then
+            echo "Release tags must point to a commit already reachable from main" >&2
+            exit 1
+          fi
+
   macos-package:
+    needs: release-guard
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -28,6 +59,7 @@ jobs:
           if-no-files-found: error
 
   container-image:
+    needs: release-guard
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,3 +94,17 @@ jobs:
             --sbom=true \
             --push \
             .
+      - name: Record the immutable API image reference
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${IMAGE_OWNER,,}/plywise-api"
+          SAFE_TAG="${RELEASE_TAG//\//-}"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE:$SAFE_TAG" --format '{{.Manifest.Digest}}')"
+          test -n "$DIGEST"
+          {
+            printf '%s\n' '### C++ API image'
+            printf 'Use `%s@%s` with `scripts/hosted-api-up.sh`.\n' "$IMAGE" "$DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

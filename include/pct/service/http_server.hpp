@@ -147,6 +147,10 @@ struct AuthConfig {
     // applied when resolve_scope is configured; local mode remains unlimited for compatibility.
     std::size_t hosted_imports_per_window{100};
     std::size_t hosted_analysis_starts_per_window{30};
+    // Process-wide ceilings keep a burst of newly-created accounts from multiplying work
+    // without bound. They apply only when resolve_scope is configured.
+    std::size_t hosted_global_imports_per_window{200};
+    std::size_t hosted_global_analysis_starts_per_window{30};
     std::chrono::seconds hosted_quota_window{std::chrono::minutes(1)};
     std::size_t hosted_game_storage_limit{app::hosted_game_storage_limit};
 };
@@ -205,6 +209,7 @@ class Api {
     analysis::BrowserObservationLedger browser_observations_;
     std::mutex quota_mutex_;
     std::map<std::string, OwnerQuotaWindow> quota_windows_;
+    OwnerQuotaWindow global_quota_window_;
 };
 
 struct ServerOptions {
@@ -213,6 +218,13 @@ struct ServerOptions {
     std::string bind_address{"127.0.0.1"};
     std::vector<std::string> trusted_hosts;
     std::vector<std::string> allowed_origins;
+    // The C++ server closes each HTTP connection after one request, so this is a request rate
+    // limiter even for WebSocket handshakes and malformed/auth-failing requests. The global cap
+    // is a second guard when a reverse proxy collapses all clients onto one backend peer.
+    std::size_t requests_per_peer_window{600};
+    std::size_t requests_per_window{2400};
+    std::chrono::seconds request_rate_window{std::chrono::minutes(1)};
+    std::size_t max_rate_limit_peers{4096};
 };
 
 class HttpServer {
@@ -265,7 +277,15 @@ class HttpServer {
     std::size_t active_client_threads_{0};
     static constexpr std::size_t max_active_client_threads_{128};
 
+    struct RateLimitWindow {
+        std::deque<std::chrono::steady_clock::time_point> requests;
+    };
+    std::mutex rate_limit_mutex_;
+    std::map<std::string, RateLimitWindow> rate_limit_peers_;
+    RateLimitWindow rate_limit_global_;
+
     void handle_client(int client_fd);
+    [[nodiscard]] bool consume_request_rate_limit(std::string_view peer);
     void handle_websocket(int client_fd, const Request& request);
     [[nodiscard]] static bool send_websocket_frame(const WebSocketClientPtr& client,
                                                     std::string_view frame);

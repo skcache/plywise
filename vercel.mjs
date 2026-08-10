@@ -84,11 +84,14 @@ export function createConfig(env = process.env) {
     { productionTls: production },
   );
   const supabasePublishableKey = String(env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
+  const staticOnlyDeployment =
+    String(env.PCT_ALLOW_STATIC_ONLY_DEPLOYMENT ?? "").trim().toLowerCase() === "true";
 
   // A production static deployment without either a direct API origin or a
   // same-origin proxy is a healthy-looking landing page with a dead console.
-  // Fail the deployment rather than shipping that broken state.
-  if (production && !proxyApiOrigin && !publicApiOrigin) {
+  // Keep that fail-closed by default; the explicit static-only switch is only
+  // for publishing the landing page while the hosted API is still being built.
+  if (production && !proxyApiOrigin && !publicApiOrigin && !staticOnlyDeployment) {
     throw new Error(
       "Production Vercel deployments require PCT_PLYWISE_API_ORIGIN (proxy) " +
         "or VITE_PLYWISE_API_ORIGIN (direct API).",

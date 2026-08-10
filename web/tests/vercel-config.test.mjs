@@ -37,6 +37,15 @@ assert.throws(
   () => createConfig(env({ PCT_PLYWISE_API_ORIGIN: "", VITE_PLYWISE_API_ORIGIN: "" })),
   /require PCT_PLYWISE_API_ORIGIN/,
 );
+const staticOnly = createConfig(env({
+  PCT_PLYWISE_API_ORIGIN: "",
+  PCT_ALLOW_STATIC_ONLY_DEPLOYMENT: "true",
+}));
+assert.equal(staticOnly.rewrites[0].source, "/auth/callback");
+assert.match(
+  staticOnly.headers[0].headers.find((header) => header.key === "Content-Security-Policy").value,
+  /https:\/\/auth\.example\.test/,
+);
 assert.throws(
   () => createConfig(env({ VITE_PLYWISE_EVENT_ORIGIN: "" })),
   /require VITE_PLYWISE_EVENT_ORIGIN/,

@@ -55,17 +55,20 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
 }
 
 export function EvaluationBar({ value }: { value?: number }) {
-  const clamped = Math.max(-600, Math.min(600, value ?? 0));
-  const whiteShare = Math.max(4, Math.min(96, 50 + clamped / 12));
+  const clamped = Math.max(-800, Math.min(800, value ?? 0));
+  // Keep a large engine swing legible without letting the rail become a
+  // thermometer. The rail is a visual summary; the exact score remains text.
+  const whiteShare = Math.max(8, Math.min(92, 50 + Math.tanh(clamped / 340) * 42));
   const label = formatEval(value);
-  return <aside className="evaluation-column" aria-label={`Current engine evaluation ${label}`}>
-    <strong>{label}</strong>
-    <svg className="evaluation-track" viewBox="0 0 10 100" preserveAspectRatio="none" aria-hidden="true">
-      <rect className="evaluation-track-base" x="0" y="0" width="10" height="100" rx="5"/>
-      <rect className="evaluation-track-value" x="0" y={100 - whiteShare} width="10" height={whiteShare} rx="5"/>
-      <line className="evaluation-track-zero" x1="0" y1="50" x2="10" y2="50"/>
-    </svg>
-    <small>{formatEval(value === undefined ? undefined : -value)}</small>
+  const side = value === undefined ? "Even position" : value >= 0 ? `White advantage, ${label}` : `Black advantage, ${formatEval(Math.abs(value))}`;
+  return <aside className="evaluation-column" aria-label={`Current engine evaluation: ${side}`}>
+    <span className="evaluation-value">{label}</span>
+    <div className="evaluation-rail" role="img" aria-label={side}>
+      <span className="evaluation-rail-black" />
+      <span className="evaluation-rail-white" style={{ height: `${whiteShare}%` }} />
+      <span className="evaluation-rail-marker" style={{ bottom: `calc(${whiteShare}% - 2px)` }} />
+    </div>
+    <span className="evaluation-opposite">{formatEval(value === undefined ? undefined : -value)}</span>
   </aside>;
 }
 

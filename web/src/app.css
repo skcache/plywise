@@ -1174,23 +1174,21 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .analysis-live-mark, .analysis-activity-track span, .evaluation-rail-white, .evaluation-rail-marker { animation: none; transition: none; }
 }
 
-/* Keep the familiar original Unicode set for the review board. */
+/* Keep the older handcrafted inline SVG set for the review board. */
 .board-piece {
   display: grid;
   place-items: center;
   width: 86%;
   height: 86%;
-  color: var(--text);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(24px, 5.6cqw, 72px);
-  font-weight: 400;
-  line-height: 1;
   filter: drop-shadow(0 4px 3px rgb(0 0 0 / .32));
   user-select: none;
 }
-.board-piece.white-piece { color: #efede4; text-shadow: 0 1px 0 rgb(0 0 0 / .58), 0 4px 3px rgb(0 0 0 / .45); }
-.board-piece.black-piece { color: #171915; text-shadow: 0 1px 0 rgb(255 255 255 / .22), 0 4px 3px rgb(0 0 0 / .42); }
+.board-piece svg { width: 100%; height: 100%; overflow: visible; }
+.board-piece svg path, .board-piece svg circle { stroke-linejoin: round; stroke-linecap: round; stroke-width: 2.25; }
+.board-piece.white-piece svg path, .board-piece.white-piece svg circle { fill: #f2efe6; stroke: #4b4e4b; }
+.board-piece.black-piece svg path, .board-piece.black-piece svg circle { fill: #222523; stroke: #e4dfd2; stroke-width: 1.7; }
+.board-piece .piece-base { fill: none; stroke-width: 3; }
 
 @media (max-width: 560px) {
-  .board-piece { font-size: clamp(23px, 8.5cqw, 52px); }
+  .board-piece { width: 88%; height: 88%; }
 }

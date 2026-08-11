@@ -103,6 +103,27 @@ Before pointing Vercel at a host, run `scripts/hosted-api-smoke.sh` with the API
 and a short-lived account token. It checks readiness, JSON responses, exact CORS, the unauthenticated
 boundary, an authenticated game request, and the WebSocket handshake without printing the token.
 
+To exercise the first saved-review path as well, provide a short-lived account token and a completed
+PGN explicitly. The script imports that PGN, starts server analysis, waits for real job progress,
+reads the completed review back from the account library, and can check a second account cannot read
+it. It never prints or stores bearer tokens; use a disposable test game because this adds one record
+to the account:
+
+```sh
+PCT_API_BASE_URL=https://your-api.onrender.com \
+PCT_APP_ORIGIN=https://plywise-chess.vercel.app \
+PCT_API_BEARER_TOKEN="$PCT_TEST_TOKEN" \
+PCT_V1_PGN="[White \"Smoke\"]
+[Black \"Test\"]
+[Result \"1-0\"]
+
+1. e4 e5 1-0" \
+scripts/hosted-v1-smoke.sh
+```
+
+Set `PCT_V1_SECOND_BEARER_TOKEN` to include the cross-account read check. This path is opt-in and
+does not create a billing resource.
+
 ## What's left
 
 - Make the current experience work safely on the web.

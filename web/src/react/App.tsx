@@ -518,7 +518,7 @@ export default function App() {
     if (reviewMode === "try_move" && selectedGame) {
       try {
         const result = await submitReviewAttempt(selectedGame.game.id, selectedPly, uci);
-        setTryMessage(result.accepted ? "Correct. C++ confirmed this engine-backed candidate." : "Legal, but another move changes the forcing sequence more precisely.");
+        setTryMessage(result.accepted ? "Correct. That move matches the review." : "Legal, but another move changes the forcing sequence more precisely.");
       } catch (attemptError) {
         setTryMessage(attemptError instanceof ApiError && attemptError.code === "illegal_move" ? "That move is illegal in this position." : attemptError instanceof Error ? attemptError.message : "Could not validate the move.");
       }
@@ -540,7 +540,7 @@ export default function App() {
     if (!selectedGame) return;
     try {
       const result = await submitReviewAttempt(selectedGame.game.id, selectedPly, uci.trim().toLowerCase());
-      setTryMessage(result.accepted ? "Correct. C++ confirmed this engine-backed candidate." : "Legal, but another move changes the forcing sequence more precisely.");
+      setTryMessage(result.accepted ? "Correct. That move matches the review." : "Legal, but another move changes the forcing sequence more precisely.");
     } catch (attemptError) {
       setTryMessage(attemptError instanceof ApiError && attemptError.code === "illegal_move" ? "That move is illegal in this position." : attemptError instanceof Error ? attemptError.message : "Could not validate the move.");
     }

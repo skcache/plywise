@@ -272,6 +272,20 @@ export async function accountAccessToken(): Promise<string | null> {
   }
 }
 
+export async function refreshAccountAccessToken(): Promise<string | null> {
+  if (!client) return null;
+  try {
+    const { data, error } = await client.auth.refreshSession();
+    if (error || !data.session) return null;
+    currentSession = data.session;
+    currentMessage = "";
+    notify({ ...currentAuthSnapshot(), event: "TOKEN_REFRESHED" });
+    return data.session.access_token;
+  } catch {
+    return null;
+  }
+}
+
 export function cachedAccountAccessToken(): string | null {
   return localAuthMode ? null : currentSession?.access_token ?? null;
 }

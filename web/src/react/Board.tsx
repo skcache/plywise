@@ -68,6 +68,7 @@ export function EvaluationBar({ value }: { value?: number }) {
       <span className="evaluation-rail-white" style={{ height: `${whiteShare}%` }} />
       <span className="evaluation-rail-marker" style={{ bottom: `calc(${whiteShare}% - 2px)` }} />
     </div>
+    <span className="evaluation-overlay" style={{ bottom: `calc(${whiteShare}% - 8px)` }}>{label}</span>
     <span className="evaluation-opposite">{formatEval(value === undefined ? undefined : -value)}</span>
   </aside>;
 }

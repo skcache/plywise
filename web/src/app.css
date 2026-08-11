@@ -1608,9 +1608,10 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 
 @media (min-width: 768px) {
   .route-canvas { display: flex; min-height: 0; flex-direction: column; }
-  .desktop-route-view { width: 100%; height: 100%; min-height: 0; }
+  .desktop-route-view { width: 100%; height: 100%; min-height: 0; overflow: hidden; }
   .desktop-route-view > .soft-surface { height: 100%; min-height: 0; }
   .route-analysis > .analysis-view { width: 100%; height: 100%; min-height: 0; }
+  .recent-surface { contain: paint; }
 }
 
 @media (min-width: 1200px) {
@@ -1619,8 +1620,40 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 }
 
 @media (min-width: 821px) and (max-width: 1270px) {
-  .playback-bar { grid-template-columns: minmax(104px, .8fr) auto minmax(148px, 1fr); }
+  .playback-bar { grid-template-columns: 56px minmax(0, 1fr) 120px; padding-inline: 10px; }
+  .playback-buttons { gap: 8px; }
+  .move-selector { width: 120px; min-width: 0; padding-inline: 10px; }
   .playback-flip { padding-inline: 0; }
+}
+
+/* Large monitors have room for a little more reading density. Increase the
+   board and row rhythm without stretching copy across the whole canvas. */
+@media (min-width: 1800px) {
+  .home-module h2 { font-size: clamp(25px, 1.45vw, 34px); }
+  .home-module p { font-size: clamp(12px, .72vw, 16px); }
+  .home-module small { font-size: clamp(10px, .52vw, 12px); }
+  .home-game-row { min-height: 78px; gap: 24px; }
+  .home-opponent strong { font-size: clamp(12px, .68vw, 16px); }
+  .home-opponent small, .home-date, .home-status { font-size: clamp(9px, .5vw, 12px); }
+  .home-recent h2 { font-size: clamp(18px, 1vw, 24px); }
+  .recent-game-card { min-height: 108px; gap: 24px; }
+  .recent-game-copy strong { font-size: clamp(14px, .75vw, 18px); }
+  .recent-game-copy span, .recent-game-copy small,
+  .recent-game-meta small, .recent-game-status span { font-size: clamp(10px, .52vw, 13px); }
+  .recent-game-meta > span { font-size: clamp(10px, .55vw, 13px); }
+  .recent-game-status strong { font-size: clamp(11px, .6vw, 14px); }
+  .board-holder { width: min(100%, calc(100dvh - 260px), 1040px); max-width: 1040px; }
+  .playback-bar { width: min(100%, 1000px); }
+  .concept-detail { grid-template-columns: minmax(620px, 720px) minmax(280px, 520px); }
+  .concept-copy { max-width: 520px; }
+}
+
+/* Small text links still need a comfortable keyboard/touch target. */
+.home-recent header button,
+.settings-notices a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 /* Keep the board clear of the fixed nav in short landscape viewports. This

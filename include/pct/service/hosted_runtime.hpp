@@ -2,6 +2,7 @@
 
 #include "pct/analysis/analyzer.hpp"
 #include "pct/app/job_manager.hpp"
+#include "pct/import/import_service.hpp"
 #include "pct/service/http_server.hpp"
 
 #include <chrono>
@@ -28,7 +29,8 @@ struct HostedRuntimeOptions {
 // callbacks needed by Api::AuthConfig and pins a scope only while it is active or in flight.
 class HostedRuntime final {
   public:
-    HostedRuntime(HostedRuntimeOptions options, analysis::Analyzer& analyzer,
+    HostedRuntime(HostedRuntimeOptions options, import::ImportService& importer,
+                  analysis::Analyzer& analyzer,
                   app::JobManagerOptions job_options = {});
     ~HostedRuntime();
 

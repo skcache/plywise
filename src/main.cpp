@@ -300,6 +300,7 @@ int main(int argc, char** argv) {
                     options.oidc_provider,
                     options.oidc_jwks_url,
                 },
+                importer,
                 analyzer,
                 pct::app::JobManagerOptions{options.workers, options.max_pending,
                                             options.retry_limit});

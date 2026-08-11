@@ -243,6 +243,16 @@ export default function App() {
     }
   }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
 
+  // A signed-in user should never be left on an account-entry URL. This can
+  // happen when a returning local/OAuth session is already present before a
+  // deep link such as /#/sign-in is opened. Keep the entry surface visible
+  // while it is open, then return to the app shell when it closes.
+  useEffect(() => {
+    if (authSnapshot.session && !accountPromptOpen && (route === "sign-in" || route === "sign-up")) {
+      setRoute("home");
+    }
+  }, [accountPromptOpen, authSnapshot.session, route]);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("pct-theme", theme);
@@ -757,8 +767,12 @@ export default function App() {
     accountFlowRequested.current = null;
     clearAuthIntent();
     setAccountPromptOpen(false);
-    if (!authSnapshot.session) setRoute("landing");
-  }, [authSnapshot.session]);
+    if (authSnapshot.session) {
+      if (route === "sign-in" || route === "sign-up") setRoute("home");
+    } else {
+      setRoute("landing");
+    }
+  }, [authSnapshot.session, route]);
 
   const accountPrompt = accountPromptOpen && <AccountPrompt
     auth={authSnapshot}
@@ -842,7 +856,7 @@ export default function App() {
       />
     </>;
   } else if (route === "recent") {
-    header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`}/>;
+    header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} icon="recent"/>;
     view = <>
       <div className="desktop-route-view"><RecentView
         games={games}
@@ -875,7 +889,7 @@ export default function App() {
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
-    header = <TopBar title={gameName} detail={opening} meta={activeBrowserProgress ? undefined : selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
+    header = <TopBar icon="analysis" title={gameName} detail={opening} meta={activeBrowserProgress ? undefined : selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
       {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? "Analyzing…" : selectedJob?.status === "running" ? "Analyzing…" : "Analyze"}</SoftButton>}
       <SoftButton icon="overview" onClick={() => { setInspectorTab("summary"); setOverviewOpen((value) => !value); }}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
@@ -930,20 +944,20 @@ export default function App() {
     />;
   } else if (route === "explore") {
     const entries = buildExploreEntries(games);
-    header = <TopBar title="Explore" detail="Your position library" meta={`${entries.length} concepts`}/>;
+    header = <TopBar title="Explore" detail="Your position library" meta={`${entries.length} concepts`} icon="explore"/>;
     view = <>
       <div className="desktop-route-view"><ExploreView games={games} section={exploreSection} selectedId={selectedExploreId} onSection={setExploreSection} onSelect={setSelectedExploreId} onOpen={openGame}/></div>
       <MobileExploreView games={games} profile={profile} section={exploreSection} onSection={setExploreSection} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
     </>;
   } else if (route === "progress") {
     const player = inferPlayerName(profile, games);
-    header = <TopBar title="Progress" detail={player || "Local player profile"} meta={`${profile?.games_analyzed ?? games.filter((game) => game.analysis).length} analyzed`}/>;
+    header = <TopBar title="Progress" detail={player || "Local player profile"} meta={`${profile?.games_analyzed ?? games.filter((game) => game.analysis).length} analyzed`} icon="progress"/>;
     view = <>
       <div className="desktop-route-view"><ProgressView games={games} profile={profile} onOpen={openGame}/></div>
       <MobileProgressView games={games} profile={profile} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
     </>;
   } else {
-    header = <TopBar title="Settings" detail="Local preferences"/>;
+    header = <TopBar title="Settings" detail="Local preferences" icon="settings"/>;
     const updateEngineLines = (value: boolean) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); };
     view = <>
       <div className="desktop-route-view"><SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/></div>

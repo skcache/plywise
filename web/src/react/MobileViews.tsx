@@ -105,7 +105,7 @@ export function MobileExploreView({ games, profile, section, onSection, onOpen, 
   const [tab, setTab] = useState<MobileExploreTab>(sectionToTab(section));
   const [selected, setSelected] = useState<ExploreEntry | null>(null);
   const entries = buildExploreEntries(games);
-  const activeSection = tab === "Openings" ? "Openings" : tab === "Middlegame" || tab === "Patterns" ? "Middlegames" : tab === "Endgame" ? "Endgames" : null;
+  const activeSection = tab === "Openings" ? "Openings" : tab === "Middlegame" ? "Middlegames" : tab === "Endgame" ? "Endgames" : null;
   const categoryEntries = activeSection ? entries.filter((entry) => entry.section === activeSection) : entries;
   const weaknesses = profile?.weaknesses.filter((item) => item.occurrences > 0).slice(0, 3) ?? [];
   const selectTab = (next: MobileExploreTab) => { setTab(next); setSelected(null); if (next === "Openings" || next === "Middlegame" || next === "Endgame") onSection(next === "Middlegame" ? "Middlegames" : next === "Endgame" ? "Endgames" : "Openings"); };
@@ -118,7 +118,7 @@ export function MobileExploreView({ games, profile, section, onSection, onOpen, 
         {weaknesses.length ? <section className="mobile-explore-section"><div className="mobile-section-heading"><div><span>From your reviews</span><h2>Good places to start</h2></div></div><div className="mobile-lesson-list">{weaknesses.map((item) => <button key={item.category} className="mobile-lesson-row" onClick={() => setTab("Patterns")}><div><strong>{humanLabel(item.category)}</strong><p>{item.occurrences} moment{item.occurrences === 1 ? "" : "s"} across {item.games} game{item.games === 1 ? "" : "s"}.</p></div><span>Learn <b>›</b></span></button>)}</div></section> : null}
         {entries.slice(0, 3).map((entry) => <ExploreCard key={entry.id} entry={entry} onSelect={setSelected}/>) }
         {!weaknesses.length && !entries.length ? <ExploreEmpty/> : null}
-      </> : <section className="mobile-explore-section"><div className="mobile-section-heading"><div><span>{tab}</span><h2>{tab === "Patterns" ? "Patterns to notice" : `Your ${tab.toLowerCase()} positions`}</h2></div></div>{categoryEntries.length ? <div className="mobile-lesson-list">{categoryEntries.map((entry) => <ExploreCard key={entry.id} entry={entry} onSelect={setSelected}/>)}</div> : <ExploreEmpty category={tab}/>}</section>}
+      </> : <section className="mobile-explore-section"><div className="mobile-section-heading"><div><span>{tab}</span><h2>{tab === "Patterns" ? "Patterns to notice" : `Your ${tab.toLowerCase()} positions`}</h2></div></div>{tab === "Patterns" ? weaknesses.length ? <div className="mobile-lesson-list">{weaknesses.map((item) => <div key={item.category} className="mobile-lesson-row mobile-pattern-row"><div><strong>{humanLabel(item.category)}</strong><p>{item.occurrences} moment{item.occurrences === 1 ? "" : "s"} across {item.games} game{item.games === 1 ? "" : "s"}.</p></div><span>Keep noticing</span></div>)}</div> : <ExploreEmpty category="patterns"/> : categoryEntries.length ? <div className="mobile-lesson-list">{categoryEntries.map((entry) => <ExploreCard key={entry.id} entry={entry} onSelect={setSelected}/>)}</div> : <ExploreEmpty category={tab}/>}</section>}
     </div>
   </div>;
 }
@@ -175,7 +175,7 @@ function MobileRecentRow({ game, jobs, player, selecting, selected, onSelect, on
   const active = activeJob(game.game.id, jobs);
   const status = active ? "Working" : info.status;
   const action = game.analysis_status === "complete" ? "Review" : active ? "Working…" : "Analyze";
-  return <article className={`mobile-recent-row ${selected ? "selected" : ""}`}>
+  return <article className={`mobile-recent-row ${selecting ? "selecting" : ""} ${selected ? "selected" : ""}`}>
     {selecting ? <label className="mobile-row-checkbox"><input type="checkbox" checked={selected} onChange={() => onSelect(game.game.id)}/><span aria-hidden="true"/></label> : null}
     <button className="mobile-recent-main" onClick={() => selecting ? onSelect(game.game.id) : onOpen(game.game.id, reviewPly(game))}>
       <strong>{info.opponent}</strong><span>{info.result} · {info.opening}</span><small>{info.timeControl} <i>·</i> {status}</small>

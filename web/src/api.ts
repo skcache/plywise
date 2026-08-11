@@ -19,7 +19,8 @@ import type {
   VariationAnalysis,
 } from "./types";
 import { apiUrl } from "./config/runtime";
-import { accountAccessToken } from "./auth-session";
+import { accountAccessToken, refreshAccountAccessToken } from "./auth-session";
+import { retryWithFreshAuth } from "./api-auth-retry";
 import type { BrowserAnalysisRequest, BrowserObservationPayload } from "./browser-engine";
 
 export class ApiError extends Error {
@@ -38,18 +39,24 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (!headers.has("Authorization")) {
-    const accountToken = await accountAccessToken();
-    if (accountToken) headers.set("Authorization", `Bearer ${accountToken}`);
-  }
+  const suppliedAuth = headers.has("Authorization");
+  const accountToken = suppliedAuth ? null : await accountAccessToken();
+  if (accountToken) headers.set("Authorization", `Bearer ${accountToken}`);
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    headers,
-    redirect: "error",
-  });
+  const response = await retryWithFreshAuth(
+    accountToken,
+    async (token) => {
+      const attemptHeaders = new Headers(headers);
+      if (!suppliedAuth) {
+        if (token) attemptHeaders.set("Authorization", `Bearer ${token}`);
+        else attemptHeaders.delete("Authorization");
+      }
+      return fetch(apiUrl(path), { ...init, headers: attemptHeaders, redirect: "error" });
+    },
+    refreshAccountAccessToken,
+  );
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     throw new Error("Plywise service is unavailable. Start the C++ service on port 8787, or check the hosted API origin.");

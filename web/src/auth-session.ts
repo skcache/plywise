@@ -37,7 +37,9 @@ const providerLabels: Record<AuthProvider, string> = {
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? "";
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "";
 const authStorage = safeSessionStorage();
-const localAuthStorage = safeLocalStorage();
+// Prefer localStorage for a convenient reload-to-reload harness, but fall back to
+// the current tab's session storage when a browser privacy policy blocks it.
+const localAuthStorage = safeLocalStorage() ?? authStorage;
 const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: {

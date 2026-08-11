@@ -842,7 +842,7 @@ export default function App() {
       />
     </>;
   } else if (route === "recent") {
-    header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} actions={<SoftButton icon="import" onClick={() => setImportOpen(true)}>Import game</SoftButton>}/>;
+    header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`}/>;
     view = <>
       <div className="desktop-route-view"><RecentView
         games={games}
@@ -969,6 +969,21 @@ export default function App() {
   </>;
 }
 
+type RecentFilter = "all" | "needs-review" | "reviewed";
+
+type RecentGameRow = {
+  stored: StoredGame;
+  opponent: string;
+  opening: string;
+  date: string;
+  ratings: string;
+  timeControl: string;
+  status: string;
+  statusDetail: string;
+  active: boolean;
+  reviewed: boolean;
+};
+
 function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen, onAnalyze, onAnalyzeSelected, onImport }: {
   games: StoredGame[];
   jobs: Job[];
@@ -981,30 +996,56 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
   onAnalyzeSelected: () => void;
   onImport: () => void;
 }) {
+  const [filter, setFilter] = useState<RecentFilter>("all");
   const player = inferPlayerName(profile, games).toLowerCase();
+  const rows: RecentGameRow[] = games.map((stored) => {
+    const tags = stored.game.tags;
+    const white = tags.White ?? "White";
+    const black = tags.Black ?? "Black";
+    const isWhite = player && white.toLowerCase() === player;
+    const isBlack = player && black.toLowerCase() === player;
+    const opponent = isWhite ? black : isBlack ? white : `${white} vs. ${black}`;
+    const latestJob = jobs.filter((job) => job.game_id === stored.game.id).sort((a, b) => b.id - a.id)[0];
+    const active = latestJob?.status === "running" || latestJob?.status === "queued";
+    const status = active
+      ? latestJob.status === "running" ? "Analyzing" : "Queued"
+      : latestJob?.status === "failed" ? "Failed"
+        : stored.analysis_status === "complete" ? "Reviewed"
+          : stored.analysis_status === "shallow" ? "Partial" : "Ready";
+    const reviewed = stored.analysis_status === "complete";
+    return {
+      stored,
+      opponent,
+      opening: stored.analysis?.opening || "Opening appears after analysis",
+      date: gameDate(tags),
+      ratings: [tags.WhiteElo, tags.BlackElo].filter(Boolean).join(" / ") || "Ratings unavailable",
+      timeControl: tags.TimeControl || "Time control unavailable",
+      status,
+      statusDetail: active ? latestJob.progress.message : latestJob?.status === "failed" ? latestJob.error || "Analysis failed. Try again." : reviewed ? "Analysis is ready to revisit" : "Not reviewed yet",
+      active,
+      reviewed,
+    };
+  });
+  const filteredRows = rows.filter((row) => filter === "all" || (filter === "reviewed" ? row.reviewed : !row.reviewed));
+  const reviewedCount = rows.filter((row) => row.reviewed).length;
   return <section className="soft-surface recent-surface">
-    <header className="surface-heading"><div><span>Game library</span><h1>Continue where you left off.</h1></div>{selected.size > 0 && <div className="selection-actions"><strong>{selected.size} selected</strong><button onClick={onAnalyzeSelected}>Analyze selected</button><button onClick={onClear}>Clear</button></div>}</header>
-    <div className="game-list" role="list" aria-label="Recent games">
-      {games.map((stored) => {
-        const tags = stored.game.tags;
-        const white = tags.White ?? "White";
-        const black = tags.Black ?? "Black";
-        const isWhite = player && white.toLowerCase() === player;
-        const isBlack = player && black.toLowerCase() === player;
-        const opponent = isWhite ? black : isBlack ? white : `${white} vs. ${black}`;
-        const latestJob = jobs.filter((job) => job.game_id === stored.game.id).sort((a, b) => b.id - a.id)[0];
-        const active = latestJob?.status === "running" || latestJob?.status === "queued";
-        const status = active ? latestJob.status === "running" ? "Analyzing" : "Queued" : latestJob?.status === "failed" ? "Failed" : stored.analysis_status === "complete" ? "Reviewed" : stored.analysis_status === "shallow" ? "Partial" : "Ready";
-        return <article key={stored.game.id} className={`game-row ${selected.has(stored.game.id) ? "selected" : ""}`} role="listitem">
-          <label className="select-control"><input type="checkbox" checked={selected.has(stored.game.id)} onChange={() => onSelect(stored.game.id)}/><span /></label>
-          <button className="game-name" onClick={() => onOpen(stored.game.id, reviewLandingPly(stored))}><strong>{opponent}</strong><small>{stored.analysis?.opening || "Opening appears after analysis"}</small></button>
-          <div className="game-result"><strong>{tags.Result ?? "*"}</strong><span>{tags.TimeControl || "—"}</span></div>
-          <div className="game-date"><strong>{gameDate(tags)}</strong><span>{[tags.WhiteElo, tags.BlackElo].filter(Boolean).join(" / ") || "Ratings unavailable"}</span></div>
-          <span className={`status-text status-${status.toLowerCase()}`}>{status}</span>
-          <button className="row-button" disabled={active} onClick={() => stored.analysis_status === "complete" ? onOpen(stored.game.id, reviewLandingPly(stored)) : onAnalyze(stored.game.id)}>{stored.analysis_status === "complete" ? "Open review" : active ? status : "Analyze"}</button>
-        </article>;
-      })}
+    <header className="recent-header"><div><span>Game library</span><h1>Your recent games.</h1><p>Every game you bring in stays here until you decide what to review next.</p></div><div className="recent-header-actions"><small>{games.length} imported · {reviewedCount} reviewed</small><SoftButton icon="import" onClick={onImport}>Import game</SoftButton></div></header>
+    <div className="recent-toolbar"><div className="recent-filters" role="group" aria-label="Filter games">
+      {(["all", "needs-review", "reviewed"] as const).map((item) => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item === "all" ? "All games" : item === "needs-review" ? "Needs review" : "Reviewed"}</button>)}
+    </div>{selected.size > 0 ? <div className="selection-actions"><strong>{selected.size} selected</strong><button onClick={onAnalyzeSelected}>Analyze selected</button><button onClick={onClear}>Clear</button></div> : <span className="recent-toolbar-note">Select games to queue a batch review.</span>}</div>
+    <div className="recent-game-list" role="list" aria-label="Recent games">
+      {filteredRows.map((row) => <article key={row.stored.game.id} className={`recent-game-card ${selected.has(row.stored.game.id) ? "selected" : ""}`} role="listitem">
+        <label className="recent-select"><input type="checkbox" aria-label={`Select ${row.opponent}`} checked={selected.has(row.stored.game.id)} onChange={() => onSelect(row.stored.game.id)}/><span aria-hidden="true" /></label>
+        <button className="recent-game-main" onClick={() => onOpen(row.stored.game.id, reviewLandingPly(row.stored))}>
+          <span className="recent-result" aria-label={`Result ${row.stored.game.tags.Result ?? "unknown"}`}>{row.stored.game.tags.Result ?? "*"}</span>
+          <span className="recent-game-copy"><strong>{row.opponent}</strong><span>{row.opening}</span><small>{row.date} · {row.timeControl}</small></span>
+        </button>
+        <div className="recent-game-meta"><span>{row.ratings}</span><small>{row.statusDetail}</small></div>
+        <div className={`recent-game-status status-${row.status.toLowerCase()}`}><strong>{row.status}</strong><span>{row.reviewed ? "Open anytime" : "Ready when you are"}</span></div>
+        <button className="recent-game-action" disabled={row.active} onClick={() => row.reviewed ? onOpen(row.stored.game.id, reviewLandingPly(row.stored)) : onAnalyze(row.stored.game.id)}>{row.reviewed ? "Open review" : row.active ? row.status : "Analyze"}<span aria-hidden="true">→</span></button>
+      </article>)}
       {!games.length && <div className="empty-state"><Icon name="import"/><h2>No games yet</h2><p>Import a public Chess.com game or PGN. Analysis begins only when you choose it.</p><SoftButton icon="import" onClick={onImport}>Import your first game</SoftButton></div>}
+      {games.length > 0 && !filteredRows.length && <div className="empty-state recent-filter-empty"><h2>No games in this view</h2><p>Try another filter or bring in a new game to keep your library moving.</p><button type="button" onClick={() => setFilter("all")}>Show all games</button></div>}
     </div>
   </section>;
 }

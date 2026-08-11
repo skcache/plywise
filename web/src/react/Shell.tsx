@@ -34,9 +34,12 @@ export function AppShell({ route, onRoute, header, children }: {
         <Icon name="settings"/><span>Settings</span>
       </button>
     </aside>
-    <section className="app-stage">
-      {header}
+    <section className={`app-stage app-stage-${route}`}>
+      <div className={`desktop-route-header route-header-${route}`}>{header}</div>
       <main className={`route-canvas route-${route}`}>{children}</main>
+      <nav className="mobile-bottom-nav" aria-label="Primary navigation">
+        {navigation.map((item) => <button key={item.route} className={route === item.route ? "active" : ""} aria-current={route === item.route ? "page" : undefined} onClick={() => onRoute(item.route)}><Icon name={item.icon}/><span>{item.label}</span></button>)}
+      </nav>
     </section>
   </div>;
 }

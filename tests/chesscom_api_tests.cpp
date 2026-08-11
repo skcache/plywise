@@ -186,6 +186,61 @@ TEST_CASE("hosted Chess.com profile routes stay inside the authenticated owner s
     CHECK(scoped_repository.chesscom_profile().has_value());
 }
 
+TEST_CASE("hosted Chess.com URL resolutions use the authenticated owner ingest manager") {
+    const auto suffix = std::to_string(::getpid());
+    const auto global_path = std::filesystem::temp_directory_path() /
+                             ("pct-chesscom-resolution-global-" + suffix + ".log");
+    const auto scoped_path = std::filesystem::temp_directory_path() /
+                             ("pct-chesscom-resolution-owner-" + suffix + ".log");
+    storage::EventLog global_log((std::filesystem::remove(global_path), global_path));
+    storage::EventLog scoped_log((std::filesystem::remove(scoped_path), scoped_path));
+    app::Repository global_repository(global_log);
+    app::Repository scoped_repository(scoped_log);
+    const import::HttpTransport transport([](const import::HttpRequest& request) {
+        return import::HttpResponse{200, {}, request.url, "<html>no pgn</html>"};
+    });
+    import::ImportService importer(transport);
+    ApiIngestEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 2, 1});
+    app::JobManager global_jobs(global_repository, analyzer);
+    app::JobManager scoped_jobs(scoped_repository, analyzer);
+    app::IngestManager global_ingest(importer, global_repository, global_jobs, transport);
+    app::IngestManager scoped_ingest(importer, scoped_repository, scoped_jobs, transport);
+
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        return token == "owner-token" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                       : std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+        if (owner != scoped_repository.owner())
+            return std::nullopt;
+        return service::ApiScope{&scoped_repository, &scoped_jobs, {}, &scoped_ingest};
+    };
+    service::Api api(importer, global_repository, global_jobs, {}, {}, &global_ingest, {}, auth);
+
+    service::Request request = json_request(
+        "POST", "/api/import",
+        json::Value::Object{{"url", "https://www.chess.com/game/live/171626462440"}});
+    request.headers.emplace("authorization", "Bearer owner-token");
+    const auto queued = api.handle(std::move(request));
+    CHECK_EQ(queued.status, 202);
+    const auto body = json::parse(queued.body);
+    CHECK_EQ(body.at("status").as_string(), "resolving");
+    const std::string resolution_id = body.at("resolution_id").as_string();
+    CHECK(scoped_ingest.resolution(resolution_id).has_value());
+    CHECK(!global_ingest.resolution(resolution_id).has_value());
+
+    service::Request status_request{
+        "GET", "/api/import/resolutions/" + resolution_id,
+        {{"authorization", "Bearer owner-token"}}, {}};
+    const auto status = api.handle(std::move(status_request));
+    CHECK_EQ(status.status, 200);
+    CHECK_EQ(json::parse(status.body).at("id").as_string(), resolution_id);
+}
+
 TEST_CASE("Chess.com sync archive and resolution API contracts are bounded and structured") {
     ChessComApiFixture fixture;
     fixture.ingest.configure_profile("Alice");

@@ -100,7 +100,7 @@ export function buildExploreEntries(games: StoredGame[]): ExploreEntry[] {
             id: key,
             section: "Middlegames",
             title: titleCase(tag.replaceAll("_", " ")),
-            purpose: motifPurpose[tag] ?? "Reconstruct the candidate moves and compare the engine-backed continuation.",
+            purpose: motifPurpose[tag] ?? "Compare the choices in this position and look for the move that changes the plan.",
             source: `Tutor Classification Model 1 tag · ${gameTitle(stored)}`,
             fen: move.fen_before,
             gameId: stored.game.id,

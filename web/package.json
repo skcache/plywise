@@ -14,12 +14,13 @@
     "test:config": "tsc tests/service-origin.test.ts src/config/service-origin.ts --outDir /tmp/pct-web-config --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-config/tests/service-origin.test.js",
     "test:geometry": "tsc tests/chess-geometry.test.ts src/chess.ts --outDir /tmp/pct-web-geometry --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-geometry/tests/chess-geometry.test.js",
     "test:review": "tsc tests/review-state.test.ts src/review.ts src/types.ts --outDir /tmp/pct-web-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-review/tests/review-state.test.js",
+    "test:review-copy": "tsc tests/review-copy.test.ts src/review-copy.ts src/types.ts --outDir /tmp/pct-web-review-copy --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-review-copy/tests/review-copy.test.js",
     "test:insights": "tsc tests/insights.test.ts src/insights.ts src/types.ts --outDir /tmp/pct-web-insights --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-insights/tests/insights.test.js",
     "test:auth": "tsc tests/auth-redirect.test.ts src/auth-redirect.ts --outDir /tmp/pct-web-auth --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-auth/tests/auth-redirect.test.js",
     "test:engine": "tsc tests/browser-engine.test.ts src/browser-engine.ts src/engine-profile.ts --outDir /tmp/pct-web-engine --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-engine/tests/browser-engine.test.js",
     "test:browser-review": "tsc tests/browser-review.test.ts src/browser-review.ts src/browser-engine.ts src/engine-profile.ts src/types.ts --outDir /tmp/pct-web-browser-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-browser-review/tests/browser-review.test.js",
     "test:vercel": "node tests/vercel-config.test.mjs",
-    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:insights && npm run test:auth && npm run test:engine && npm run test:browser-review && npm run test:vercel"
+    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:review-copy && npm run test:insights && npm run test:auth && npm run test:engine && npm run test:browser-review && npm run test:vercel"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

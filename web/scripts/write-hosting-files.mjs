@@ -27,6 +27,25 @@ const contentSecurityPolicy = [
   `connect-src ${[...connectSources].join(" ")}`,
 ].join("; ");
 
+function escapeHtmlAttribute(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+const indexOutput = path.resolve("dist", "index.html");
+const indexHtml = fs.readFileSync(indexOutput, "utf8");
+const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${escapeHtmlAttribute(contentSecurityPolicy)}" />`;
+if (!indexHtml.includes('http-equiv="Content-Security-Policy"')) {
+  fs.writeFileSync(indexOutput, indexHtml.replace("</head>", `    ${cspMeta}\n  </head>`));
+}
+
+for (const privateBuildFile of ["pieces/ASSET_AUDIT.md"]) {
+  fs.rmSync(path.resolve("dist", privateBuildFile), { force: true });
+}
+
 const headers = `/*
   Content-Security-Policy: ${contentSecurityPolicy}
   Permissions-Policy: camera=(), microphone=(), geolocation=()

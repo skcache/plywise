@@ -33,7 +33,7 @@ import { buildExploreEntries, inferPlayerName, ratingDelta, ratingHistory, revie
 import { browserEngineProfiles, normalizeBrowserEngineProfile, type BrowserEngineProfile } from "../engine-profile";
 import { BrowserEngineError, createBrowserEngine } from "../browser-engine";
 import { runBrowserReview, type BrowserReviewProgress } from "../browser-review";
-import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, isAuthCallbackPath, isPasswordResetPath, loadAuthIntent, requestPasswordReset, saveAuthIntent, signInWithPassword, signInWithProvider, signOut, signUpWithPassword, subscribeAuth, updatePassword, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
+import { authProviderLabel, clearAuthIntent, consumeAuthRedirectMessage, currentAuthSnapshot, initializeAuth, isAuthCallbackPath, isPasswordResetPath, loadAuthIntent, requestPasswordReset, saveAuthIntent, signInWithLocalAccount, signInWithPassword, signInWithProvider, signOut, signUpWithPassword, subscribeAuth, updatePassword, type AuthEntryMode, type AuthProvider, type AuthSnapshot } from "../auth-session";
 import { autoplayDelay, blockingClassifications, completePlaybackDwell, isPlaying, pauseForSelectedMove, startPlayback, type ReviewMode } from "../review";
 import type { BoardOrientation } from "../chess";
 import type { Diagnostics, Drill, Job, MoveAssessment, PlayerIdentity, Profile, ProgressSocketMessage, RuntimeSettings, StoredGame, Variation, VariationAnalysis } from "../types";
@@ -722,6 +722,12 @@ export default function App() {
     return result;
   }, []);
 
+  const startLocalSignIn = useCallback(async () => {
+    const result = await signInWithLocalAccount();
+    setAuthMessage(result.message);
+    if (!result.ok) setError(result.message);
+  }, []);
+
   const startPasswordSignIn = useCallback(async (email: string, password: string) => {
     const result = await signInWithPassword(email, password);
     setAuthMessage(result.message);
@@ -761,6 +767,7 @@ export default function App() {
     busyProvider={authBusy}
     message={authMessage}
     onProvider={(provider) => void startProviderSignIn(provider)}
+    onLocalSignIn={() => void startLocalSignIn()}
     onModeChange={(mode) => { setAccountEntryMode(mode); setAuthMessage(""); setRoute(mode); accountFlowRequested.current = mode === "sign-up" ? "review" : "home"; }}
     onPasswordSignUp={startPasswordSignUp}
     onPasswordSignIn={startPasswordSignIn}

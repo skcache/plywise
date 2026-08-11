@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: sh scripts/check-public-surface.sh
+      - run: sh -n scripts/hosted-api-smoke.sh scripts/hosted-v1-smoke.sh
 
   native:
     runs-on: macos-latest

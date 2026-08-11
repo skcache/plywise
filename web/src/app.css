@@ -897,6 +897,29 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* Progress is a reading surface, so stack its evidence instead of squeezing
+   three desktop columns into a phone-width canvas. */
+@media (max-width: 820px) {
+  .progress-surface { display: block; min-height: 0; }
+  .progress-heading { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 24px 22px; }
+  .rating-chart svg { height: 140px; }
+  .progress-grid { grid-template-columns: minmax(0, 1fr); }
+  .profile-block { overflow: visible; padding: 22px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .profile-block:last-child { border-bottom: 0; }
+  .metric-row { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .metric-row div { display: grid; align-content: start; gap: 4px; }
+  .metric-row strong { font-size: 28px; }
+}
+
+@media (max-width: 560px) {
+  .progress-heading { gap: 16px; padding: 20px 18px; }
+  .progress-heading > div:first-child strong { font-size: 56px; }
+  .rating-chart svg { height: 110px; }
+  .profile-block { padding: 20px 18px; }
+  .metric-row { grid-template-columns: 1fr; gap: 0; }
+  .metric-row div { display: flex; align-items: baseline; justify-content: space-between; padding-block: 12px; }
+}
+
 /* Calm pass: keep the interface readable at real browser widths and make state quiet. */
 button, a, input, textarea, select { accent-color: var(--focus); }
 [data-theme="light"] {

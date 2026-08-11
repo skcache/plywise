@@ -42,8 +42,10 @@ import { ChessBoard, EvaluationBar, formatEval } from "./Board";
 import { Icon } from "./Icon";
 import { HomeView } from "./HomeView";
 import { LandingView } from "./LandingView";
+import { MobileExploreView, MobileHomeView, MobileProgressView, MobileRecentView, MobileSettingsView } from "./MobileViews";
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
 import { AccountPrompt, PasswordResetPrompt } from "./AccountPrompt";
+import { betterMoveExplanation, humanMoveExplanation, needsBetterMove } from "../review-copy";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "moves" | "line" | "patterns" | "method";
@@ -805,32 +807,62 @@ export default function App() {
         {refreshBusy ? "Refreshing" : "Refresh games"}
       </SoftButton>}
     />;
-    view = <HomeView
-      games={games}
-      jobs={jobs}
-      profile={profile}
-      drills={drills}
-      refreshBusy={refreshBusy}
-      refreshMessage={refreshMessage}
-      onOpen={openGame}
-      onRecent={() => setAppRoute("recent")}
-      onImport={() => setImportOpen(true)}
-      onPractice={(drill) => openGame(drill.source_game_id, drill.source_ply)}
-    />;
+    view = <>
+      <div className="desktop-route-view"><HomeView
+        games={games}
+        jobs={jobs}
+        profile={profile}
+        drills={drills}
+        refreshBusy={refreshBusy}
+        refreshMessage={refreshMessage}
+        onOpen={openGame}
+        onRecent={() => setAppRoute("recent")}
+        onImport={() => setImportOpen(true)}
+        onPractice={(drill) => openGame(drill.source_game_id, drill.source_ply)}
+      /></div>
+      <MobileHomeView
+        games={games}
+        profile={profile}
+        drills={drills}
+        refreshBusy={refreshBusy}
+        refreshMessage={refreshMessage}
+        onOpen={openGame}
+        onRecent={() => setAppRoute("recent")}
+        onImport={() => setImportOpen(true)}
+        onPractice={(drill) => openGame(drill.source_game_id, drill.source_ply)}
+        onRefresh={() => void refreshGames()}
+        onSettings={() => setAppRoute("settings")}
+      />
+    </>;
   } else if (route === "recent") {
     header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} actions={<SoftButton icon="import" onClick={() => setImportOpen(true)}>Import game</SoftButton>}/>;
-    view = <RecentView
-      games={games}
-      jobs={jobs}
-      profile={profile}
-      selected={selectedGames}
-      onSelect={(id) => setSelectedGames((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; })}
-      onClear={() => setSelectedGames(new Set())}
-      onOpen={openGame}
-      onAnalyze={(id) => void analyzeGame(id)}
-      onAnalyzeSelected={() => void Promise.all([...selectedGames].map((id) => analyzeGame(id))).then(() => setSelectedGames(new Set()))}
-      onImport={() => setImportOpen(true)}
-    />;
+    view = <>
+      <div className="desktop-route-view"><RecentView
+        games={games}
+        jobs={jobs}
+        profile={profile}
+        selected={selectedGames}
+        onSelect={(id) => setSelectedGames((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; })}
+        onClear={() => setSelectedGames(new Set())}
+        onOpen={openGame}
+        onAnalyze={(id) => void analyzeGame(id)}
+        onAnalyzeSelected={() => void Promise.all([...selectedGames].map((id) => analyzeGame(id))).then(() => setSelectedGames(new Set()))}
+        onImport={() => setImportOpen(true)}
+      /></div>
+      <MobileRecentView
+        games={games}
+        jobs={jobs}
+        profile={profile}
+        selected={selectedGames}
+        onSelect={(id) => setSelectedGames((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; })}
+        onClear={() => setSelectedGames(new Set())}
+        onOpen={openGame}
+        onAnalyze={(id) => void analyzeGame(id)}
+        onAnalyzeSelected={() => void Promise.all([...selectedGames].map((id) => analyzeGame(id))).then(() => setSelectedGames(new Set()))}
+        onImport={() => setImportOpen(true)}
+        onSettings={() => setAppRoute("settings")}
+      />
+    </>;
   } else if (route === "analysis") {
     const tags = selectedGame?.game.tags ?? {};
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
@@ -892,14 +924,24 @@ export default function App() {
   } else if (route === "explore") {
     const entries = buildExploreEntries(games);
     header = <TopBar title="Explore" detail="Your position library" meta={`${entries.length} concepts`}/>;
-    view = <ExploreView games={games} section={exploreSection} selectedId={selectedExploreId} onSection={setExploreSection} onSelect={setSelectedExploreId} onOpen={openGame}/>;
+    view = <>
+      <div className="desktop-route-view"><ExploreView games={games} section={exploreSection} selectedId={selectedExploreId} onSection={setExploreSection} onSelect={setSelectedExploreId} onOpen={openGame}/></div>
+      <MobileExploreView games={games} profile={profile} section={exploreSection} onSection={setExploreSection} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
+    </>;
   } else if (route === "progress") {
     const player = inferPlayerName(profile, games);
     header = <TopBar title="Progress" detail={player || "Local player profile"} meta={`${profile?.games_analyzed ?? games.filter((game) => game.analysis).length} analyzed`}/>;
-    view = <ProgressView games={games} profile={profile} onOpen={openGame}/>;
+    view = <>
+      <div className="desktop-route-view"><ProgressView games={games} profile={profile} onOpen={openGame}/></div>
+      <MobileProgressView games={games} profile={profile} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
+    </>;
   } else {
     header = <TopBar title="Settings" detail="Local preferences"/>;
-    view = <SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={(value) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); }} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/>;
+    const updateEngineLines = (value: boolean) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); };
+    view = <>
+      <div className="desktop-route-view"><SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/></div>
+      <MobileSettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics} onBack={() => setAppRoute("home")}/>
+    </>;
   }
 
   return <>
@@ -1062,9 +1104,11 @@ function MobilePlayback(props: AnalysisProps & { game: StoredGame; move?: MoveAs
 function MobileReviewSummary(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
   const move = props.move;
   const moveLabel = move ? `${move.move_number}${move.side === "white" ? "." : "…"} ${move.played_san || move.san}` : "Current move";
+  const showBetter = needsBetterMove(move);
+  const label = move?.classification === "Book" ? "Book move" : move?.classification || "Review pending";
   return <section className={`mobile-review-summary class-${classificationClass(move?.classification || "pending")}`} aria-label="Review summary">
-    <div className="mobile-review-row"><div><strong>{move?.classification || "Review pending"}</strong><span>{moveLabel}</span></div><p>{move ? moveExplanation(move) : "Analysis appears here when the review is ready."}</p></div>
-    {move && <div className="mobile-review-row mobile-better-row"><div><strong>Better</strong><span>{move.best_san || move.best_uci}</span></div><p>Maintains the position at {formatEval(move.evaluation_after_best)}.</p></div>}
+    <div className="mobile-review-row"><div><strong>{label}</strong><span>{moveLabel}</span></div><p>{move ? humanMoveExplanation(move) : "Analysis appears here when the review is ready."}</p></div>
+    {showBetter && move && <div className="mobile-review-row mobile-better-row"><div><strong>Better</strong><span>{move.best_san || move.best_uci}</span></div><p>{betterMoveExplanation(move)}</p></div>}
     <button className="mobile-more-analysis" onClick={props.onOpenOverview}>More analysis <span aria-hidden="true">↑</span></button>
   </section>;
 }
@@ -1088,9 +1132,11 @@ function MobileAnalysisDrawer(props: AnalysisProps & { game: StoredGame; move?: 
 
 function MobileDrawerReview(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
   const move = props.move;
+  const showBetter = needsBetterMove(move);
+  const label = move?.classification === "Book" ? "Book move" : move?.classification || "Review pending";
   return <div className="mobile-drawer-review">
-    <div className={`mobile-drawer-verdict class-${classificationClass(move?.classification || "pending")}`}><strong>{move?.classification || "Review pending"}</strong><span>{move ? `${move.move_number}${move.side === "white" ? "." : "…"} ${move.played_san || move.san}` : "Current move"}</span><p>{move ? moveExplanation(move) : "Analysis appears here when the review is ready."}</p></div>
-    {move && <div className="mobile-drawer-verdict class-best"><strong>Better</strong><span>{move.best_san || move.best_uci}</span><p>Maintains the position at {formatEval(move.evaluation_after_best)}.</p></div>}
+    <div className={`mobile-drawer-verdict class-${classificationClass(move?.classification || "pending")}`}><strong>{label}</strong><span>{move ? `${move.move_number}${move.side === "white" ? "." : "…"} ${move.played_san || move.san}` : "Current move"}</span><p>{move ? humanMoveExplanation(move) : "Analysis appears here when the review is ready."}</p></div>
+    {showBetter && move && <div className="mobile-drawer-verdict class-best"><strong>Better</strong><span>{move.best_san || move.best_uci}</span><p>{betterMoveExplanation(move)}</p></div>}
     {move && <div className="mobile-drawer-actions"><button onClick={props.onRetry}>Retry</button><button onClick={props.onVariation}>Explore variation</button></div>}
   </div>;
 }
@@ -1156,9 +1202,9 @@ function ReviewInspector(props: AnalysisProps & { analysisActive: boolean }) {
       {props.analysisActive ? <div className="inspector-analysis-state"><div className="inspector-state-icon"><Icon name="analysis"/></div><strong>{analysisStageLabel(props.browserProgress?.stage, props.selectedJob?.status)}</strong><p>{props.browserProgress?.message ?? props.selectedJob?.progress.message ?? "The review will appear here when the engine is done."}</p>{props.browserProgress && <dl><div><dt>Position</dt><dd>{props.browserProgress.ply + 1} · {props.browserProgress.position}</dd></div><div><dt>Depth</dt><dd>{props.browserProgress.depth ? `${props.browserProgress.depth}/${props.browserProgress.targetDepth ?? "—"}` : "Starting"}</dd></div><div><dt>Engine</dt><dd>{props.browserProgress.profile}</dd></div></dl>}</div> : <>
         <section className={`inspector-block inspector-current class-${classificationClass(move?.classification || "pending")}`}>
           <header><span>Current move</span><small>{move ? `${move.move_number}${move.side === "white" ? "." : "…"}` : "Not ready"}</small></header>
-          {move ? <div className="inspector-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{moveExplanation(move)}</p></div></div> : <p className="inspector-empty">Analysis appears here when the review is ready.</p>}
+          {move ? <div className="inspector-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{humanMoveExplanation(move)}</p></div></div> : <p className="inspector-empty">Analysis appears here when the review is ready.</p>}
         </section>
-        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode"><header><span>Variation</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && <section className="inspector-block inspector-best class-best"><header><span>Best move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Best move</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>Maintains the position at {formatEval(move.evaluation_after_best)}, compared with {formatEval(move.evaluation_after)} after the played move.</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
+        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode"><header><span>Variation</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && needsBetterMove(move) && <section className="inspector-block inspector-best class-best"><header><span>Better move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Better</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>{betterMoveExplanation(move)}</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
         <section className="inspector-block inspector-moves"><header><span>Move list</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((item, offset) => { const index = start + offset; const assessment = moves[index]; return <button key={index} className={index === props.selectedPly ? "current" : ""} onClick={() => props.onSelectPly(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{item.san}</strong><em>{assessment?.classification || "Pending"}</em>{index === props.selectedPly && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>; })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={props.onToggleMoves}>{props.moveListExpanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>
       </>}
     </section>
@@ -1189,7 +1235,7 @@ function ExploreView({ games, section, selectedId, onSection, onSelect, onOpen }
   const entries = buildExploreEntries(games);
   const visible = entries.filter((entry) => entry.section === section);
   const selected = visible.find((entry) => entry.id === selectedId) ?? visible[0];
-  return <section className="soft-surface explore-surface"><aside className="explore-index"><header><span>Personal library</span><h1>Study positions that came from your games.</h1></header><nav>{(["Openings", "Middlegames", "Endgames"] as ExploreSection[]).map((item) => <button key={item} className={section === item ? "active" : ""} onClick={() => onSection(item)}><span>{item}</span><small>{entries.filter((entry) => entry.section === item).length}</small></button>)}</nav><div className="concept-list">{visible.map((entry) => <button key={entry.id} className={selected?.id === entry.id ? "active" : ""} onClick={() => onSelect(entry.id)}><strong>{entry.title}</strong><span>{entry.tags.slice(0, 2).join(" · ")}</span></button>)}</div></aside>{selected ? <article className="concept-detail"><div className="concept-board"><ChessBoard fen={selected.fen} orientation="white" compact/></div><div className="concept-copy"><span>{selected.section.slice(0, -1)} concept</span><h2>{selected.title}</h2><p>{selected.purpose}</p><small>{selected.source}</small><SoftButton icon="analysis" onClick={() => onOpen(selected.gameId, selected.ply)}>Open in Analysis</SoftButton></div></article> : <div className="empty-state"><Icon name="book"/><h2>No {section.toLowerCase()} yet</h2><p>Analyze more games and this library will assemble itself from real positions.</p></div>}</section>;
+  return <section className="soft-surface explore-surface"><aside className="explore-index"><header><span>Personal library</span><h1>Study positions that came from your games.</h1></header><nav>{(["Openings", "Middlegames", "Endgames"] as ExploreSection[]).map((item) => <button key={item} className={section === item ? "active" : ""} onClick={() => onSection(item)}><span>{item}</span><small>{entries.filter((entry) => entry.section === item).length}</small></button>)}</nav><div className="concept-list">{visible.map((entry) => <button key={entry.id} className={selected?.id === entry.id ? "active" : ""} onClick={() => onSelect(entry.id)}><strong>{entry.title}</strong><span>{entry.tags.slice(0, 2).join(" · ")}</span></button>)}</div></aside>{selected ? <article className="concept-detail"><div className="concept-board"><ChessBoard fen={selected.fen} orientation="white" compact/></div><div className="concept-copy"><span>{selected.section.slice(0, -1)} concept</span><h2>{selected.title}</h2><p>{selected.purpose}</p><small>From an analyzed game</small><SoftButton icon="analysis" onClick={() => onOpen(selected.gameId, selected.ply)}>Open in Analysis</SoftButton></div></article> : <div className="empty-state"><Icon name="book"/><h2>No {section.toLowerCase()} yet</h2><p>Analyze more games and this library will assemble itself from real positions.</p></div>}</section>;
 }
 
 function ProgressView({ games, profile, onOpen }: { games: StoredGame[]; profile: Profile | null; onOpen: (id: string, ply: number) => void }) {
@@ -1355,16 +1401,4 @@ function dayGreeting(date: Date) {
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
   return "Good evening";
-}
-
-function moveExplanation(move: MoveAssessment) {
-  if (move.classification_reasons[0]) return move.classification_reasons[0];
-  const loss = `${(move.expected_points_loss * 100).toFixed(1)}%`;
-  if (move.classification === "Book") return "This move stays inside the local opening reference.";
-  if (["Brilliant", "Great", "Best"].includes(move.classification)) return "This is one of the engine-backed leading choices in the position.";
-  if (["Excellent", "Good"].includes(move.classification)) return `The position remains healthy with ${loss} expected-points loss.`;
-  if (move.classification === "Inaccuracy") return `A more precise continuation was available; the measured loss is ${loss}.`;
-  if (move.classification === "Mistake") return `The move gave up ${loss} expected points and needs a concrete alternative.`;
-  if (move.classification === "Miss") return "A forcing opportunity was available and the played move did not use it.";
-  return `Deep verification confirmed a decisive swing of ${loss} expected points.`;
 }

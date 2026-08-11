@@ -889,7 +889,6 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 }
 
 /* Calm pass: keep the interface readable at real browser widths and make state quiet. */
-html, body { overflow-x: clip; }
 button, a, input, textarea, select { accent-color: var(--focus); }
 [data-theme="light"] {
   --canvas: #e4e5e1;
@@ -1174,6 +1173,138 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .analysis-live-mark, .analysis-activity-track span, .evaluation-rail-white, .evaluation-rail-marker { animation: none; transition: none; }
 }
 
+/* Mobile routes are intentional compositions, not compressed desktop surfaces. */
+.mobile-route-view { display: none; }
+
+@media (max-width: 767px) {
+  .desktop-route-header, .desktop-route-view { display: none !important; }
+  .mobile-route-view { display: block; min-height: 100dvh; color: var(--text); }
+  .mobile-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; padding: calc(env(safe-area-inset-top) + 8px) 16px 8px; border-bottom: 1px solid var(--line); background: var(--canvas); }
+  .mobile-page-heading { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .mobile-page-heading > div { min-width: 0; }
+  .mobile-page-heading h1 { overflow: hidden; margin: 0; font-size: clamp(24px, 7vw, 30px); font-weight: 650; letter-spacing: -.04em; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-page-heading p { overflow: hidden; margin: 5px 0 0; color: var(--text-soft); font-size: 13px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-page-actions { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+  .mobile-page-icon, .mobile-page-back, .mobile-header-action { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 12px; color: var(--text); background: transparent; cursor: pointer; }
+  .mobile-page-icon:active, .mobile-page-back:active, .mobile-header-action:active { background: var(--surface-ink); box-shadow: inset 2px 2px 5px var(--shadow-dark); }
+  .mobile-page-icon svg, .mobile-page-back svg, .mobile-header-action svg { width: 19px; height: 19px; }
+  .mobile-page-back { margin-left: -8px; }
+  .mobile-text-action, .mobile-inline-action { min-height: 44px; padding: 0 4px; border: 0; color: var(--text-soft); background: transparent; cursor: pointer; font-size: 13px; }
+  .mobile-text-action:disabled { color: var(--text-faint); cursor: default; }
+  .mobile-page-content { display: grid; gap: 28px; width: 100%; max-width: 620px; margin: 0 auto; padding: 22px 16px calc(92px + env(safe-area-inset-bottom)); }
+  .mobile-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+  .mobile-section-heading span { display: block; margin-bottom: 5px; color: var(--text-faint); font-size: 12px; letter-spacing: .02em; }
+  .mobile-section-heading h2 { margin: 0; font-size: 20px; font-weight: 620; letter-spacing: -.025em; line-height: 1.15; }
+  .mobile-inline-action { padding-right: 0; color: var(--text); white-space: nowrap; }
+  .mobile-inline-action b, .mobile-recommendation > span b, .mobile-focus-card button b, .mobile-lesson-row > span b { margin-left: 3px; font-size: 18px; font-weight: 400; vertical-align: -1px; }
+
+  .mobile-home-view .mobile-page-content { gap: 30px; }
+  .mobile-home-next, .mobile-home-focus, .mobile-home-recent, .mobile-home-week { min-width: 0; }
+  .mobile-recommendation, .mobile-focus-card, .mobile-empty-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 76px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 16px; color: var(--text); background: var(--surface-high); box-shadow: 4px 6px 14px var(--shadow-dark), -2px -2px 7px var(--shadow-light); text-align: left; }
+  .mobile-recommendation, .mobile-empty-row { cursor: pointer; }
+  .mobile-recommendation > div, .mobile-focus-card > div, .mobile-empty-row > div { min-width: 0; }
+  .mobile-recommendation strong, .mobile-focus-card strong, .mobile-empty-row strong { display: block; overflow: hidden; font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-recommendation p, .mobile-focus-card p, .mobile-empty-row p { margin: 5px 0 0; color: var(--text-soft); font-size: 13px; line-height: 1.35; }
+  .mobile-recommendation > span, .mobile-focus-card button, .mobile-empty-row > button { flex: 0 0 auto; min-height: 44px; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .mobile-focus-card { align-items: flex-start; border-color: color-mix(in srgb, var(--focus) 22%, var(--line)); }
+  .mobile-focus-card button { margin-top: -5px; }
+  .mobile-muted-action { flex: 0 0 auto; color: var(--text-faint); font-size: 12px; }
+  .mobile-home-game-list { display: grid; border-top: 1px solid var(--line); }
+  .mobile-home-game-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; padding: 11px 0; border: 0; border-bottom: 1px solid var(--line); color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+  .mobile-home-game-row > div { display: grid; gap: 4px; min-width: 0; }
+  .mobile-home-game-row strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-home-game-row span { overflow: hidden; color: var(--text-soft); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-home-game-row > b { color: var(--text-soft); font-size: 22px; font-weight: 400; }
+  .mobile-week-metrics, .mobile-progress-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .mobile-metric { display: grid; gap: 5px; min-width: 0; padding: 12px 10px; border-top: 1px solid var(--line); }
+  .mobile-metric strong { font-size: 24px; font-weight: 650; letter-spacing: -.04em; }
+  .mobile-metric span { color: var(--text-soft); font-size: 12px; line-height: 1.2; }
+  .mobile-empty-copy { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.45; }
+
+  .mobile-recent-view .mobile-page-content { gap: 25px; }
+  .mobile-selection-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-soft); background: var(--surface-ink); font-size: 13px; }
+  .mobile-selection-bar button { min-height: 40px; padding: 0 8px; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 13px; }
+  .mobile-recent-group { min-width: 0; }
+  .mobile-recent-group > h2 { margin: 0 0 8px; color: var(--text-faint); font-size: 13px; font-weight: 600; }
+  .mobile-recent-list { display: grid; border-top: 1px solid var(--line); }
+  .mobile-recent-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 78px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .mobile-recent-row.selected { background: color-mix(in srgb, var(--focus) 6%, transparent); }
+  .mobile-row-checkbox { display: grid; place-items: center; width: 36px; height: 44px; cursor: pointer; }
+  .mobile-row-checkbox input { position: absolute; opacity: 0; }
+  .mobile-row-checkbox span { display: block; width: 20px; height: 20px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-high); }
+  .mobile-row-checkbox input:checked + span { border-color: var(--focus); background: var(--focus); box-shadow: inset 0 0 0 4px var(--surface-high); }
+  .mobile-recent-main { display: grid; gap: 4px; min-width: 0; padding: 5px 0; border: 0; color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+  .mobile-recent-main strong { overflow: hidden; font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-recent-main span, .mobile-recent-main small { overflow: hidden; color: var(--text-soft); font-size: 13px; font-weight: 400; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-recent-main small { color: var(--text-faint); font-size: 12px; }
+  .mobile-recent-main small i { margin: 0 3px; font-style: normal; }
+  .mobile-row-action { min-width: 68px; min-height: 44px; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .mobile-row-action:disabled { color: var(--text-faint); cursor: default; }
+  .mobile-row-action b { margin-left: 2px; color: var(--text-soft); font-size: 17px; font-weight: 400; }
+  .mobile-empty-state { display: grid; justify-items: start; gap: 10px; padding: 30px 0; }
+  .mobile-empty-state > svg { width: 24px; height: 24px; color: var(--text-soft); }
+  .mobile-empty-state h2 { margin: 0; font-size: 20px; font-weight: 620; }
+  .mobile-empty-state p { max-width: 33ch; margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.45; }
+  .mobile-empty-state button { min-height: 46px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--text); background: var(--surface-high); cursor: pointer; font-size: 14px; }
+
+  .mobile-explore-view .mobile-page-content, .mobile-progress-view .mobile-page-content, .mobile-settings-view .mobile-page-content { gap: 27px; }
+  .mobile-explore-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 12px; background: var(--surface-ink); }
+  .mobile-explore-tabs button { min-height: 44px; padding: 0 2px; border: 0; border-radius: 9px; color: var(--text-soft); background: transparent; cursor: pointer; font-size: 11px; line-height: 1.15; }
+  .mobile-explore-tabs button.active { color: var(--text); background: var(--surface-high); box-shadow: 2px 2px 6px var(--shadow-dark); }
+  .mobile-explore-section { min-width: 0; }
+  .mobile-lesson-list { display: grid; border-top: 1px solid var(--line); }
+  .mobile-lesson-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 78px; padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+  .mobile-lesson-row > div { display: grid; gap: 5px; min-width: 0; }
+  .mobile-lesson-row strong { overflow: hidden; font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-lesson-row p { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.35; }
+  .mobile-lesson-row > span { flex: 0 0 auto; color: var(--text); font-size: 13px; white-space: nowrap; }
+  .mobile-explore-detail .mobile-page-content { gap: 22px; }
+  .mobile-detail-board { width: min(100%, 360px); margin: 0 auto; }
+  .mobile-detail-board .chess-board { width: 100%; aspect-ratio: 1; border-radius: 10px; }
+  .mobile-detail-copy { display: grid; gap: 9px; }
+  .mobile-detail-copy > span { color: var(--text-faint); font-size: 12px; }
+  .mobile-detail-copy h2 { margin: 0; font-size: 25px; font-weight: 650; letter-spacing: -.03em; }
+  .mobile-detail-copy p { margin: 0; color: var(--text-soft); font-size: 15px; line-height: 1.45; }
+  .mobile-detail-copy small { color: var(--text-faint); font-size: 12px; }
+  .mobile-detail-copy button { min-height: 48px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--text); background: var(--surface-high); cursor: pointer; font-size: 14px; }
+
+  .mobile-progress-lead { display: grid; gap: 5px; }
+  .mobile-progress-lead > span { color: var(--text-faint); font-size: 13px; }
+  .mobile-progress-lead > strong { font-size: 40px; font-weight: 650; letter-spacing: -.06em; line-height: 1; }
+  .mobile-progress-lead > p { margin: 0; color: var(--text-soft); font-size: 14px; }
+  .mobile-rating-chart { width: 100%; height: 108px; margin-top: 10px; overflow: visible; }
+  .mobile-rating-chart path { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+  .mobile-rating-chart polyline { fill: none; stroke: var(--focus); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .mobile-rating-empty { display: grid; gap: 5px; margin-top: 13px; padding: 13px 0; border-top: 1px solid var(--line); }
+  .mobile-rating-empty strong { font-size: 15px; font-weight: 620; }
+  .mobile-rating-empty p { max-width: 42ch; margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.4; }
+  .mobile-progress-section { min-width: 0; }
+  .mobile-insight-copy { padding: 14px 0; border-top: 1px solid var(--line); }
+  .mobile-insight-copy p, .mobile-progress-split p { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.45; }
+  .mobile-progress-split { display: grid; gap: 23px; }
+  .mobile-progress-split > div { padding-top: 2px; }
+
+  .mobile-settings-view .mobile-setting-section { display: grid; gap: 12px; }
+  .mobile-setting-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .mobile-setting-options label, .mobile-engine-options label { display: grid; align-content: center; min-height: 48px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-soft); background: var(--surface-low); cursor: pointer; }
+  .mobile-setting-options label.active, .mobile-engine-options label.active { color: var(--text); border-color: var(--line-strong); background: var(--surface-high); box-shadow: inset 2px 2px 5px var(--shadow-dark); }
+  .mobile-setting-options input, .mobile-engine-options input, .mobile-setting-toggle input { position: absolute; opacity: 0; }
+  .mobile-setting-options span { font-size: 13px; text-align: center; }
+  .mobile-setting-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; padding: 12px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .mobile-setting-toggle > span { display: grid; gap: 4px; }
+  .mobile-setting-toggle strong { font-size: 14px; font-weight: 600; }
+  .mobile-setting-toggle small { color: var(--text-soft); font-size: 12px; line-height: 1.35; }
+  .mobile-setting-toggle::after { content: ""; width: 42px; height: 24px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--surface-ink); box-shadow: inset 2px 2px 5px var(--shadow-dark); }
+  .mobile-setting-toggle:has(input:checked)::after { border-color: var(--focus); background: var(--focus); box-shadow: inset 0 0 0 5px var(--surface-high); }
+  .mobile-engine-options { display: grid; gap: 7px; }
+  .mobile-engine-options label { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 9px; }
+  .mobile-engine-options label::before { content: ""; width: 14px; height: 14px; border: 1px solid var(--line-strong); border-radius: 50%; }
+  .mobile-engine-options label:has(input:checked)::before { border-color: var(--focus); box-shadow: inset 0 0 0 4px var(--surface-high); background: var(--focus); }
+  .mobile-engine-options span { display: grid; gap: 4px; }
+  .mobile-engine-options strong { font-size: 14px; font-weight: 600; }
+  .mobile-engine-options small { color: var(--text-soft); font-size: 12px; line-height: 1.35; }
+}
+
 /* Use the original Lasker asset set for the review board. */
 .board-piece {
   width: 86%;
@@ -1193,7 +1324,6 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 
 @media (max-width: 767px) {
   html, body, #app { min-width: 0; width: 100%; min-height: 100%; }
-  body { overflow-x: hidden; }
   .app-frame { display: block; width: 100%; min-width: 0; min-height: 100dvh; height: auto; overflow: visible; background: var(--canvas); }
   .side-rail { display: none; }
   .app-stage { width: 100%; height: auto; min-height: 100dvh; padding: 0 0 calc(16px + env(safe-area-inset-bottom)); overflow: visible; }

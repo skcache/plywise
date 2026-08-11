@@ -855,7 +855,7 @@ std::optional<Response> Api::authorize(
 std::optional<ApiScope> Api::scope_for_owner(const app::OwnerId& owner) const {
     if (!auth_.resolve_scope) {
         if (owner == default_repository_.owner())
-            return ApiScope{&default_repository_, &default_jobs_, {}};
+            return ApiScope{&default_repository_, &default_jobs_, {}, ingest_};
         return std::nullopt;
     }
     try {
@@ -948,12 +948,11 @@ Response Api::handle(const Request& request) {
         const bool websocket_ticket_route =
             request.method == "POST" &&
             parts == std::vector<std::string>{"api", "ws-ticket"};
-        const bool shared_ingest_forbidden = auth_.resolve_scope && !auth_.allow_shared_ingest;
         const bool public_route = guest_session_route ||
                                   (request.method == "GET" &&
                                    (parts == std::vector<std::string>{"api", "health"} ||
                                     parts == std::vector<std::string>{"api", "ready"}));
-        ApiScope scope{&default_repository_, &default_jobs_, {}};
+        ApiScope scope{&default_repository_, &default_jobs_, {}, ingest_};
         std::optional<app::OwnerId> authenticated_owner;
         if (!public_route) {
             const Authentication authentication = authenticate(request);
@@ -982,6 +981,10 @@ Response Api::handle(const Request& request) {
         }
         if (scope.repository == nullptr || scope.jobs == nullptr)
             return error_response(500, "request scope is unavailable");
+        // A hosted scope can carry its own ingest manager. Only fall back to the process-scoped
+        // manager for local/compatibility scopes; never share it across authenticated owners.
+        app::IngestManager* request_ingest = scope.ingest;
+        const bool ingest_unavailable_for_scope = auth_.resolve_scope && request_ingest == nullptr;
 
         if (websocket_ticket_route) {
             if (!authenticated_owner)
@@ -1401,10 +1404,10 @@ Response Api::handle(const Request& request) {
                                                         {"profile", nullptr}});
             }
             if (request.method == "PUT") {
-                if (shared_ingest_forbidden)
+                if (ingest_unavailable_for_scope)
                     return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
                                         "ingest_unavailable", {"paste_pgn"});
-                if (!ingest_)
+                if (!request_ingest)
                     return ingest_error(503, "Chess.com ingest is unavailable",
                                         "ingest_unavailable", {"retry"});
                 const json::Value body = json::parse(request.body);
@@ -1418,19 +1421,19 @@ Response Api::handle(const Request& request) {
                 const json::Value empty{json::Value::Array{}};
                 for (const auto& control : body.get("time_controls", empty).as_array())
                     controls.push_back(control.as_string());
-                ingest_->configure_profile(body.at("username").as_string(),
-                                           std::move(controls));
+                request_ingest->configure_profile(body.at("username").as_string(),
+                                                  std::move(controls));
                 return json_response(200, json::Value::Object{
                                               {"connected", true},
-                                              {"profile", app::to_json(*ingest_->profile())}});
+                                              {"profile", app::to_json(*request_ingest->profile())}});
             }
         }
         if (parts == std::vector<std::string>{"api", "chesscom", "sync"} &&
             request.method == "POST") {
-            if (shared_ingest_forbidden)
+            if (ingest_unavailable_for_scope)
                 return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
                                     "ingest_unavailable", {"paste_pgn"});
-            if (!ingest_)
+            if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
             const json::Value body = json::parse(request.body);
@@ -1440,8 +1443,8 @@ Response Api::handle(const Request& request) {
                                         "sensitive_fields_forbidden");
             }
             try {
-                const auto sync = ingest_->start_sync(body.get("days", 30).as_int(),
-                                                      body.get("username", "").as_string());
+                const auto sync = request_ingest->start_sync(body.get("days", 30).as_int(),
+                                                             body.get("username", "").as_string());
                 return json_response(202, app::to_json(sync));
             } catch (const app::IngestConflict& error) {
                 return ingest_error(409, error.what(), "sync_conflict", {"cancel_current"});
@@ -1449,22 +1452,22 @@ Response Api::handle(const Request& request) {
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "chesscom" &&
             parts[2] == "sync") {
-            if (shared_ingest_forbidden)
+            if (ingest_unavailable_for_scope)
                 return ingest_error(503, "Chess.com sync is not available for hosted accounts yet",
                                     "ingest_unavailable", {"paste_pgn"});
-            if (!ingest_)
+            if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
             if (request.method == "GET") {
-                const auto sync = ingest_->sync(parts[3]);
+                const auto sync = request_ingest->sync(parts[3]);
                 if (!sync)
                     return ingest_error(404, "sync does not exist", "sync_not_found");
                 return json_response(200, app::to_json(*sync));
             }
             if (request.method == "DELETE") {
-                if (!ingest_->cancel_sync(parts[3]))
+                if (!request_ingest->cancel_sync(parts[3]))
                     return ingest_error(404, "active sync does not exist", "sync_not_found");
-                return json_response(200, app::to_json(*ingest_->sync(parts[3])));
+                return json_response(200, app::to_json(*request_ingest->sync(parts[3])));
             }
         }
         if (parts == std::vector<std::string>{"api", "chesscom", "archive"} &&
@@ -1534,8 +1537,8 @@ Response Api::handle(const Request& request) {
                     if (!imported_game_matches(imported, parsed.game_id))
                         throw Error(ErrorCode::Corruption,
                                     "local archive PGN did not match its exact game identifier");
-                } else if (ingest_ && !shared_ingest_forbidden) {
-                    const auto resolution = ingest_->resolve(
+                } else if (request_ingest) {
+                    const auto resolution = request_ingest->resolve(
                         body.at("url").as_string(), body.get("username", "").as_string());
                     return json_response(202, json::Value::Object{
                                                   {"status", "resolving"},
@@ -1562,10 +1565,10 @@ Response Api::handle(const Request& request) {
         }
         if (parts == std::vector<std::string>{"api", "import", "resolve"} &&
             request.method == "POST") {
-            if (shared_ingest_forbidden)
+            if (ingest_unavailable_for_scope)
                 return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
                                     "ingest_unavailable", {"paste_pgn"});
-            if (!ingest_)
+            if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry", "paste_pgn"});
             const json::Value body = json::parse(request.body);
@@ -1574,29 +1577,29 @@ Response Api::handle(const Request& request) {
                     return ingest_error(400, "resolution accepts only url and public username",
                                         "sensitive_fields_forbidden", {"paste_pgn"});
             }
-            const auto resolution = ingest_->resolve(body.at("url").as_string(),
-                                                     body.get("username", "").as_string());
+            const auto resolution = request_ingest->resolve(body.at("url").as_string(),
+                                                            body.get("username", "").as_string());
             return json_response(202, app::to_json(resolution));
         }
         if (parts.size() == 4 && parts[0] == "api" && parts[1] == "import" &&
             parts[2] == "resolutions") {
-            if (shared_ingest_forbidden)
+            if (ingest_unavailable_for_scope)
                 return ingest_error(503, "Chess.com link resolution is not available for hosted accounts yet",
                                     "ingest_unavailable", {"paste_pgn"});
-            if (!ingest_)
+            if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
             if (request.method == "GET") {
-                const auto resolution = ingest_->resolution(parts[3]);
+                const auto resolution = request_ingest->resolution(parts[3]);
                 if (!resolution)
                     return ingest_error(404, "resolution does not exist", "resolution_not_found");
                 return json_response(200, app::to_json(*resolution));
             }
             if (request.method == "DELETE") {
-                if (!ingest_->cancel_resolution(parts[3]))
+                if (!request_ingest->cancel_resolution(parts[3]))
                     return ingest_error(404, "active resolution does not exist",
                                         "resolution_not_found");
-                return json_response(200, app::to_json(*ingest_->resolution(parts[3])));
+                return json_response(200, app::to_json(*request_ingest->resolution(parts[3])));
             }
         }
         if (parts == std::vector<std::string>{"api", "import", "batch"} &&

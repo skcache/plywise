@@ -138,6 +138,7 @@ struct HostedRuntime::Impl {
     struct OwnerResources {
         std::unique_ptr<app::PostgresRepository> repository;
         std::unique_ptr<app::JobManager> jobs;
+        std::unique_ptr<app::IngestManager> ingest;
         bool retired{false};
         std::atomic<std::size_t> active_leases{0};
         std::chrono::steady_clock::time_point last_used{};
@@ -163,9 +164,10 @@ struct HostedRuntime::Impl {
         std::int64_t expires_at_ms{0};
     };
 
-    Impl(HostedRuntimeOptions input, analysis::Analyzer& input_analyzer,
+    Impl(HostedRuntimeOptions input, import::ImportService& input_importer,
+         analysis::Analyzer& input_analyzer,
          app::JobManagerOptions input_job_options)
-        : options(std::move(input)), analyzer(input_analyzer),
+        : options(std::move(input)), importer(input_importer), analyzer(input_analyzer),
           job_options(input_job_options) {
         if (options.postgres_connection.empty() || options.oidc_issuer.empty() ||
             options.oidc_audience.empty() || options.oidc_provider.empty() ||
@@ -395,7 +397,7 @@ struct HostedRuntime::Impl {
             owner_resources->last_used = now;
             auto lease = std::make_shared<ScopeLease>(owner_resources);
             return ApiScope{owner_resources->repository.get(), owner_resources->jobs.get(),
-                            std::move(lease)};
+                            std::move(lease), owner_resources->ingest.get()};
         }
 
         // Reclaim the oldest resource only when it has no active request/observer and no work
@@ -441,10 +443,12 @@ struct HostedRuntime::Impl {
             std::make_unique<app::PostgresRepository>(options.postgres_connection, owner);
         created->jobs = std::make_unique<app::JobManager>(*created->repository, analyzer,
                                                           job_options);
+        created->ingest = std::make_unique<app::IngestManager>(importer, *created->repository,
+                                                               *created->jobs);
         const auto [inserted, _] = resources.emplace(key, std::move(created));
         auto lease = std::make_shared<ScopeLease>(inserted->second);
         return ApiScope{inserted->second->repository.get(), inserted->second->jobs.get(),
-                        std::move(lease)};
+                        std::move(lease), inserted->second->ingest.get()};
     }
 
     AccountExportResult export_account(const app::OwnerId& owner,
@@ -490,6 +494,7 @@ struct HostedRuntime::Impl {
     }
 
     HostedRuntimeOptions options;
+    import::ImportService& importer;
     analysis::Analyzer& analyzer;
     app::JobManagerOptions job_options;
     std::unique_ptr<app::HostedIdentityStore> identity;
@@ -500,16 +505,18 @@ struct HostedRuntime::Impl {
     std::mutex websocket_tickets_mutex;
     std::map<std::string, WebSocketTicketRecord> websocket_tickets;
 #else
-    explicit Impl(HostedRuntimeOptions, analysis::Analyzer&, app::JobManagerOptions) {
+    explicit Impl(HostedRuntimeOptions, import::ImportService&, analysis::Analyzer&,
+                  app::JobManagerOptions) {
         throw Error(ErrorCode::Unsupported,
                     "hosted runtime requires PostgreSQL and OpenSSL support");
     }
 #endif
 };
 
-HostedRuntime::HostedRuntime(HostedRuntimeOptions options, analysis::Analyzer& analyzer,
+HostedRuntime::HostedRuntime(HostedRuntimeOptions options, import::ImportService& importer,
+                             analysis::Analyzer& analyzer,
                              app::JobManagerOptions job_options)
-    : impl_(std::make_unique<Impl>(std::move(options), analyzer, job_options)) {}
+    : impl_(std::make_unique<Impl>(std::move(options), importer, analyzer, job_options)) {}
 
 HostedRuntime::~HostedRuntime() = default;
 

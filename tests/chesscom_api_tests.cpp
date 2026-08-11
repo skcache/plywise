@@ -133,6 +133,59 @@ TEST_CASE("Chess.com profile API persists only public profile fields") {
              "alice-player");
 }
 
+TEST_CASE("hosted Chess.com profile routes stay inside the authenticated owner scope") {
+    const auto suffix = std::to_string(::getpid());
+    const auto global_path = std::filesystem::temp_directory_path() /
+                             ("pct-chesscom-scope-global-" + suffix + ".log");
+    const auto scoped_path = std::filesystem::temp_directory_path() /
+                             ("pct-chesscom-scope-owner-" + suffix + ".log");
+    storage::EventLog global_log((std::filesystem::remove(global_path), global_path));
+    storage::EventLog scoped_log((std::filesystem::remove(scoped_path), scoped_path));
+    app::Repository global_repository(global_log);
+    app::Repository scoped_repository(scoped_log);
+    import::ImportService importer;
+    ApiIngestEngine engine;
+    analysis::AnalysisCache cache;
+    analysis::Analyzer analyzer(engine, cache, analysis::AnalyzerOptions{2, 3, 80, 2, 1});
+    app::JobManager global_jobs(global_repository, analyzer);
+    app::JobManager scoped_jobs(scoped_repository, analyzer);
+    app::IngestManager global_ingest(importer, global_repository, global_jobs);
+    app::IngestManager scoped_ingest(importer, scoped_repository, scoped_jobs);
+
+    service::AuthConfig auth;
+    auth.required = true;
+    auth.allow_shared_ingest = false;
+    auth.verify = [](std::string_view token) -> std::optional<app::OwnerId> {
+        return token == "owner-token" ? std::optional<app::OwnerId>(app::OwnerId::local())
+                                       : std::nullopt;
+    };
+    auth.resolve_scope = [&](const app::OwnerId& owner) -> std::optional<service::ApiScope> {
+        if (owner != scoped_repository.owner())
+            return std::nullopt;
+        return service::ApiScope{&scoped_repository, &scoped_jobs, {}, &scoped_ingest};
+    };
+    service::Api api(importer, global_repository, global_jobs, {}, {}, &global_ingest, {}, auth);
+
+    auto put_profile = [&](std::string username) {
+        auto request = json_request(
+            "PUT", "/api/chesscom/profile",
+            json::Value::Object{{"username", std::move(username)}});
+        request.headers.emplace("authorization", "Bearer owner-token");
+        return api.handle(std::move(request));
+    };
+    auto get_profile = [&] {
+        service::Request request{"GET", "/api/chesscom/profile",
+                                 {{"authorization", "Bearer owner-token"}}, {}};
+        return api.handle(std::move(request));
+    };
+
+    CHECK_EQ(put_profile("Scoped-Player").status, 200);
+    CHECK_EQ(json::parse(get_profile().body).at("profile").at("normalized_username").as_string(),
+             "scoped-player");
+    CHECK(!global_repository.chesscom_profile().has_value());
+    CHECK(scoped_repository.chesscom_profile().has_value());
+}
+
 TEST_CASE("Chess.com sync archive and resolution API contracts are bounded and structured") {
     ChessComApiFixture fixture;
     fixture.ingest.configure_profile("Alice");

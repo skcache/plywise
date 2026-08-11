@@ -489,6 +489,7 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
     HostedRuntimeEngine engine;
     analysis::AnalysisCache cache;
     analysis::Analyzer analyzer(engine, cache);
+    import::ImportService importer;
     service::HostedRuntime runtime(
         service::HostedRuntimeOptions{
             connection,
@@ -497,6 +498,7 @@ TEST_CASE("Hosted runtime creates and reuses owner-scoped account resources") {
             "supabase",
             "https://project.supabase.co/auth/v1/.well-known/jwks.json",
         },
+        importer,
         analyzer,
         app::JobManagerOptions{1, 8, 0});
 
@@ -549,6 +551,7 @@ TEST_CASE("Hosted runtime evicts only idle owner resources at capacity") {
     HostedRuntimeEngine engine;
     analysis::AnalysisCache cache;
     analysis::Analyzer analyzer(engine, cache);
+    import::ImportService importer;
     service::HostedRuntime runtime(
         service::HostedRuntimeOptions{
             connection,
@@ -559,6 +562,7 @@ TEST_CASE("Hosted runtime evicts only idle owner resources at capacity") {
             2,
             std::chrono::minutes(10),
         },
+        importer,
         analyzer,
         app::JobManagerOptions{1, 8, 0});
     app::HostedIdentityStore identity(connection);
@@ -596,6 +600,7 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
     HostedRuntimeEngine engine;
     analysis::AnalysisCache cache;
     analysis::Analyzer analyzer(engine, cache);
+    import::ImportService importer;
     service::HostedRuntime runtime(
         service::HostedRuntimeOptions{
             connection,
@@ -604,6 +609,7 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
             "supabase",
             "https://project.supabase.co/auth/v1/.well-known/jwks.json",
         },
+        importer,
         analyzer,
         app::JobManagerOptions{1, 8, 0});
     app::HostedIdentityStore identity(connection);
@@ -615,7 +621,6 @@ TEST_CASE("Hosted WebSocket progress authenticates by subprotocol and routes by 
     CHECK(alice_scope.has_value());
     CHECK(bob_scope.has_value());
 
-    import::ImportService importer;
     const auto imported = importer.from_pgn(
         "[White \"WebSocket\"]\n[Black \"Owner\"]\n[Result \"1-0\"]\n\n"
         "1. e4 e5 1-0");

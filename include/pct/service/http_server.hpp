@@ -54,6 +54,9 @@ struct ApiScope {
     // Hosted scopes pin their owner resources while request or websocket code uses these
     // pointers. Local and test scopes leave the lifetime empty.
     std::shared_ptr<void> lifetime;
+    // Hosted scopes may provide an owner-specific Chess.com ingest manager. Local and
+    // compatibility test scopes can leave this empty and use the process-scoped manager.
+    app::IngestManager* ingest{nullptr};
 };
 
 struct GuestSessionCredential {

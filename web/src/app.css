@@ -1256,7 +1256,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 /* Mobile routes are intentional compositions, not compressed desktop surfaces. */
 .mobile-route-view { display: none; }
 
-@media (max-width: 767px) {
+@media (max-width: 767px), (max-width: 900px) and (max-height: 500px) {
   .desktop-route-header, .desktop-route-view { display: none !important; }
   .mobile-route-view { display: block; min-height: 100dvh; color: var(--text); }
   .mobile-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; padding: calc(env(safe-area-inset-top) + 8px) 16px 8px; border-bottom: 1px solid var(--line); background: var(--canvas); }
@@ -1402,7 +1402,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .mobile-bottom-nav,
 .evaluation-overlay { display: none; }
 
-@media (max-width: 767px) {
+@media (max-width: 767px), (max-width: 900px) and (max-height: 500px) {
   html, body, #app { min-width: 0; width: 100%; min-height: 100%; }
   .app-frame { display: block; width: 100%; min-width: 0; min-height: 100dvh; height: auto; overflow: visible; background: var(--canvas); }
   .side-rail { display: none; }
@@ -1504,11 +1504,108 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .app-stage-analysis .overview-drawer, .app-stage-analysis .action-menu { display: none; }
 }
 
-@media (max-width: 767px) and (orientation: landscape) and (min-height: 430px) {
+@media (max-width: 767px) and (orientation: landscape) and (min-height: 430px), (max-width: 900px) and (max-height: 500px) and (orientation: landscape) {
   .mobile-board-surface { width: min(calc(50vw - 24px), calc(100dvh - 138px)); margin-inline: 16px; }
   .mobile-analysis-view:not(:has(.mobile-analysis-activity)) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .72fr); align-items: start; gap: 0 18px; }
   .mobile-analysis-view .mobile-analysis-header { grid-column: 1 / -1; }
   .mobile-analysis-view .mobile-board-surface { grid-column: 1; grid-row: 2 / span 3; }
   .mobile-analysis-view .mobile-playback { grid-column: 1; }
   .mobile-analysis-view .mobile-review-summary { grid-column: 2; grid-row: 2 / span 3; margin-top: 16px; }
+}
+
+/* V1 responsive shell: the analysis route is still part of the app, so it
+   keeps the same navigation and reserves space for it on small screens. */
+@media (max-width: 767px), (max-width: 900px) and (max-height: 500px) {
+  :root { --mobile-nav-height: 68px; }
+
+  .app-stage {
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  .route-canvas,
+  .app-stage-analysis .route-canvas {
+    padding-bottom: var(--mobile-nav-height);
+    scroll-padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  .mobile-bottom-nav,
+  .app-stage-analysis .mobile-bottom-nav {
+    display: flex;
+    min-height: var(--mobile-nav-height);
+    padding-bottom: env(safe-area-inset-bottom);
+    background: color-mix(in srgb, var(--surface-high) 97%, transparent);
+    box-shadow: 0 -8px 20px rgb(0 0 0 / .12);
+  }
+
+  .mobile-bottom-nav button {
+    min-width: 56px;
+    min-height: 48px;
+    touch-action: manipulation;
+  }
+
+  .mobile-analysis-view {
+    min-height: auto;
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+    font-family: inherit;
+  }
+
+  .mobile-analysis-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .mobile-board-surface {
+    width: calc(100% - 24px);
+    margin-inline: 12px;
+    column-gap: 8px;
+  }
+
+  .mobile-analysis-activity,
+  .mobile-review-summary,
+  .mobile-playback {
+    margin-inline: 12px;
+  }
+
+  .mobile-playback { gap: 8px; }
+  .mobile-review-summary { margin-bottom: 12px; }
+}
+
+@media (max-width: 390px) {
+  .mobile-explore-tabs {
+    display: flex;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .mobile-explore-tabs::-webkit-scrollbar { display: none; }
+  .mobile-explore-tabs button { flex: 0 0 auto; min-width: 64px; padding-inline: 10px; white-space: nowrap; }
+}
+
+@media (max-width: 340px) {
+  .mobile-recent-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .mobile-recent-row.selecting { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .mobile-row-action { min-width: 52px; padding-inline: 2px; font-size: 12px; }
+  .mobile-row-action b { display: none; }
+}
+
+@media (min-width: 768px) {
+  .route-canvas { display: flex; min-height: 0; flex-direction: column; }
+  .desktop-route-view { width: 100%; height: 100%; min-height: 0; }
+  .desktop-route-view > .soft-surface { height: 100%; min-height: 0; }
+  .route-analysis > .analysis-view { width: 100%; height: 100%; min-height: 0; }
+}
+
+@media (min-width: 1200px) {
+  .concept-detail { grid-template-columns: minmax(480px, 560px) minmax(220px, 520px); justify-content: center; }
+  .concept-copy { max-width: 480px; }
+}
+
+@media (min-width: 821px) and (max-width: 1270px) {
+  .playback-bar { grid-template-columns: minmax(104px, .8fr) auto minmax(148px, 1fr); }
+  .playback-flip { padding-inline: 0; }
 }

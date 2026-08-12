@@ -1178,7 +1178,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .evaluation-rail-marker { stroke: var(--text-soft); stroke-width: 3px; transition: y 180ms ease-out; }
 .evaluation-track, .evaluation-track-base, .evaluation-track-value, .evaluation-track-zero { display: none; }
 .review-rail { grid-column: 2; display: block; min-height: 0; overflow: hidden; }
-.inspector-surface { display: grid; grid-template-rows: auto minmax(0, auto) minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--surface-high); box-shadow: 10px 12px 26px var(--shadow-dark), -5px -5px 14px var(--shadow-light), inset 1px 1px var(--shadow-light); }
+.inspector-surface { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--surface-high); box-shadow: 10px 12px 26px var(--shadow-dark), -5px -5px 14px var(--shadow-light), inset 1px 1px var(--shadow-light); }
 .inspector-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 15px; border-bottom: 1px solid var(--line); }
 .inspector-header div { display: grid; gap: 4px; min-width: 0; }
 .inspector-header span { color: var(--text-faint); font-size: 10px; }
@@ -1207,7 +1207,8 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .inspector-analysis-state dl div { display: grid; gap: 4px; padding-top: 9px; border-top: 1px solid var(--line); }
 .inspector-analysis-state dt { color: var(--text-faint); font-size: 9px; }
 .inspector-analysis-state dd { margin: 0; color: var(--text-soft); font: 600 11px ui-monospace, monospace; }
-.inspector-moves { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; border-bottom: 0; }
+.inspector-current, .inspector-best, .inspector-mode { flex: 0 0 auto; }
+.inspector-moves { display: grid; flex: 1 1 0; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; border-bottom: 0; }
 .inspector-moves .move-ledger { min-height: 0; }
 .inspector-moves .move-ledger button { min-height: 34px; padding-inline: 8px; border-radius: 9px; }
 .inspector-moves .move-ledger button strong { font-size: 11px; }
@@ -1481,6 +1482,19 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .mobile-better-row strong { color: var(--text-soft); }
   .mobile-more-analysis { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 14px; font-weight: 500; }
   .mobile-more-analysis span { font-size: 18px; }
+
+  .mobile-review-mode { display: grid; gap: 12px; margin: 0 16px 16px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-high); box-shadow: 5px 6px 14px var(--shadow-dark), -3px -3px 8px var(--shadow-light); }
+  .mobile-review-mode > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .mobile-review-mode > header div { display: grid; gap: 4px; }
+  .mobile-review-mode > header span { color: var(--text-faint); font-size: 11px; }
+  .mobile-review-mode > header strong { font-size: 16px; font-weight: 600; }
+  .mobile-review-mode > header button { min-width: 48px; min-height: 40px; padding: 0 10px; border: 0; border-radius: 10px; color: var(--text-soft); background: var(--surface-low); cursor: pointer; }
+  .mobile-review-mode > p, .mobile-review-mode > small { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.45; }
+  .mobile-review-mode > small { color: var(--text); }
+  .mobile-variation-line { display: grid; gap: 5px; padding: 10px 0; border-block: 1px solid var(--line); }
+  .mobile-variation-line code { overflow-wrap: anywhere; color: var(--text-soft); font-size: 11px; }
+  .mobile-mode-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .mobile-mode-actions button { min-height: 44px; min-width: 0; padding: 0 4px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--surface-low); cursor: pointer; font-size: 12px; }
 
   .mobile-drawer-layer, .mobile-action-layer { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-end; background: rgb(0 0 0 / .44); }
   .mobile-analysis-drawer, .mobile-action-sheet { width: 100%; max-height: 74dvh; overflow: hidden; padding: 8px 16px calc(14px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; color: var(--text); background: var(--surface-high); box-shadow: 0 -12px 30px rgb(0 0 0 / .28); }

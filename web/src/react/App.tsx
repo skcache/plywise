@@ -1095,7 +1095,11 @@ function AnalysisView(props: AnalysisProps) {
   const livePly = game.game.plies[livePlyIndex] ?? ply;
   const currentVariationNode = variation?.nodes.find((node) => node.id === variation.current_node_id);
   const fen = analysisActive ? (props.browserProgress?.position === "before" ? livePly?.fen_before : livePly?.fen_after) ?? livePly?.fen_after ?? initialFen : reviewMode === "variation" ? currentVariationNode?.fen ?? variation?.root_fen ?? initialFen : reviewMode === "try_move" || reviewMode === "revealed_move" ? move?.fen_before ?? ply?.fen_before ?? initialFen : ply?.fen_after ?? initialFen;
-  const activeUci = analysisActive ? "" : reviewMode === "variation" ? currentVariationNode?.uci ?? "" : props.highlightedUci || ply?.uci || "";
+  const activeUci = analysisActive || reviewMode === "try_move"
+    ? ""
+    : reviewMode === "variation"
+      ? currentVariationNode?.uci ?? ""
+      : props.highlightedUci || ply?.uci || "";
   return <div className="analysis-view">
     <div className={`analysis-layout analysis-desktop-layout ${analysisActive ? "analysis-active" : ""}`}>
     {analysisActive && <AnalysisActivity
@@ -1136,10 +1140,29 @@ function MobileAnalysisView(props: AnalysisProps & { game: StoredGame; move?: Mo
     </> : <>
       <MobileBoardSurface {...props} evaluation={props.move?.evaluation_after}/>
       <MobilePlayback {...props}/>
-      <MobileReviewSummary {...props}/>
+      {props.reviewMode === "try_move" || props.reviewMode === "variation"
+        ? <MobileReviewMode {...props}/>
+        : <MobileReviewSummary {...props}/>}
       {props.overviewOpen && <MobileAnalysisDrawer {...props}/>}
     </>}
     {props.moreOpen ? <MobileActionSheet {...props}/> : null}
+  </section>;
+}
+
+function MobileReviewMode(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
+  const move = props.move;
+  if (props.reviewMode === "try_move") {
+    return <section className="mobile-review-mode" aria-live="polite">
+      <header><div><span>Retry move</span><strong>Find a stronger continuation</strong></div><button onClick={props.onReturn}>Return</button></header>
+      <p>The board is restored before {move?.move_number}{move?.side === "black" ? "…" : "."} {move?.played_san || move?.san || "this move"}. Choose a piece, then its destination.</p>
+      {props.tryMessage && <small role="status">{props.tryMessage}</small>}
+    </section>;
+  }
+  return <section className="mobile-review-mode" aria-live="polite">
+    <header><div><span>Variation</span><strong>Explore a legal branch</strong></div><button onClick={props.onReturn}>Return</button></header>
+    <p>{props.variationMessage || "Choose a piece, then its destination."}</p>
+    {props.variationAnalysis && <div className="mobile-variation-line"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}
+    <div className="mobile-mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div>
   </section>;
 }
 
@@ -1189,8 +1212,9 @@ function MobileReviewSummary(props: AnalysisProps & { game: StoredGame; move?: M
 
 function MobileAnalysisDrawer(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
   const tabs: Array<{ id: InspectorTab; label: string }> = [{ id: "summary", label: "Review" }, { id: "moves", label: "Moves" }, { id: "line", label: "Line" }, { id: "patterns", label: "Patterns" }];
+  const dialogRef = useDialogFocus<HTMLDivElement>(props.onCloseOverview);
   return <div className="mobile-drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) props.onCloseOverview(); }}>
-    <aside className="mobile-analysis-drawer" role="dialog" aria-modal="true" aria-label="More analysis">
+    <aside ref={dialogRef} className="mobile-analysis-drawer" role="dialog" aria-modal="true" aria-label="More analysis">
       <span className="mobile-drawer-handle" aria-hidden="true"/>
       <header><strong>More analysis</strong><button aria-label="Close more analysis" onClick={props.onCloseOverview}><Icon name="close"/></button></header>
       <nav className="mobile-drawer-tabs" aria-label="Analysis details">{tabs.map((tab) => <button key={tab.id} className={props.inspectorTab === tab.id ? "active" : ""} onClick={() => props.onInspectorTab(tab.id)}>{tab.label}</button>)}</nav>
@@ -1211,7 +1235,7 @@ function MobileDrawerReview(props: AnalysisProps & { game: StoredGame; move?: Mo
   return <div className="mobile-drawer-review">
     <div className={`mobile-drawer-verdict class-${classificationClass(move?.classification || "pending")}`}><strong>{label}</strong><span>{move ? `${move.move_number}${move.side === "white" ? "." : "…"} ${move.played_san || move.san}` : "Current move"}</span><p>{move ? humanMoveExplanation(move) : "Analysis appears here when the review is ready."}</p></div>
     {showBetter && move && <div className="mobile-drawer-verdict class-best"><strong>Better</strong><span>{move.best_san || move.best_uci}</span><p>{betterMoveExplanation(move)}</p></div>}
-    {move && <div className="mobile-drawer-actions"><button onClick={props.onRetry}>Retry</button><button onClick={props.onVariation}>Explore variation</button></div>}
+    {move && <div className="mobile-drawer-actions"><button onClick={() => { props.onRetry(); props.onCloseOverview(); }}>Retry</button><button onClick={() => { props.onVariation(); props.onCloseOverview(); }}>Explore variation</button></div>}
   </div>;
 }
 
@@ -1227,7 +1251,46 @@ function MobileDrawerLine(props: AnalysisProps & { game: StoredGame; move?: Move
 
 function MobileActionSheet(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
   const close = props.onCloseMore;
-  return <div className="mobile-action-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><aside className="mobile-action-sheet" role="dialog" aria-modal="true" aria-label="Analysis actions"><span className="mobile-drawer-handle" aria-hidden="true"/><header><strong>Analysis actions</strong><button aria-label="Close analysis actions" onClick={close}><Icon name="close"/></button></header><button onClick={() => { props.onOpenOverview(); close(); }}>Overview</button><button onClick={() => { props.onRetry(); close(); }}>Retry move</button><button onClick={() => { props.onVariation(); close(); }}>Explore variation</button><button onClick={props.onShowBestMove}>Show best move</button><button onClick={() => { props.onFlip(); close(); }}>Flip board</button></aside></div>;
+  const dialogRef = useDialogFocus<HTMLElement>(close);
+  return <div className="mobile-action-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><aside ref={dialogRef} className="mobile-action-sheet" role="dialog" aria-modal="true" aria-label="Analysis actions"><span className="mobile-drawer-handle" aria-hidden="true"/><header><strong>Analysis actions</strong><button aria-label="Close analysis actions" onClick={close}><Icon name="close"/></button></header><button onClick={() => { props.onOpenOverview(); close(); }}>Overview</button><button onClick={() => { props.onRetry(); close(); }}>Retry move</button><button onClick={() => { props.onVariation(); close(); }}>Explore variation</button><button onClick={() => { props.onShowBestMove(); close(); }}>Show best move</button><button onClick={() => { props.onFlip(); close(); }}>Flip board</button></aside></div>;
+}
+
+function useDialogFocus<T extends HTMLElement>(onClose: () => void) {
+  const dialogRef = useRef<T>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"));
+    focusable()[0]?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", handleKeyDown);
+    return () => {
+      dialog.removeEventListener("keydown", handleKeyDown);
+      previous?.focus();
+    };
+  }, []);
+  return dialogRef;
 }
 
 function mobilePositionLabel(game: StoredGame, progress: BrowserReviewProgress | null, fallbackPly: number) {

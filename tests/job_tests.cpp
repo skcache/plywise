@@ -9,6 +9,7 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 
 using namespace pct;
@@ -129,6 +130,21 @@ class PreemptibleEngine final : public engine::AnalysisEngine {
     bool allow_historical_{false};
 };
 
+class PathCleanup final {
+  public:
+    explicit PathCleanup(std::filesystem::path path) : path_(std::move(path)) {}
+    ~PathCleanup() {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    PathCleanup(const PathCleanup&) = delete;
+    PathCleanup& operator=(const PathCleanup&) = delete;
+
+  private:
+    std::filesystem::path path_;
+};
+
 void run_priority_cleanup_iteration(std::size_t iteration) {
     const auto directory =
         std::filesystem::temp_directory_path() /
@@ -188,6 +204,7 @@ TEST_CASE("job manager runs analysis in background and deduplicates active work"
     const auto path = std::filesystem::temp_directory_path() /
                       ("pct-jobs-" + std::to_string(::getpid()) + ".log");
     std::filesystem::remove(path);
+    const PathCleanup cleanup(path);
     storage::EventLog log(path);
     app::Repository repository(log);
     import::ImportService importer;
@@ -210,7 +227,6 @@ TEST_CASE("job manager runs analysis in background and deduplicates active work"
     }
     CHECK(status == app::JobStatus::Complete);
     CHECK(repository.get(imported.game.identity)->analysis.has_value());
-    std::filesystem::remove(path);
 }
 
 TEST_CASE("paused analysis queue and incomplete work resume after restart") {
@@ -259,6 +275,7 @@ TEST_CASE("queued batch work can be cancelled and retried idempotently") {
                            ("pct-jobs-retry-" + std::to_string(::getpid()));
     const auto path = directory / "events.log";
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(path);
     app::Repository repository(log);
     import::ImportService importer;
@@ -280,7 +297,6 @@ TEST_CASE("queued batch work can be cancelled and retried idempotently") {
          ++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     CHECK(repository.get(imported.game.identity)->analysis.has_value());
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("batch scheduling persists every shallow projection before deep work") {
@@ -288,6 +304,7 @@ TEST_CASE("batch scheduling persists every shallow projection before deep work")
                            ("pct-jobs-staged-" + std::to_string(::getpid()));
     const auto path = directory / "events.log";
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(path);
     app::Repository repository(log);
     import::ImportService importer;
@@ -332,13 +349,13 @@ TEST_CASE("batch scheduling persists every shallow projection before deep work")
     }
     CHECK(repository.get(first.game.identity)->analysis.has_value());
     CHECK(repository.get(second.game.identity)->analysis.has_value());
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("interactive work is selected before queued historical work") {
     const auto directory = std::filesystem::temp_directory_path() /
                            ("pct-jobs-interactive-priority-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(directory / "events.log");
     app::Repository repository(log);
     import::ImportService importer;
@@ -382,13 +399,13 @@ TEST_CASE("interactive work is selected before queued historical work") {
         CHECK(observer_condition.wait_for(lock, std::chrono::seconds(2),
                                           [&] { return completed.size() == 2; }));
     }
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("one worker preempts historical work to admit an interactive game") {
     const auto directory = std::filesystem::temp_directory_path() /
                            ("pct-jobs-interactive-admission-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(directory / "events.log");
     app::Repository repository(log);
     import::ImportService importer;
@@ -444,13 +461,13 @@ TEST_CASE("one worker preempts historical work to admit an interactive game") {
     }
     CHECK(repository.get(historical.game.identity)->analysis.has_value());
     CHECK(jobs.get(archived.id)->status == app::JobStatus::Complete);
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("observer unsubscribe waits for callbacks and callback failures do not stop workers") {
     const auto directory = std::filesystem::temp_directory_path() /
                            ("pct-jobs-observer-lifecycle-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(directory / "events.log");
     app::Repository repository(log);
     import::ImportService importer;
@@ -526,13 +543,13 @@ TEST_CASE("observer unsubscribe waits for callbacks and callback failures do not
     jobs.set_observer({});
     CHECK(repository.get(first.game.identity)->analysis.has_value());
     CHECK(repository.get(second.game.identity)->analysis.has_value());
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("additional job observers can be subscribed and removed independently") {
     const auto directory = std::filesystem::temp_directory_path() /
                            ("pct-jobs-additional-observers-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(directory / "events.log");
     app::Repository repository(log);
     import::ImportService importer;
@@ -593,7 +610,6 @@ TEST_CASE("additional job observers can be subscribed and removed independently"
         }
         jobs.remove_observer(second_observer);
     }
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("batch scheduling prioritizes recent shallow work before resumed deep work") {
@@ -606,6 +622,7 @@ TEST_CASE("completed batch games are retained without being requeued") {
                            ("pct-jobs-complete-" + std::to_string(::getpid()));
     const auto path = directory / "events.log";
     std::filesystem::remove_all(directory);
+    const PathCleanup cleanup(directory);
     storage::EventLog log(path);
     app::Repository repository(log);
     import::ImportService importer;
@@ -622,5 +639,4 @@ TEST_CASE("completed batch games are retained without being requeued") {
     const auto job = jobs.start(imported.game.identity);
     CHECK(job.status == app::JobStatus::Complete);
     CHECK_EQ(job.progress.message, "Loaded from storage");
-    std::filesystem::remove_all(directory);
 }

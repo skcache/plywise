@@ -155,6 +155,11 @@ struct AuthConfig {
     std::size_t hosted_global_imports_per_window{200};
     std::size_t hosted_global_analysis_starts_per_window{30};
     std::chrono::seconds hosted_quota_window{std::chrono::minutes(1)};
+    // Account exports are comparatively expensive JSON snapshots. Keep this separate from the
+    // normal API limiter so fresh idempotency keys cannot repeatedly allocate and cache them.
+    std::size_t hosted_account_exports_per_window{2};
+    std::size_t hosted_global_account_exports_per_window{8};
+    std::chrono::seconds hosted_account_export_window{std::chrono::minutes(15)};
     std::size_t hosted_game_storage_limit{app::hosted_game_storage_limit};
 };
 
@@ -184,11 +189,12 @@ class Api {
     }
 
   private:
-    enum class QuotaKind { Import, AnalysisStart };
+    enum class QuotaKind { Import, AnalysisStart, AccountExport };
 
     struct OwnerQuotaWindow {
         std::deque<std::chrono::steady_clock::time_point> imports;
         std::deque<std::chrono::steady_clock::time_point> analysis_starts;
+        std::deque<std::chrono::steady_clock::time_point> account_exports;
         std::chrono::steady_clock::time_point last_used{};
     };
 

@@ -1178,7 +1178,7 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .evaluation-rail-marker { stroke: var(--text-soft); stroke-width: 3px; transition: y 180ms ease-out; }
 .evaluation-track, .evaluation-track-base, .evaluation-track-value, .evaluation-track-zero { display: none; }
 .review-rail { grid-column: 2; display: block; min-height: 0; overflow: hidden; }
-.inspector-surface { display: grid; grid-template-rows: auto minmax(0, auto) minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--surface-high); box-shadow: 10px 12px 26px var(--shadow-dark), -5px -5px 14px var(--shadow-light), inset 1px 1px var(--shadow-light); }
+.inspector-surface { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--surface-high); box-shadow: 10px 12px 26px var(--shadow-dark), -5px -5px 14px var(--shadow-light), inset 1px 1px var(--shadow-light); }
 .inspector-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 15px; border-bottom: 1px solid var(--line); }
 .inspector-header div { display: grid; gap: 4px; min-width: 0; }
 .inspector-header span { color: var(--text-faint); font-size: 10px; }
@@ -1207,7 +1207,8 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 .inspector-analysis-state dl div { display: grid; gap: 4px; padding-top: 9px; border-top: 1px solid var(--line); }
 .inspector-analysis-state dt { color: var(--text-faint); font-size: 9px; }
 .inspector-analysis-state dd { margin: 0; color: var(--text-soft); font: 600 11px ui-monospace, monospace; }
-.inspector-moves { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; border-bottom: 0; }
+.inspector-current, .inspector-best, .inspector-mode { flex: 0 0 auto; }
+.inspector-moves { display: grid; flex: 1 1 0; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; border-bottom: 0; }
 .inspector-moves .move-ledger { min-height: 0; }
 .inspector-moves .move-ledger button { min-height: 34px; padding-inline: 8px; border-radius: 9px; }
 .inspector-moves .move-ledger button strong { font-size: 11px; }
@@ -1482,6 +1483,19 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .mobile-more-analysis { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; padding: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; font-size: 14px; font-weight: 500; }
   .mobile-more-analysis span { font-size: 18px; }
 
+  .mobile-review-mode { display: grid; gap: 12px; margin: 0 16px 16px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-high); box-shadow: 5px 6px 14px var(--shadow-dark), -3px -3px 8px var(--shadow-light); }
+  .mobile-review-mode > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .mobile-review-mode > header div { display: grid; gap: 4px; }
+  .mobile-review-mode > header span { color: var(--text-faint); font-size: 11px; }
+  .mobile-review-mode > header strong { font-size: 16px; font-weight: 600; }
+  .mobile-review-mode > header button { min-width: 48px; min-height: 40px; padding: 0 10px; border: 0; border-radius: 10px; color: var(--text-soft); background: var(--surface-low); cursor: pointer; }
+  .mobile-review-mode > p, .mobile-review-mode > small { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.45; }
+  .mobile-review-mode > small { color: var(--text); }
+  .mobile-variation-line { display: grid; gap: 5px; padding: 10px 0; border-block: 1px solid var(--line); }
+  .mobile-variation-line code { overflow-wrap: anywhere; color: var(--text-soft); font-size: 11px; }
+  .mobile-mode-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .mobile-mode-actions button { min-height: 44px; min-width: 0; padding: 0 4px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--surface-low); cursor: pointer; font-size: 12px; }
+
   .mobile-drawer-layer, .mobile-action-layer { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-end; background: rgb(0 0 0 / .44); }
   .mobile-analysis-drawer, .mobile-action-sheet { width: 100%; max-height: 74dvh; overflow: hidden; padding: 8px 16px calc(14px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; color: var(--text); background: var(--surface-high); box-shadow: 0 -12px 30px rgb(0 0 0 / .28); }
   .mobile-drawer-handle { display: block; width: 38px; height: 4px; margin: 2px auto 8px; border-radius: 4px; background: var(--text-faint); }
@@ -1608,9 +1622,10 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 
 @media (min-width: 768px) {
   .route-canvas { display: flex; min-height: 0; flex-direction: column; }
-  .desktop-route-view { width: 100%; height: 100%; min-height: 0; }
+  .desktop-route-view { width: 100%; height: 100%; min-height: 0; overflow: hidden; }
   .desktop-route-view > .soft-surface { height: 100%; min-height: 0; }
   .route-analysis > .analysis-view { width: 100%; height: 100%; min-height: 0; }
+  .recent-surface { contain: paint; }
 }
 
 @media (min-width: 1200px) {
@@ -1619,8 +1634,56 @@ button, a, input, textarea, select { accent-color: var(--focus); }
 }
 
 @media (min-width: 821px) and (max-width: 1270px) {
-  .playback-bar { grid-template-columns: minmax(104px, .8fr) auto minmax(148px, 1fr); }
+  .playback-bar { grid-template-columns: 56px minmax(0, 1fr) 120px; padding-inline: 10px; }
+  .playback-buttons { gap: 8px; }
+  .move-selector { width: 120px; min-width: 0; padding-inline: 10px; }
   .playback-flip { padding-inline: 0; }
+}
+
+/* Keep Explore as one composed workspace on smaller laptops. The index and
+   detail columns must share the available stage instead of clipping copy. */
+@media (min-width: 821px) and (max-width: 1100px) {
+  .explore-surface { grid-template-columns: 290px minmax(0, 1fr); }
+  .concept-detail {
+    grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+    gap: 20px;
+    padding: 24px;
+  }
+  .concept-copy { min-width: 0; }
+  .concept-copy h2 { font-size: 24px; }
+  .concept-copy p { font-size: 11px; line-height: 1.5; }
+  .concept-copy small { margin: 13px 0; font-size: 9px; }
+  .concept-copy .soft-button { width: 100%; padding-inline: 10px; }
+}
+
+/* Large monitors have room for a little more reading density. Increase the
+   board and row rhythm without stretching copy across the whole canvas. */
+@media (min-width: 1800px) {
+  .home-module h2 { font-size: clamp(25px, 1.45vw, 34px); }
+  .home-module p { font-size: clamp(12px, .72vw, 16px); }
+  .home-module small { font-size: clamp(10px, .52vw, 12px); }
+  .home-game-row { min-height: 78px; gap: 24px; }
+  .home-opponent strong { font-size: clamp(12px, .68vw, 16px); }
+  .home-opponent small, .home-date, .home-status { font-size: clamp(9px, .5vw, 12px); }
+  .home-recent h2 { font-size: clamp(18px, 1vw, 24px); }
+  .recent-game-card { min-height: 108px; gap: 24px; }
+  .recent-game-copy strong { font-size: clamp(14px, .75vw, 18px); }
+  .recent-game-copy span, .recent-game-copy small,
+  .recent-game-meta small, .recent-game-status span { font-size: clamp(10px, .52vw, 13px); }
+  .recent-game-meta > span { font-size: clamp(10px, .55vw, 13px); }
+  .recent-game-status strong { font-size: clamp(11px, .6vw, 14px); }
+  .board-holder { width: min(100%, calc(100dvh - 260px), 1040px); max-width: 1040px; }
+  .playback-bar { width: min(100%, 1000px); }
+  .concept-detail { grid-template-columns: minmax(620px, 720px) minmax(280px, 520px); }
+  .concept-copy { max-width: 520px; }
+}
+
+/* Small text links still need a comfortable keyboard/touch target. */
+.home-recent header button,
+.settings-notices a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 /* Keep the board clear of the fixed nav in short landscape viewports. This

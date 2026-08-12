@@ -130,6 +130,12 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_EQ(json::parse(exported_again.body).at("request_id").as_string(),
              export_json.at("request_id").as_string());
 
+    const auto export_limited = api.handle(account_request(
+        "/api/account/export",
+        json::dump(json::Value::Object{{"idempotency_key", "export-controls-2"}})));
+    CHECK_EQ(export_limited.status, 429);
+    CHECK_EQ(json::parse(export_limited.body).at("code").as_string(), "quota_exceeded");
+
     const std::string deletion_body = json::dump(json::Value::Object{
         {"idempotency_key", "delete-controls-1"},
         {"confirm", true},
@@ -159,6 +165,9 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_THROWS(identity.ensure_account("test", subject, deleted_at_ms - 1));
     const auto restored = identity.ensure_account("test", subject, deleted_at_ms + 1);
     CHECK_EQ(restored.id, account.id);
+    CHECK_THROWS(identity.ensure_account("test", subject, deleted_at_ms - 1));
+    CHECK_THROWS(identity.ensure_account("test", subject));
+    CHECK_EQ(identity.ensure_account("test", subject, deleted_at_ms + 2).id, account.id);
     const auto deletion_replay =
         api.handle(account_request("/api/account/delete", deletion_body, "fresh-token"));
     CHECK_EQ(deletion_replay.status, 200);

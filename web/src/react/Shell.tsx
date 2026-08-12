@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Icon, type IconName } from "./Icon";
+import type { Route } from "../routes";
 
-export type Route = "landing" | "sign-up" | "sign-in" | "home" | "recent" | "analysis" | "explore" | "progress" | "settings";
+export type { Route } from "../routes";
 
 const navigation: Array<{ route: Route; label: string; icon: IconName }> = [
   { route: "home", label: "Home", icon: "home" },

@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <poll.h>
 #include <sys/socket.h>
 #include <thread>
@@ -359,9 +360,23 @@ TEST_CASE("cached URL import accepts current Chess.com generic Site PGN") {
 
 TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities") {
     ChessComApiFixture fixture;
+    const std::filesystem::path static_root =
+        std::filesystem::temp_directory_path() /
+        ("pct-static-root-" + std::to_string(::getpid()));
+    const std::filesystem::path outside_file =
+        std::filesystem::temp_directory_path() /
+        ("pct-static-outside-" + std::to_string(::getpid()) + ".txt");
+    std::filesystem::remove_all(static_root);
+    std::filesystem::create_directories(static_root);
+    {
+        std::ofstream(static_root / "index.html") << "static index";
+        std::ofstream(outside_file) << "outside sentinel";
+    }
+    const std::filesystem::path outside_link = static_root / "outside-link";
+    std::filesystem::create_symlink(outside_file, outside_link);
     service::HttpServer server(
         fixture.api, fixture.jobs,
-        service::ServerOptions{0, {}, "127.0.0.1", {"api.plywise.test"},
+        service::ServerOptions{0, static_root, "127.0.0.1", {"api.plywise.test"},
                                {"https://app.plywise.test"}},
                                &fixture.ingest);
     std::exception_ptr server_error;
@@ -432,6 +447,37 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
         close(accepted_http);
     }
 
+    const int rejected_absolute_static = port == 0 ? -1 : connect_loopback(port);
+    std::string rejected_absolute_static_response;
+    if (rejected_absolute_static >= 0) {
+        const std::string request =
+            "GET /" + outside_file.generic_string() +
+            " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        static_cast<void>(send(rejected_absolute_static, request.data(), request.size(), 0));
+        rejected_absolute_static_response = receive_available(rejected_absolute_static);
+        close(rejected_absolute_static);
+    }
+
+    const int accepted_static = port == 0 ? -1 : connect_loopback(port);
+    std::string accepted_static_response;
+    if (accepted_static >= 0) {
+        const std::string request =
+            "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        static_cast<void>(send(accepted_static, request.data(), request.size(), 0));
+        accepted_static_response = receive_available(accepted_static);
+        close(accepted_static);
+    }
+
+    const int rejected_symlink_static = port == 0 ? -1 : connect_loopback(port);
+    std::string rejected_symlink_static_response;
+    if (rejected_symlink_static >= 0) {
+        constexpr std::string_view request =
+            "GET /outside-link HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        static_cast<void>(send(rejected_symlink_static, request.data(), request.size(), 0));
+        rejected_symlink_static_response = receive_available(rejected_symlink_static);
+        close(rejected_symlink_static);
+    }
+
     const int accepted_preflight = port == 0 ? -1 : connect_loopback(port);
     std::string accepted_preflight_response;
     if (accepted_preflight >= 0) {
@@ -479,6 +525,8 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
     if (accepted >= 0)
         close(accepted);
     server_thread.join();
+    std::filesystem::remove_all(static_root);
+    std::filesystem::remove(outside_file);
 
     CHECK(port != 0);
     CHECK(rejected_http_origin >= 0);
@@ -491,6 +539,12 @@ TEST_CASE("HTTP and WebSocket lifecycle enforce configured browser authorities")
     CHECK(transfer_encoding_response.starts_with("HTTP/1.1 400 Bad Request"));
     CHECK(accepted_http >= 0);
     CHECK(accepted_http_response.starts_with("HTTP/1.1 200 OK"));
+    CHECK(rejected_absolute_static >= 0);
+    CHECK(rejected_absolute_static_response.starts_with("HTTP/1.1 400 Bad Request"));
+    CHECK(accepted_static >= 0);
+    CHECK(accepted_static_response.starts_with("HTTP/1.1 200 OK"));
+    CHECK(rejected_symlink_static >= 0);
+    CHECK(rejected_symlink_static_response.starts_with("HTTP/1.1 400 Bad Request"));
     CHECK(accepted_preflight >= 0);
     CHECK(accepted_preflight_response.starts_with("HTTP/1.1 204 No Content"));
     CHECK(accepted_preflight_response.find(

@@ -40,10 +40,15 @@ TEST_CASE("canonical PGN keeps chess truth and removes owner annotations") {
 [Event "Private study"]
 [Site "Chess.com"]
 [Date "2026.08.12"]
+[UTCDate "2026.08.12"]
+[UTCTime "08:30:00"]
 [Round "-"]
 [White "Alice"]
 [Black "Bob"]
+[WhiteElo "1400"]
+[BlackElo "1450"]
 [Result "1-0"]
+[TimeControl "600+5"]
 [Annotator "owner@example.test"]
 
 1. e4 {private note [%clk 0:09:59]} e5 (1... c5) 2. Nf3 Nc6 1-0
@@ -56,6 +61,28 @@ TEST_CASE("canonical PGN keeps chess truth and removes owner annotations") {
     const Game reparsed = parse_pgn(canonical);
     CHECK_EQ(reparsed.identity, imported.identity);
     CHECK_EQ(reparsed.plies.size(), imported.plies.size());
+    CHECK_EQ(reparsed.tag("UTCDate"), "2026.08.12");
+    CHECK_EQ(reparsed.tag("UTCTime"), "08:30:00");
+    CHECK_EQ(reparsed.tag("WhiteElo"), "1400");
+    CHECK_EQ(reparsed.tag("BlackElo"), "1450");
+    CHECK_EQ(reparsed.tag("TimeControl"), "600+5");
+}
+
+TEST_CASE("canonical PGN preserves custom starting move numbers") {
+    const Game imported = parse_pgn(R"pgn(
+[Site "Custom position"]
+[Result "*"]
+[SetUp "1"]
+[FEN "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 10"]
+
+10... c5 11. Nf3 *
+)pgn");
+
+    const std::string canonical = canonical_pgn(imported);
+    CHECK(canonical.find("10... c5 11. Nf3") != std::string::npos);
+    const Game reparsed = parse_pgn(canonical);
+    CHECK_EQ(reparsed.identity, imported.identity);
+    CHECK_EQ(reparsed.plies.front().fen_before, imported.plies.front().fen_before);
 }
 
 TEST_CASE("PGN rejects illegal move sequences") {

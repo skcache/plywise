@@ -642,6 +642,13 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
         {game_id, owner_kind, owner_id, source_kind, source_key, imported.pgn,
          imported.source_url});
     if (PQntuples(mapping.get()) == 0) {
+        static_cast<void>(execute(
+            impl_->connection,
+            "UPDATE plywise.game_owners SET "
+            "imported_pgn = COALESCE(imported_pgn, $4), "
+            "source_url = COALESCE(source_url, $5) "
+            "WHERE game_id = $1 AND owner_kind = $2 AND owner_id = $3",
+            {game_id, owner_kind, owner_id, imported.pgn, imported.source_url}));
         transaction.commit();
         return AddResult::Duplicate;
     }
@@ -1859,6 +1866,16 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
         "ON CONFLICT DO NOTHING RETURNING game_id",
         {guest_id, account_id});
     const std::size_t transferred_games = static_cast<std::size_t>(PQntuples(games.get()));
+    static_cast<void>(execute(
+        impl_->connection,
+        "UPDATE plywise.game_owners AS destination SET "
+        "imported_pgn = COALESCE(destination.imported_pgn, source.imported_pgn), "
+        "source_url = COALESCE(destination.source_url, source.source_url) "
+        "FROM plywise.game_owners AS source "
+        "WHERE source.owner_kind = 'guest' AND source.owner_id = $1 "
+        "AND destination.owner_kind = 'account' AND destination.owner_id = $2 "
+        "AND destination.game_id = source.game_id",
+        {guest_id, account_id}));
 
     const GuestClaimReceipt receipt{guest_id, account_id, transferred_games, false};
     persist_receipt(receipt);
@@ -2081,9 +2098,12 @@ AccountExport HostedIdentityStore::export_account(std::string account_id,
         request_id = value_at(prior, 0, 0);
         if (value_at(prior, 0, 1) == "completed" && !value_at(prior, 0, 2).empty()) {
             const json::Value receipt = json::parse(value_at(prior, 0, 2));
-            return AccountExport{receipt.at("request_id").as_string(), receipt.at("data"),
-                                 static_cast<std::int64_t>(receipt.at("completed_at_ms")
-                                                                .as_number())};
+            const json::Value& cached_data = receipt.at("data");
+            if (cached_data.get("export_version", 0).as_number() == 2) {
+                return AccountExport{receipt.at("request_id").as_string(), cached_data,
+                                     static_cast<std::int64_t>(receipt.at("completed_at_ms")
+                                                                    .as_number())};
+            }
         }
         static_cast<void>(execute(
             impl_->connection,
@@ -2104,7 +2124,7 @@ AccountExport HostedIdentityStore::export_account(std::string account_id,
         impl_->connection,
         R"sql(
 SELECT jsonb_build_object(
-    'export_version', 1,
+    'export_version', 2,
     'account', (SELECT jsonb_build_object(
         'id', id,
         'auth_provider', auth_provider,

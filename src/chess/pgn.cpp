@@ -195,18 +195,28 @@ std::string normalized_game_identity(const Game& game) {
 
 std::string canonical_pgn(const Game& game) {
     std::ostringstream output;
-    constexpr std::array<std::string_view, 8> canonical_tags{
-        "Site", "Date", "Round", "White", "Black", "Result", "SetUp", "FEN"};
+    constexpr std::array<std::string_view, 15> canonical_tags{
+        "Site",        "Date",        "UTCDate",    "UTCTime", "Round",
+        "White",       "Black",       "WhiteElo",   "BlackElo", "Result",
+        "TimeControl", "ECO",         "Termination", "SetUp",   "FEN"};
     for (const std::string_view key : canonical_tags) {
         const std::string value = game.tag(key);
         if (!value.empty())
             output << '[' << key << " \"" << value << "\"]\n";
     }
     output << '\n';
+    const Board initial = Board::from_fen(game.plies.front().fen_before);
+    Color side_to_move = initial.side_to_move();
+    std::uint16_t fullmove_number = initial.fullmove_number();
     for (std::size_t index = 0; index < game.plies.size(); ++index) {
-        if (index % 2 == 0)
-            output << (index / 2 + 1) << ". ";
+        if (side_to_move == Color::White)
+            output << fullmove_number << ". ";
+        else if (index == 0)
+            output << fullmove_number << "... ";
         output << game.plies[index].san << ' ';
+        if (side_to_move == Color::Black)
+            ++fullmove_number;
+        side_to_move = opposite(side_to_move);
     }
     const std::string result = game.tag("Result");
     output << (result.empty() ? "*" : result);

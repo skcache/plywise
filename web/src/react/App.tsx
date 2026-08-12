@@ -3,6 +3,7 @@ import {
   ApiError,
   analyzeVariation,
   cancelJob,
+  configureChessComProfile,
   createWebSocketTicket,
   createVariation,
   deleteVariation,
@@ -683,6 +684,10 @@ export default function App() {
         source: identityPrompt.source,
         decision,
       });
+      if (decision === "confirmed" && identityPrompt.source !== "pgn") {
+        const connection = await configureChessComProfile({ username: playerName });
+        setChessComConnected(connection.connected);
+      }
       const nextProfile = await loadProfile().catch(() => null);
       if (nextProfile) setProfile(nextProfile);
       setIdentityPrompt(null);

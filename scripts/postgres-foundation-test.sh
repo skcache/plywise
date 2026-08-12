@@ -137,6 +137,10 @@ SQL
 
 expect_failure "duplicate import key for one owner" \
   "INSERT INTO plywise.game_owners (game_id, owner_kind, owner_id, source_kind, source_key) VALUES ('game_b', 'account', 'account_a', 'manual_pgn', 'import_a')"
+expect_failure "empty owner-local imported PGN" \
+  "UPDATE plywise.game_owners SET imported_pgn = '' WHERE game_id = 'game_a' AND owner_kind = 'account' AND owner_id = 'account_a'"
+expect_failure "oversized owner-local source URL" \
+  "UPDATE plywise.game_owners SET source_url = repeat('x', 2049) WHERE game_id = 'game_a' AND owner_kind = 'account' AND owner_id = 'account_a'"
 expect_failure "analysis without game ownership" \
   "INSERT INTO plywise.analysis_runs (id, game_id, owner_kind, owner_id, idempotency_key, source, engine_build, profile_version, classifier_version, compatibility_key, status) VALUES ('run_c1', 'game_a', 'account', 'account_c', 'analysis_c1', 'server', 'stockfish-test', 'balanced-v1', 'classifier-v1', 'review-v1', 'created')"
 expect_failure "duplicate analysis idempotency key" \
@@ -166,7 +170,7 @@ restored_migrations="$(
   PGDATABASE="$restore_database" psql -X --tuples-only --no-align \
     --command "SELECT count(*) FROM plywise.schema_migrations"
 )"
-if [[ "$restored_runs" != "2" || "$restored_migrations" != "7" ]]; then
+if [[ "$restored_runs" != "2" || "$restored_migrations" != "8" ]]; then
   echo "Restored database did not preserve the qualified schema and data" >&2
   exit 1
 fi

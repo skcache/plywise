@@ -30,5 +30,8 @@ struct Game {
 
 [[nodiscard]] Game parse_pgn(std::string_view pgn);
 [[nodiscard]] std::string normalized_game_identity(const Game& game);
+// Stable, annotation-free PGN for globally shared chess truth. Exact imported
+// PGN and provenance remain owner-local in hosted persistence.
+[[nodiscard]] std::string canonical_pgn(const Game& game);
 
 } // namespace pct::chess

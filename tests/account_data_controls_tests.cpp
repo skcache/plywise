@@ -116,6 +116,7 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_EQ(export_json.at("status").as_string(), "completed");
     CHECK(!export_json.at("request_id").as_string().empty());
     const json::Value data = export_json.at("data");
+    CHECK_EQ(data.at("export_version").as_number(), 2.0);
     CHECK_EQ(data.at("account").at("id").as_string(), account.id);
     CHECK_EQ(data.at("games").as_array().size(), 1ULL);
     CHECK_EQ(data.at("analysis_runs").as_array().size(), 1ULL);

@@ -47,21 +47,15 @@ import { MobileExploreView, MobileHomeView, MobileProgressView, MobileRecentView
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
 import { AccountPrompt, PasswordResetPrompt } from "./AccountPrompt";
 import { betterMoveExplanation, humanMoveExplanation, needsBetterMove } from "../review-copy";
+import { isAccountEntryRoute, routeForSession, routeFromHash } from "../routes";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "moves" | "line" | "patterns" | "method";
 type IdentityPromptState = { gameId: string; names: string[]; source: PlayerIdentity["source"] };
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const routes = new Set<Route>(["landing", "sign-up", "sign-in", "home", "recent", "analysis", "explore", "progress", "settings"]);
-
-function routeFromHash(): Route {
-  const candidate = window.location.hash.replace(/^#\/?/, "") as Route;
-  return candidate && routes.has(candidate) ? candidate : "landing";
-}
-
 export default function App() {
-  const [route, setRoute] = useState<Route>(routeFromHash);
+  const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const [games, setGames] = useState<StoredGame[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -237,17 +231,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (authSnapshot.session) void handleAuthenticatedSession();
-    else {
-      setRoute("landing");
+    if (authSnapshot.session) {
+      if (!isPasswordResetPath()) {
+        setRoute((current) => routeForSession(current, true));
+        setAccountPromptOpen(false);
+      }
+      void handleAuthenticatedSession();
+    } else {
+      setRoute((current) => routeForSession(current, false));
       setImportOpen(false);
     }
   }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
 
-  // A signed-in user should never be left on an account-entry URL. This can
-  // happen when a returning local/OAuth session is already present before a
-  // deep link such as /#/sign-in is opened. Keep the entry surface visible
-  // while it is open, then return to the app shell when it closes.
+  // A signed-in user should never be left on an account-entry URL, including
+  // when a hash changes after the session has already been restored.
   useEffect(() => {
     if (authSnapshot.session && !accountPromptOpen && !isPasswordResetPath() && (route === "landing" || route === "sign-in" || route === "sign-up")) {
       setRoute("home");
@@ -270,10 +267,27 @@ export default function App() {
   }, [route]);
 
   useEffect(() => {
-    const onHashChange = () => setRoute(routeFromHash());
+    const onHashChange = () => {
+      const requested = routeFromHash(window.location.hash);
+      const next = routeForSession(requested, Boolean(authSnapshot.session));
+
+      if (!authSnapshot.session && isAccountEntryRoute(requested)) {
+        accountFlowRequested.current = requested === "sign-up" ? "review" : "home";
+        setAccountEntryMode(requested);
+        setAuthMessage("");
+        setAccountPromptOpen(true);
+      } else if (!authSnapshot.session) {
+        accountFlowRequested.current = null;
+        setAccountPromptOpen(false);
+      }
+
+      setRoute(next);
+      const expected = next === "landing" ? "#/" : `#/${next}`;
+      if (window.location.hash !== expected) window.history.replaceState(null, "", expected);
+    };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  }, [authSnapshot.session]);
 
   useEffect(() => {
     if (!authSnapshot.session) return;

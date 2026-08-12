@@ -35,6 +35,29 @@ TEST_CASE("PGN identity is deterministic") {
     CHECK_EQ(parse_pgn(pgn).identity, parse_pgn(pgn).identity);
 }
 
+TEST_CASE("canonical PGN keeps chess truth and removes owner annotations") {
+    const Game imported = parse_pgn(R"pgn(
+[Event "Private study"]
+[Site "Chess.com"]
+[Date "2026.08.12"]
+[Round "-"]
+[White "Alice"]
+[Black "Bob"]
+[Result "1-0"]
+[Annotator "owner@example.test"]
+
+1. e4 {private note [%clk 0:09:59]} e5 (1... c5) 2. Nf3 Nc6 1-0
+)pgn");
+    const std::string canonical = canonical_pgn(imported);
+    CHECK(canonical.find("Private study") == std::string::npos);
+    CHECK(canonical.find("owner@example.test") == std::string::npos);
+    CHECK(canonical.find("private note") == std::string::npos);
+    CHECK(canonical.find("%clk") == std::string::npos);
+    const Game reparsed = parse_pgn(canonical);
+    CHECK_EQ(reparsed.identity, imported.identity);
+    CHECK_EQ(reparsed.plies.size(), imported.plies.size());
+}
+
 TEST_CASE("PGN rejects illegal move sequences") {
     CHECK_THROWS(parse_pgn("[Result \"*\"]\n\n1. e4 e5 2. Ke3 *"));
 }

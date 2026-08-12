@@ -193,4 +193,24 @@ std::string normalized_game_identity(const Game& game) {
     return identity.str();
 }
 
+std::string canonical_pgn(const Game& game) {
+    std::ostringstream output;
+    constexpr std::array<std::string_view, 8> canonical_tags{
+        "Site", "Date", "Round", "White", "Black", "Result", "SetUp", "FEN"};
+    for (const std::string_view key : canonical_tags) {
+        const std::string value = game.tag(key);
+        if (!value.empty())
+            output << '[' << key << " \"" << value << "\"]\n";
+    }
+    output << '\n';
+    for (std::size_t index = 0; index < game.plies.size(); ++index) {
+        if (index % 2 == 0)
+            output << (index / 2 + 1) << ". ";
+        output << game.plies[index].san << ' ';
+    }
+    const std::string result = game.tag("Result");
+    output << (result.empty() ? "*" : result);
+    return output.str();
+}
+
 } // namespace pct::chess

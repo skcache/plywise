@@ -281,31 +281,34 @@ std::string analysis_engine_version(const analysis::GameAnalysis& analysis) {
 
 StoredGame stored_game_from_row(const Result& result, int row) {
     const std::string id = value_at(result, row, 0);
-    const std::string pgn = value_at(result, row, 1);
-    if (id.empty() || pgn.empty())
+    const std::string canonical_pgn = value_at(result, row, 1);
+    const std::string imported_pgn = value_at(result, row, 2);
+    const std::string source_url = value_at(result, row, 3);
+    const std::string source_kind = value_at(result, row, 4);
+    if (id.empty() || canonical_pgn.empty())
         throw Error(ErrorCode::Corruption, "PostgreSQL returned an incomplete game");
-    chess::Game game = chess::parse_pgn(pgn);
+    std::string owner_pgn = imported_pgn;
+    if (owner_pgn.empty())
+        owner_pgn = chess::canonical_pgn(chess::parse_pgn(canonical_pgn));
+    chess::Game game = chess::parse_pgn(owner_pgn);
     if (game.identity != id)
         throw Error(ErrorCode::Corruption, "PostgreSQL game identity does not match its PGN");
 
-    const json::Value metadata = json::parse(value_at(result, row, 2));
-    import::ImportedGame imported{std::move(game),
-                                  metadata.get("source_url", json::Value{}).is_string()
-                                      ? metadata.get("source_url", json::Value{}).as_string()
-                                      : std::string{},
-                                  pgn,
-                                  parse_method(metadata.get("method", "manual_pgn").as_string())};
-    StoredGame stored{std::move(imported), std::nullopt, integer_at(result, row, 3), 0,
+    // Legacy mappings have no owner artifact. Return only deterministic canonical
+    // chess truth rather than another owner's exact PGN or source provenance.
+    import::ImportedGame imported{std::move(game), source_url, owner_pgn,
+                                  parse_method(source_kind)};
+    StoredGame stored{std::move(imported), std::nullopt, integer_at(result, row, 5), 0,
                       std::nullopt};
-    const std::string compatibility = value_at(result, row, 4);
-    const std::string review = value_at(result, row, 5);
+    const std::string compatibility = value_at(result, row, 6);
+    const std::string review = value_at(result, row, 7);
     if (!review.empty()) {
         const analysis::GameAnalysis decoded = analysis_from_json(json::parse(review));
         if (compatibility == "shallow-v1")
             stored.shallow_analysis = decoded;
         else
             stored.analysis = decoded;
-        stored.analyzed_at_ms = integer_at(result, row, 6);
+        stored.analyzed_at_ms = integer_at(result, row, 8);
     }
     return stored;
 }
@@ -376,7 +379,9 @@ ChessComSyncState sync_state_from_row(const Result& result, int row) {
 constexpr std::string_view game_select = R"sql(
 SELECT g.id,
        g.normalized_pgn,
-       g.metadata_json::text,
+       COALESCE(go.imported_pgn, ''),
+       COALESCE(go.source_url, ''),
+       go.source_kind,
        (EXTRACT(EPOCH FROM go.imported_at) * 1000)::bigint,
        COALESCE(head.compatibility_key, ''),
        review.review_json::text,
@@ -579,10 +584,21 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
         imported.source_url.empty() ? imported.game.identity : imported.source_url;
     const Result duplicate = execute(
         impl_->connection,
-        "SELECT 1 FROM plywise.game_owners WHERE owner_kind = $1 AND owner_id = $2 "
+        "SELECT game_id FROM plywise.game_owners WHERE owner_kind = $1 AND owner_id = $2 "
         "AND source_kind = $3 AND source_key = $4",
         {owner_kind, owner_id, source_kind, source_key});
     if (PQntuples(duplicate.get()) != 0) {
+        if (value_at(duplicate, 0, 0) == imported.game.identity) {
+            static_cast<void>(execute(
+                impl_->connection,
+                "UPDATE plywise.game_owners SET "
+                "imported_pgn = COALESCE(imported_pgn, $6), "
+                "source_url = COALESCE(source_url, $7) "
+                "WHERE owner_kind = $1 AND owner_id = $2 AND source_kind = $3 "
+                "AND source_key = $4 AND game_id = $5",
+                {owner_kind, owner_id, source_kind, source_key, imported.game.identity,
+                 imported.pgn, imported.source_url}));
+        }
         transaction.commit();
         return AddResult::Duplicate;
     }
@@ -595,19 +611,16 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
         hosted_game_storage_limit)
         throw Error(ErrorCode::QuotaExceeded, "hosted game storage limit reached");
 
-    const std::string metadata = json::dump(json::Value::Object{
-        {"source_url", imported.source_url},
-        {"method", source_kind},
-    });
     // The C++ parser's identity is the canonical game contract. Hash it rather than raw PGN
     // formatting so the same game cannot create duplicate canonical rows.
     const std::string canonical_hash = sha256_bytea(imported.game.identity);
+    const std::string canonical_pgn = chess::canonical_pgn(imported.game);
     const Result inserted = execute(
         impl_->connection,
         "INSERT INTO plywise.games (id, canonical_hash, normalized_pgn, metadata_json) "
         "VALUES ($1, $2::bytea, $3, $4::jsonb) "
         "ON CONFLICT (canonical_hash) DO NOTHING RETURNING id",
-        {imported.game.identity, canonical_hash, imported.pgn, metadata});
+        {imported.game.identity, canonical_hash, canonical_pgn, "{}"});
     std::string game_id;
     if (PQntuples(inserted.get()) == 1)
         game_id = value_at(inserted, 0, 0);
@@ -624,9 +637,10 @@ AddResult PostgresRepository::add(const import::ImportedGame& imported) {
     const Result mapping = execute(
         impl_->connection,
         "INSERT INTO plywise.game_owners "
-        "(game_id, owner_kind, owner_id, source_kind, source_key) "
-        "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING game_id",
-        {game_id, owner_kind, owner_id, source_kind, source_key});
+        "(game_id, owner_kind, owner_id, source_kind, source_key, imported_pgn, source_url) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING RETURNING game_id",
+        {game_id, owner_kind, owner_id, source_kind, source_key, imported.pgn,
+         imported.source_url});
     if (PQntuples(mapping.get()) == 0) {
         transaction.commit();
         return AddResult::Duplicate;
@@ -1837,8 +1851,10 @@ GuestClaimReceipt HostedIdentityStore::claim_guest(std::string guest_id,
     const Result games = execute(
         impl_->connection,
         "INSERT INTO plywise.game_owners "
-        "(game_id, owner_kind, owner_id, source_kind, source_key, provenance_json) "
-        "SELECT game_id, 'account', $2, source_kind, source_key, provenance_json "
+        "(game_id, owner_kind, owner_id, imported_at, source_kind, source_key, provenance_json, "
+        "imported_pgn, source_url) "
+        "SELECT game_id, 'account', $2, imported_at, source_kind, source_key, provenance_json, "
+        "imported_pgn, source_url "
         "FROM plywise.game_owners WHERE owner_kind = 'guest' AND owner_id = $1 "
         "ON CONFLICT DO NOTHING RETURNING game_id",
         {guest_id, account_id});
@@ -2099,8 +2115,12 @@ SELECT jsonb_build_object(
     ) FROM plywise.accounts WHERE id = $1),
     'games', COALESCE((SELECT jsonb_agg(jsonb_build_object(
         'id', g.id,
-        'normalized_pgn', g.normalized_pgn,
-        'metadata', g.metadata_json,
+        'normalized_pgn', COALESCE(go.imported_pgn, g.normalized_pgn),
+        '_legacy_owner_artifact', go.imported_pgn IS NULL,
+        'metadata', jsonb_build_object(
+            'source_url', COALESCE(go.source_url, ''),
+            'method', go.source_kind
+        ),
         'imported_at', go.imported_at,
         'source_kind', go.source_kind,
         'source_key', go.source_key,
@@ -2192,7 +2212,14 @@ SELECT jsonb_build_object(
     const std::string encoded_export = value_at(encoded, 0, 0);
     if (encoded_export.empty() || encoded_export.size() > max_export_bytes)
         throw Error(ErrorCode::IoError, "account export exceeds the storage safety limit");
-    const json::Value data = json::parse(encoded_export);
+    json::Value data = json::parse(encoded_export);
+    for (json::Value& game : data.as_object().at("games").as_array()) {
+        if (game.get("_legacy_owner_artifact", false).as_bool()) {
+            const chess::Game parsed = chess::parse_pgn(game.at("normalized_pgn").as_string());
+            game.as_object().insert_or_assign("normalized_pgn", chess::canonical_pgn(parsed));
+        }
+        game.as_object().erase("_legacy_owner_artifact");
+    }
     const std::int64_t completed_at_ms = now_ms();
     const json::Value receipt = json::Value::Object{
         {"request_id", request_id},

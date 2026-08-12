@@ -134,6 +134,79 @@ TEST_CASE("PostgreSQL repository keeps owner-scoped games and reviews durable") 
     CHECK_THROWS(expired.size());
 }
 
+TEST_CASE("PostgreSQL keeps exact import artifacts inside each owner boundary") {
+    const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
+    if (connection == nullptr || connection[0] == '\0')
+        return;
+
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    app::HostedIdentityStore identity(connection);
+    const auto account_a =
+        identity.ensure_account("test", "artifact-owner-a-" + std::to_string(stamp));
+    const auto account_b =
+        identity.ensure_account("test", "artifact-owner-b-" + std::to_string(stamp));
+    import::ImportService importer;
+    const std::string pgn_a = R"pgn(
+[Event "Owner A private study"]
+[Site "Chess.com"]
+[Date "2026.08.12"]
+[Round "-"]
+[White "Shared White"]
+[Black "Shared Black"]
+[Result "1-0"]
+[Annotator "owner-a@example.test"]
+
+1. e4 {OWNER_A_PRIVATE [%clk 0:09:59]} e5 2. Nf3 Nc6 1-0
+)pgn";
+    const std::string pgn_b = R"pgn(
+[Event "Owner B notes"]
+[Site "Chess.com"]
+[Date "2026.08.12"]
+[Round "-"]
+[White "Shared White"]
+[Black "Shared Black"]
+[Result "1-0"]
+[Annotator "owner-b@example.test"]
+
+1. e4 {OWNER_B_PRIVATE [%clk 0:09:57]} e5 2. Nf3 Nc6 1-0
+)pgn";
+    auto imported_a = importer.from_pgn(pgn_a, "https://owner-a.invalid/private-source");
+    auto imported_b = importer.from_pgn(pgn_b, "https://owner-b.invalid/private-source");
+    CHECK_EQ(imported_a.game.identity, imported_b.game.identity);
+
+    app::PostgresRepository repository_a(connection, account_a.owner());
+    app::PostgresRepository repository_b(connection, account_b.owner());
+    CHECK(repository_a.add(imported_a) == app::AddResult::Added);
+    CHECK(repository_b.add(imported_b) == app::AddResult::Added);
+
+    const auto stored_a = repository_a.get(imported_a.game.identity);
+    const auto stored_b = repository_b.get(imported_b.game.identity);
+    CHECK(stored_a.has_value());
+    CHECK(stored_b.has_value());
+    CHECK_EQ(stored_a->imported.pgn, pgn_a);
+    CHECK_EQ(stored_b->imported.pgn, pgn_b);
+    CHECK_EQ(stored_a->imported.source_url, "https://owner-a.invalid/private-source");
+    CHECK_EQ(stored_b->imported.source_url, "https://owner-b.invalid/private-source");
+    CHECK_EQ(stored_a->imported.game.tag("Annotator"), "owner-a@example.test");
+    CHECK_EQ(stored_b->imported.game.tag("Annotator"), "owner-b@example.test");
+    CHECK(stored_b->imported.pgn.find("OWNER_A_PRIVATE") == std::string::npos);
+    CHECK_EQ(*stored_a->imported.game.plies.front().clock_ms, 599000LL);
+    CHECK_EQ(*stored_b->imported.game.plies.front().clock_ms, 597000LL);
+
+    const auto exported_b = identity.export_account(account_b.id, "artifact-export-b");
+    const auto& exported_games = exported_b.data.at("games").as_array();
+    const auto exported = std::find_if(
+        exported_games.begin(), exported_games.end(), [&](const json::Value& game) {
+            return game.at("id").as_string() == imported_b.game.identity;
+        });
+    CHECK(exported != exported_games.end());
+    CHECK_EQ(exported->at("normalized_pgn").as_string(), pgn_b);
+    CHECK_EQ(exported->at("metadata").at("source_url").as_string(),
+             "https://owner-b.invalid/private-source");
+    CHECK(exported->at("normalized_pgn").as_string().find("OWNER_A_PRIVATE") ==
+          std::string::npos);
+}
+
 TEST_CASE("PostgreSQL imported identity decisions stay owner scoped and durable") {
     const char* connection = std::getenv("PCT_POSTGRES_TEST_URL");
     if (connection == nullptr || connection[0] == '\0')

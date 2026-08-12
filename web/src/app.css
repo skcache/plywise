@@ -1640,6 +1640,22 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .playback-flip { padding-inline: 0; }
 }
 
+/* Keep Explore as one composed workspace on smaller laptops. The index and
+   detail columns must share the available stage instead of clipping copy. */
+@media (min-width: 821px) and (max-width: 1100px) {
+  .explore-surface { grid-template-columns: 290px minmax(0, 1fr); }
+  .concept-detail {
+    grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+    gap: 20px;
+    padding: 24px;
+  }
+  .concept-copy { min-width: 0; }
+  .concept-copy h2 { font-size: 24px; }
+  .concept-copy p { font-size: 11px; line-height: 1.5; }
+  .concept-copy small { margin: 13px 0; font-size: 9px; }
+  .concept-copy .soft-button { width: 100%; padding-inline: 10px; }
+}
+
 /* Large monitors have room for a little more reading density. Increase the
    board and row rhythm without stretching copy across the whole canvas. */
 @media (min-width: 1800px) {

@@ -2479,13 +2479,34 @@ bool HttpServer::origin_allowed(std::string_view origin) const {
 Response HttpServer::static_file(std::string_view request_path) const {
     const std::size_t query = request_path.find('?');
     request_path = request_path.substr(0, query);
-    if (request_path.find("..") != std::string_view::npos ||
+    // HTTP origin-form targets have exactly one leading slash. Without this check,
+    // removing only the first slash from a target such as `//path` leaves an absolute
+    // filesystem path, and `web_root / relative` discards the configured web root.
+    if (request_path.empty() || request_path.front() != '/' ||
+        (request_path.size() > 1 && request_path[1] == '/') ||
+        request_path.find("..") != std::string_view::npos ||
         request_path.find('\\') != std::string_view::npos) {
         return error_response(400, "invalid static-file path");
     }
-    const std::string relative =
-        request_path == "/" ? "index.html" : std::string(request_path.substr(1));
-    const std::filesystem::path path = options_.web_root / relative;
+    const std::filesystem::path relative =
+        request_path == "/" ? std::filesystem::path{"index.html"}
+                            : std::filesystem::path{request_path.substr(1)}.lexically_normal();
+    if (relative.empty() || relative.is_absolute() || relative.has_root_path())
+        return error_response(400, "invalid static-file path");
+
+    std::error_code filesystem_error;
+    const std::filesystem::path root =
+        std::filesystem::weakly_canonical(options_.web_root, filesystem_error);
+    if (filesystem_error || root.empty() || !root.is_absolute())
+        return error_response(404, "file does not exist");
+    const std::filesystem::path path =
+        std::filesystem::weakly_canonical(root / relative, filesystem_error);
+    if (filesystem_error)
+        return error_response(404, "file does not exist");
+    const auto root_end = std::mismatch(root.begin(), root.end(), path.begin(), path.end()).first;
+    if (root_end != root.end())
+        return error_response(400, "invalid static-file path");
+
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         return error_response(404, "file does not exist");

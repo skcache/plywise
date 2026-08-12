@@ -876,17 +876,26 @@ bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
 
     const std::size_t limit = kind == QuotaKind::Import
                                   ? auth_.hosted_imports_per_window
-                                  : auth_.hosted_analysis_starts_per_window;
+                                  : kind == QuotaKind::AnalysisStart
+                                      ? auth_.hosted_analysis_starts_per_window
+                                      : auth_.hosted_account_exports_per_window;
     const std::size_t global_limit = kind == QuotaKind::Import
                                          ? auth_.hosted_global_imports_per_window
-                                         : auth_.hosted_global_analysis_starts_per_window;
+                                         : kind == QuotaKind::AnalysisStart
+                                             ? auth_.hosted_global_analysis_starts_per_window
+                                             : auth_.hosted_global_account_exports_per_window;
+    const auto quota_window = kind == QuotaKind::AccountExport
+                                  ? auth_.hosted_account_export_window
+                                  : auth_.hosted_quota_window;
     if (limit == 0 || global_limit == 0 || amount > limit || amount > global_limit ||
-        auth_.hosted_quota_window <= std::chrono::seconds::zero())
+        quota_window <= std::chrono::seconds::zero())
         return false;
 
     const auto now = std::chrono::steady_clock::now();
-    const auto expired = [&](const auto& stamp) {
-        return now - stamp >= auth_.hosted_quota_window;
+    const auto expired = [&](const auto& stamp) { return now - stamp >= quota_window; };
+    const auto prune = [&](auto& events, std::chrono::seconds window) {
+        while (!events.empty() && now - events.front() >= window)
+            events.pop_front();
     };
     const std::string key = std::to_string(static_cast<int>(owner.kind())) + ":" +
                             std::string(owner.value());
@@ -898,11 +907,11 @@ bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
     if (!quota_windows_.contains(key) && quota_windows_.size() >= max_quota_owners) {
         for (auto iterator = quota_windows_.begin(); iterator != quota_windows_.end();) {
             auto& window = iterator->second;
-            while (!window.imports.empty() && expired(window.imports.front()))
-                window.imports.pop_front();
-            while (!window.analysis_starts.empty() && expired(window.analysis_starts.front()))
-                window.analysis_starts.pop_front();
-            if (window.imports.empty() && window.analysis_starts.empty())
+            prune(window.imports, auth_.hosted_quota_window);
+            prune(window.analysis_starts, auth_.hosted_quota_window);
+            prune(window.account_exports, auth_.hosted_account_export_window);
+            if (window.imports.empty() && window.analysis_starts.empty() &&
+                window.account_exports.empty())
                 iterator = quota_windows_.erase(iterator);
             else
                 ++iterator;
@@ -914,11 +923,17 @@ bool Api::consume_hosted_quota(const app::OwnerId& owner, QuotaKind kind,
     }
 
     auto& window = quota_windows_[key];
-    auto& events = kind == QuotaKind::Import ? window.imports : window.analysis_starts;
+    auto& events = kind == QuotaKind::Import
+                       ? window.imports
+                       : kind == QuotaKind::AnalysisStart ? window.analysis_starts
+                                                         : window.account_exports;
     while (!events.empty() && expired(events.front()))
         events.pop_front();
-    auto& global_events = kind == QuotaKind::Import ? global_quota_window_.imports
-                                                     : global_quota_window_.analysis_starts;
+    auto& global_events = kind == QuotaKind::Import
+                              ? global_quota_window_.imports
+                              : kind == QuotaKind::AnalysisStart
+                                    ? global_quota_window_.analysis_starts
+                                    : global_quota_window_.account_exports;
     while (!global_events.empty() && expired(global_events.front()))
         global_events.pop_front();
     if (events.size() > limit - amount || global_events.size() > global_limit - amount)
@@ -1082,6 +1097,9 @@ Response Api::handle(const Request& request) {
                 if (!auth_.export_account)
                     return auth_response(503, "account export is not configured",
                                          "account_export_unavailable");
+                if (!consume_hosted_quota(*authenticated_owner, QuotaKind::AccountExport))
+                    throw Error(ErrorCode::QuotaExceeded,
+                                "account export rate limit reached");
                 const AccountExportResult result =
                     auth_.export_account(*authenticated_owner, idempotency_key);
                 return json_response(200, json::Value::Object{
@@ -1436,6 +1454,7 @@ Response Api::handle(const Request& request) {
             if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry"});
+            enforce_hosted_import_quota();
             const json::Value body = json::parse(request.body);
             for (const auto& [key, _] : body.as_object()) {
                 if (key != "days" && key != "username")
@@ -1571,6 +1590,7 @@ Response Api::handle(const Request& request) {
             if (!request_ingest)
                 return ingest_error(503, "Chess.com ingest is unavailable",
                                     "ingest_unavailable", {"retry", "paste_pgn"});
+            enforce_hosted_import_quota();
             const json::Value body = json::parse(request.body);
             for (const auto& [key, _] : body.as_object()) {
                 if (key != "url" && key != "username")

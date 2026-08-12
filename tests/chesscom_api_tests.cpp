@@ -220,6 +220,8 @@ TEST_CASE("hosted Chess.com URL resolutions use the authenticated owner ingest m
             return std::nullopt;
         return service::ApiScope{&scoped_repository, &scoped_jobs, {}, &scoped_ingest};
     };
+    auth.hosted_imports_per_window = 1;
+    auth.hosted_global_imports_per_window = 1;
     service::Api api(importer, global_repository, global_jobs, {}, {}, &global_ingest, {}, auth);
 
     service::Request request = json_request(
@@ -240,6 +242,22 @@ TEST_CASE("hosted Chess.com URL resolutions use the authenticated owner ingest m
     const auto status = api.handle(std::move(status_request));
     CHECK_EQ(status.status, 200);
     CHECK_EQ(json::parse(status.body).at("id").as_string(), resolution_id);
+
+    service::Request limited_resolution = json_request(
+        "POST", "/api/import/resolve",
+        json::Value::Object{{"url", "https://www.chess.com/game/live/171626462441"}});
+    limited_resolution.headers.emplace("authorization", "Bearer owner-token");
+    const auto resolution_limited = api.handle(std::move(limited_resolution));
+    CHECK_EQ(resolution_limited.status, 429);
+    CHECK_EQ(json::parse(resolution_limited.body).at("code").as_string(),
+             "quota_exceeded");
+
+    service::Request limited_sync = json_request(
+        "POST", "/api/chesscom/sync", json::Value::Object{{"days", 30}});
+    limited_sync.headers.emplace("authorization", "Bearer owner-token");
+    const auto sync_limited = api.handle(std::move(limited_sync));
+    CHECK_EQ(sync_limited.status, 429);
+    CHECK_EQ(json::parse(sync_limited.body).at("code").as_string(), "quota_exceeded");
 }
 
 TEST_CASE("Chess.com sync archive and resolution API contracts are bounded and structured") {

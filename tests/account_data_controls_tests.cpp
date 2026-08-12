@@ -130,6 +130,12 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_EQ(json::parse(exported_again.body).at("request_id").as_string(),
              export_json.at("request_id").as_string());
 
+    const auto export_limited = api.handle(account_request(
+        "/api/account/export",
+        json::dump(json::Value::Object{{"idempotency_key", "export-controls-2"}})));
+    CHECK_EQ(export_limited.status, 429);
+    CHECK_EQ(json::parse(export_limited.body).at("code").as_string(), "quota_exceeded");
+
     const std::string deletion_body = json::dump(json::Value::Object{
         {"idempotency_key", "delete-controls-1"},
         {"confirm", true},

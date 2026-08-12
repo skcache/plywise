@@ -2111,6 +2111,13 @@ AccountExport HostedIdentityStore::export_account(std::string account_id,
             "completed_at = NULL WHERE id = $1",
             {request_id}));
     } else {
+        // An export receipt can be large and is only a derived cache. Retain at most one per
+        // account so rotating idempotency keys cannot grow storage without bound.
+        static_cast<void>(execute(
+            impl_->connection,
+            "DELETE FROM plywise.account_data_requests "
+            "WHERE owner_kind = 'account' AND owner_id = $1 AND request_kind = 'export'",
+            {account_id}));
         request_id = random_prefixed_id("export-");
         static_cast<void>(execute(
             impl_->connection,

@@ -1580,23 +1580,19 @@ HostedAccount HostedIdentityStore::ensure_account(
     validate_identity_text("authentication subject", auth_subject, 512);
     std::lock_guard lock(impl_->mutex);
     Transaction transaction(impl_->connection);
+    // Lock the identity row before consulting its tombstone. Account deletion takes the same row
+    // lock first, so whichever transaction wins is observed consistently by the other connection.
     const Result existing = execute(
         impl_->connection,
         "SELECT id FROM plywise.accounts WHERE auth_provider = $1 AND auth_subject = $2 FOR UPDATE",
         {auth_provider, auth_subject});
-    if (PQntuples(existing.get()) == 1) {
-        const std::string id = value_at(existing, 0, 0);
-        transaction.commit();
-        return HostedAccount{id};
-    }
-
     // Expired receipts no longer need to be trackable and must not block a fresh account shell.
+    // Keep account -> receipt as the common lock order shared with account deletion.
     static_cast<void>(execute(impl_->connection,
                               "DELETE FROM plywise.account_deletion_receipts "
                               "WHERE expires_at <= now()"));
-    // A deleted account may sign in again. Reuse its opaque owner id while a deletion receipt is
-    // retained so replaying the same delete key can return the original receipt instead of
-    // creating a second identity. Only a hash of the provider subject is kept in the receipt table.
+    // Keep the deletion cutoff authoritative even after a newer token recreates the account. An
+    // older bearer must never become valid again merely because the account row exists once more.
     const std::string subject_hash = sha256_bytea(auth_subject);
     const Result tombstone = execute(
         impl_->connection,
@@ -1605,12 +1601,23 @@ HostedAccount HostedIdentityStore::ensure_account(
         "WHERE auth_provider = $1 AND auth_subject_hash = $2::bytea "
         "AND expires_at > now() ORDER BY completed_at DESC LIMIT 1",
         {auth_provider, subject_hash});
+    if (PQntuples(tombstone.get()) == 1 &&
+        (!issued_at_ms || *issued_at_ms <= integer_at(tombstone, 0, 1)))
+        throw Error(ErrorCode::NotFound, "account bearer predates deletion");
+
+    if (PQntuples(existing.get()) == 1) {
+        const std::string id = value_at(existing, 0, 0);
+        transaction.commit();
+        return HostedAccount{id};
+    }
+
+    // A deleted account may sign in again. Reuse its opaque owner id while a deletion receipt is
+    // retained so replaying the same delete key can return the original receipt instead of
+    // creating a second identity. Only a hash of the provider subject is kept in the receipt table.
     if (PQntuples(tombstone.get()) == 1) {
         const std::string id = value_at(tombstone, 0, 0);
         if (id.empty())
             throw Error(ErrorCode::Corruption, "account deletion receipt has no account id");
-        if (issued_at_ms && *issued_at_ms <= integer_at(tombstone, 0, 1))
-            throw Error(ErrorCode::NotFound, "account bearer predates deletion");
         const Result owner = execute(
             impl_->connection,
             "INSERT INTO plywise.owners (owner_kind, owner_id) VALUES ('account', $1) "

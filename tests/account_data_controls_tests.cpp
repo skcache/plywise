@@ -165,6 +165,9 @@ TEST_CASE("hosted account export is complete, idempotent, and deletion requires 
     CHECK_THROWS(identity.ensure_account("test", subject, deleted_at_ms - 1));
     const auto restored = identity.ensure_account("test", subject, deleted_at_ms + 1);
     CHECK_EQ(restored.id, account.id);
+    CHECK_THROWS(identity.ensure_account("test", subject, deleted_at_ms - 1));
+    CHECK_THROWS(identity.ensure_account("test", subject));
+    CHECK_EQ(identity.ensure_account("test", subject, deleted_at_ms + 2).id, account.id);
     const auto deletion_replay =
         api.handle(account_request("/api/account/delete", deletion_body, "fresh-token"));
     CHECK_EQ(deletion_replay.status, 200);

@@ -87,7 +87,23 @@ if (mode === "production" && (!supabaseUrl || !supabaseKey)) {
   );
   process.exit(1);
 }
-if (supabaseKey && /service[_-]?role|secret/i.test(supabaseKey)) {
-  console.error("VITE_SUPABASE_PUBLISHABLE_KEY must not contain a service-role or secret key.");
-  process.exit(1);
+if (supabaseKey) {
+  let publicKeyIsSafe = /^sb_publishable_[A-Za-z0-9._-]+$/.test(supabaseKey);
+  if (!publicKeyIsSafe) {
+    const jwtParts = supabaseKey.split(".");
+    if (jwtParts.length === 3) {
+      try {
+        const payload = JSON.parse(Buffer.from(jwtParts[1], "base64url").toString("utf8"));
+        publicKeyIsSafe = payload?.role === "anon";
+      } catch {
+        publicKeyIsSafe = false;
+      }
+    }
+  }
+  if (!publicKeyIsSafe) {
+    console.error(
+      "VITE_SUPABASE_PUBLISHABLE_KEY must be a publishable key or a legacy anon key.",
+    );
+    process.exit(1);
+  }
 }

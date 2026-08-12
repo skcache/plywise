@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type PointerEvent } from "react";
+import { useState, type KeyboardEvent, type PointerEvent } from "react";
 import { ChessBoard } from "./Board";
 import { Icon } from "./Icon";
 
@@ -16,27 +16,22 @@ const previewClassifications = [
   ["Blunder", "is-blunder", 0, 0],
 ] as const;
 
-function setPreviewTilt(event: PointerEvent<HTMLElement>, reset = false) {
-  const preview = event.currentTarget;
-  if (reset) {
-    preview.style.setProperty("--preview-tilt-x", "0deg");
-    preview.style.setProperty("--preview-tilt-y", "0deg");
-    preview.style.setProperty("--preview-lift", "0px");
-    return;
-  }
+type PreviewTilt = "center" | "north" | "south" | "east" | "west" | "north-east" | "north-west" | "south-east" | "south-west";
 
-  const bounds = preview.getBoundingClientRect();
-  const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 2;
-  const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 2;
-  preview.style.setProperty("--preview-tilt-x", `${(-y * 2.8).toFixed(2)}deg`);
-  preview.style.setProperty("--preview-tilt-y", `${(x * 2.8).toFixed(2)}deg`);
-  preview.style.setProperty("--preview-lift", `${(1.5 - y * 1.5).toFixed(2)}px`);
+function previewTilt(event: PointerEvent<HTMLElement>): PreviewTilt {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const horizontal = (event.clientX - bounds.left) / bounds.width;
+  const vertical = (event.clientY - bounds.top) / bounds.height;
+  const x = horizontal < .35 ? "west" : horizontal > .65 ? "east" : "";
+  const y = vertical < .35 ? "north" : vertical > .65 ? "south" : "";
+  return (y && x ? `${y}-${x}` : y || x || "center") as PreviewTilt;
 }
 
 export function LandingView({ onStart, onSignIn }: {
   onStart: () => void;
   onSignIn: () => void;
 }) {
+  const [tilt, setTilt] = useState<PreviewTilt>("center");
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const openPreview = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -68,10 +63,10 @@ export function LandingView({ onStart, onSignIn }: {
         </div>
 
         <section
-          className="landing-preview"
+          className={`landing-preview preview-tilt-${tilt}`}
           aria-label="Game analysis preview"
-          onPointerMove={setPreviewTilt}
-          onPointerLeave={(event) => setPreviewTilt(event, true)}
+          onPointerMove={(event) => setTilt(previewTilt(event))}
+          onPointerLeave={() => setTilt("center")}
         >
           <span className="landing-preview-header">Game analysis</span>
           <div className="landing-preview-body">

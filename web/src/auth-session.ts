@@ -4,7 +4,7 @@ import {
   type Session,
   type SupabaseClient,
 } from "@supabase/supabase-js";
-import { authRedirectMessage } from "./auth-redirect";
+import { authRedirectMessage, classifyAuthRedirect } from "./auth-redirect";
 
 export type AuthProvider = "google" | "github";
 export type AuthEntryMode = "sign-up" | "sign-in";
@@ -36,10 +36,12 @@ const providerLabels: Record<AuthProvider, string> = {
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? "";
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "";
-const authStorage = safeSessionStorage();
-// Prefer localStorage for a convenient reload-to-reload harness, but fall back to
-// the current tab's session storage when a browser privacy policy blocks it.
-const localAuthStorage = safeLocalStorage() ?? authStorage;
+// PKCE password-reset links commonly open in a new tab. Supabase must be able
+// to recover the verifier created by the original tab, so use origin-scoped
+// local storage when the browser permits it. The API still authorizes every
+// request from the short-lived provider session rather than trusting storage.
+const authStorage = safeLocalStorage() ?? safeSessionStorage();
+const localAuthStorage = authStorage;
 const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
@@ -49,7 +51,8 @@ const client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
         // automatic URL parsing in the client constructor.
         detectSessionInUrl: false,
         flowType: "pkce",
-        // Keep provider sessions scoped to this tab; the server remains the source of account history.
+        // Persist the provider session across tabs and reloads; the server remains
+        // the source of account history and tenant authorization.
         persistSession: authStorage !== null,
         storage: authStorage ?? undefined,
       },
@@ -372,59 +375,31 @@ function safeLocalStorage(): Storage | null {
 async function completeAuthRedirect(): Promise<string | null> {
   if (typeof window === "undefined" || !client) return null;
   const url = new URL(window.location.href);
-  const isCallback = url.pathname === "/auth/callback";
-  const recoveryTokens = readRecoveryTokens(url.hash);
-  // Supabase can still use the project Site URL while its redirect allowlist is
-  // being updated. Accept an OAuth response on the same origin's root as a
-  // compatibility path, but only when an auth code/token/error is present.
-  const isRootAuthResponse = url.pathname === "/" && (
-    url.searchParams.has("code") ||
-    url.searchParams.has("error") ||
-    url.searchParams.has("error_code") ||
-    Boolean(recoveryTokens)
-  );
-
-  if (isCallback || isRootAuthResponse) {
-    const errorCode = url.searchParams.get("error_code") ?? url.searchParams.get("error") ?? "";
-    const errorDescription = url.searchParams.get("error_description") ?? "";
-    if (errorCode || errorDescription) {
-      cleanAuthUrl();
-      return authRedirectMessage(errorCode, errorDescription) ?? "The account provider could not complete sign-in. Try again.";
-    }
-    const code = url.searchParams.get("code");
-    if (code) {
-      const { data, error } = await client.auth.exchangeCodeForSession(code);
-      cleanAuthUrl();
-      if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
-      currentSession = data.session;
-      return null;
-    }
-    // Older provider configurations can return tokens in the hash instead of a PKCE code.
-    // Accept that response only on this exact callback path, then immediately remove it.
-    if (recoveryTokens) {
-      const { data, error } = await client.auth.setSession(recoveryTokens);
-      cleanAuthUrl();
-      if (error || !data.session) return "The account provider could not complete sign-in. Try again.";
-      currentSession = data.session;
-      return null;
-    }
-    cleanAuthUrl();
-    return "The account provider did not return a usable sign-in response. Try again.";
+  const request = classifyAuthRedirect(url);
+  if (request.kind === "none") return null;
+  if (request.kind === "error") {
+    cleanAuthUrl(request.cleanPath);
+    return authRedirectMessage(request.errorCode, request.errorDescription)
+      ?? (request.purpose === "recovery"
+        ? "That password reset link is no longer valid. Request a new one."
+        : "The account provider could not complete sign-in. Try again.");
+  }
+  if (request.kind === "unsupported") {
+    cleanAuthUrl(request.cleanPath);
+    return request.purpose === "recovery"
+      ? "That password reset link is no longer valid. Request a new one."
+      : "The account provider did not return a secure sign-in response. Try again.";
   }
 
-  if (isPasswordResetPath() && recoveryTokens) {
-    const { error } = await client.auth.setSession(recoveryTokens);
-    cleanAuthUrl("/auth/reset");
-    if (error) return "That password reset link is no longer valid. Request a new one.";
+  const { data, error } = await client.auth.exchangeCodeForSession(request.code);
+  cleanAuthUrl(request.cleanPath);
+  if (error || !data.session) {
+    return request.purpose === "recovery"
+      ? "That password reset link is no longer valid. Request a new one."
+      : "The account provider could not complete sign-in. Try again.";
   }
+  currentSession = data.session;
   return null;
-}
-
-function readRecoveryTokens(hash: string): { access_token: string; refresh_token: string } | null {
-  const params = new URLSearchParams(hash.replace(/^#/, ""));
-  const accessToken = params.get("access_token");
-  const refreshToken = params.get("refresh_token");
-  return accessToken && refreshToken ? { access_token: accessToken, refresh_token: refreshToken } : null;
 }
 
 function cleanAuthUrl(path = "/"): void {

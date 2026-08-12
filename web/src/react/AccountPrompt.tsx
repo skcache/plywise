@@ -249,11 +249,12 @@ function displayName(metadata: Record<string, unknown>, email: string | undefine
   return email || "Plywise account";
 }
 
-export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
+export function PasswordResetPrompt({ auth, message, onSubmit, onCancel, onComplete }: {
   auth: AuthSnapshot;
   message: string;
   onSubmit: (password: string) => Promise<AuthResult>;
-  onClose: () => void;
+  onCancel: () => void;
+  onComplete: () => void;
 }) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -270,7 +271,7 @@ export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
   }
 
   return <main className="account-page"><div className="account-page-shell">
-    <button className="account-page-brand" type="button" onClick={onClose}>Plywise</button>
+    <button className="account-page-brand" type="button" onClick={onCancel}>Plywise</button>
     <section className="account-modal" role="dialog" aria-labelledby="password-reset-title" aria-describedby="password-reset-description">
       <header>
         <div>
@@ -281,7 +282,7 @@ export function PasswordResetPrompt({ auth, message, onSubmit, onClose }: {
       </header>
       {complete ? <>
         <p className="account-prompt-status" role="status">{message || "Your password has been updated."}</p>
-        <button type="button" className="account-primary account-form-submit" onClick={onClose}>Continue to Plywise</button>
+        <button type="button" className="account-primary account-form-submit" onClick={onComplete}>Continue to Plywise</button>
       </> : <form className="account-form" aria-describedby={message ? "password-reset-status" : undefined} onSubmit={(event) => void submit(event)}>
         <div className="account-field">
           <label htmlFor="account-new-password">New password</label>

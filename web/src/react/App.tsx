@@ -248,7 +248,7 @@ export default function App() {
   // deep link such as /#/sign-in is opened. Keep the entry surface visible
   // while it is open, then return to the app shell when it closes.
   useEffect(() => {
-    if (authSnapshot.session && !accountPromptOpen && (route === "sign-in" || route === "sign-up")) {
+    if (authSnapshot.session && !accountPromptOpen && !isPasswordResetPath() && (route === "landing" || route === "sign-in" || route === "sign-up")) {
       setRoute("home");
     }
   }, [accountPromptOpen, authSnapshot.session, route]);
@@ -756,12 +756,24 @@ export default function App() {
     return result;
   }, []);
 
+  const finishPasswordReset = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    setPasswordResetMessage("");
+    setRoute("home");
+  }, []);
+
   const handleSignOut = useCallback(async () => {
     setAuthBusy(null);
     const result = await signOut();
     setAuthMessage(result.message);
     if (!result.ok) setError(result.message);
   }, []);
+
+  const cancelPasswordReset = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    setPasswordResetMessage("");
+    void handleSignOut();
+  }, [handleSignOut]);
 
   const closeAccountPrompt = useCallback(() => {
     accountFlowRequested.current = null;
@@ -795,7 +807,7 @@ export default function App() {
   }
 
   if (isPasswordResetPath() && authSnapshot.session) {
-    return <PasswordResetPrompt auth={authSnapshot} message={passwordResetMessage} onSubmit={completePasswordReset} onClose={() => void handleSignOut()} />;
+    return <PasswordResetPrompt auth={authSnapshot} message={passwordResetMessage} onSubmit={completePasswordReset} onCancel={cancelPasswordReset} onComplete={finishPasswordReset} />;
   }
 
   if (!authSnapshot.session) {
@@ -960,8 +972,8 @@ export default function App() {
     header = <TopBar title="Settings" detail="Local preferences" icon="settings"/>;
     const updateEngineLines = (value: boolean) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); };
     view = <>
-      <div className="desktop-route-view"><SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics}/></div>
-      <MobileSettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics} onBack={() => setAppRoute("home")}/>
+      <div className="desktop-route-view"><SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics} accountLabel={accountDisplayName(authSnapshot)} onSignOut={() => void handleSignOut()}/></div>
+      <MobileSettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics} accountLabel={accountDisplayName(authSnapshot)} onSignOut={() => void handleSignOut()} onBack={() => setAppRoute("home")}/>
     </>;
   }
 
@@ -1147,7 +1159,7 @@ function MobileAnalysisActivity(props: AnalysisProps & { game: StoredGame; move?
   return <section className="mobile-analysis-activity" aria-label="Analysis in progress" aria-live="polite">
     <div className="mobile-analysis-activity-row"><strong>{props.browserProgress?.stage === "finalizing" && percent === 100 ? "Review ready ✓" : "Analyzing your game"}</strong><b>{percent}%</b></div>
     <p>{detail}</p>
-    <div className="mobile-analysis-progress" role="progressbar" aria-label="Analysis progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><span style={{ width: `${percent}%` }}/></div>
+    <progress className="mobile-analysis-progress" aria-label="Analysis progress" max={100} value={percent}/>
     <div className="mobile-analysis-activity-footer"><span>Stockfish · {props.browserProgress?.profile ? "Local" : "Server"}</span><button onClick={props.browserProgress ? props.onCancelBrowserAnalysis : props.onCancelJob}>Cancel</button></div>
   </section>;
 }
@@ -1246,7 +1258,7 @@ function AnalysisActivity({ game, progress, job, onCancel }: { game: StoredGame;
   return <section className="analysis-activity" aria-label="Analysis in progress" aria-live="polite">
     <div className="analysis-activity-copy"><span className="analysis-live-mark" aria-hidden="true"/><div><strong>{title}</strong><p>{detail}</p></div></div>
     <div className="analysis-activity-status"><span>{position}</span><span className="analysis-engine">Engine · {progress?.profile ?? "server"}</span><b>{percent}%</b><button onClick={onCancel}>Cancel</button></div>
-    <div className="analysis-activity-track" role="progressbar" aria-label="Analysis progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><span style={{ width: `${percent}%` }}/></div>
+    <progress className="analysis-activity-track" aria-label="Analysis progress" max={100} value={percent}/>
   </section>;
 }
 
@@ -1313,7 +1325,7 @@ function ProgressView({ games, profile, onOpen }: { games: StoredGame[]; profile
   return <section className="soft-surface progress-surface"><header className="progress-heading"><div><span>Rating profile</span><strong>{latest?.rating ?? profile?.latest_rating ?? "—"}</strong><small>{delta === null ? "More dated games needed for a 30-day change" : `${delta >= 0 ? "+" : ""}${delta} over the latest 30-day window`}</small></div><div className="rating-chart">{ratings.length > 1 ? <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-label="Rating history"><path d="M0 42H100"/><polyline points={line}/>{ratings.map((point, index) => <circle key={point.gameId} cx={index / (ratings.length - 1) * 100} cy={42 - (point.rating - min) / range * 32} r="1.3"/>)}</svg> : <p>Import dated games with rating tags to build this history.</p>}</div></header><div className="progress-grid"><section className="profile-block"><span>Review evidence</span><div className="metric-row"><div><strong>{profile?.games_analyzed ?? games.filter((game) => game.analysis).length}</strong><small>analyzed games</small></div><div><strong>{profile?.total_positions ?? games.flatMap((game) => game.analysis?.moves ?? []).length}</strong><small>classified positions</small></div><div><strong>{profile ? Math.round(profile.drill_accuracy * 100) : "—"}%</strong><small>retry accuracy</small></div></div></section><section className="profile-block weaknesses"><span>Recurring weaknesses</span>{profile?.weaknesses.slice(0, 4).map((item) => <div key={item.category}><strong>{item.category}</strong><small>{item.occurrences} occurrences · {item.average_loss_cp.toFixed(0)} average CP loss</small><em>{Math.round(item.recurrence_rate * 100)}%</em></div>) ?? <p>Analyze multiple games to reveal repeated evidence.</p>}</section><section className="profile-block learning-positions"><span>Positions worth revisiting</span>{arc.slice(0, 5).map((item) => <button key={item.gameId} onClick={() => onOpen(item.gameId, item.largestSwingPly)}><div><strong>{item.title}</strong><small>{item.opening}</small></div><em>{(item.largestSwing * 100).toFixed(1)}% swing</em></button>)}</section></div></section>;
 }
 
-function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, runtime, diagnostics }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null }) {
+function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, runtime, diagnostics, accountLabel, onSignOut }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null; accountLabel: string; onSignOut: () => void }) {
   return <section className="soft-surface settings-surface">
     <header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header>
     <div className="settings-list">
@@ -1338,6 +1350,10 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
       <section>
         <div><h2>Analysis runtime</h2><p>Read-only facts reported by the local C++ service.</p></div>
         <dl className="runtime-grid"><div><dt>Shallow depth</dt><dd>{runtime?.shallow_depth ?? "—"}</dd></div><div><dt>Deep depth</dt><dd>{runtime?.deep_depth ?? "—"}</dd></div><div><dt>Engine workers</dt><dd>{diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Queue capacity</dt><dd>{diagnostics?.job_queue_capacity ?? "—"}</dd></div></dl>
+      </section>
+      <section>
+        <div><h2>Account</h2><p>Signed in as {accountLabel}.</p></div>
+        <div className="settings-account"><span>{accountLabel}</span><button type="button" onClick={onSignOut}>Sign out</button></div>
       </section>
       <section><div><h2>Coaching style</h2><p>A selectable style will appear when C++ exposes a persisted coaching-provider contract.</p></div><span className="unavailable-setting">Unavailable in this build</span></section>
     </div>
@@ -1420,6 +1436,16 @@ function ServiceUnavailableView({ message, onRetry, onSignOut }: {
       <small>For local development, start the C++ service on port 8787. For a hosted build, check the public API origin.</small>
     </section>
   </main>;
+}
+
+function accountDisplayName(auth: AuthSnapshot): string {
+  const user = auth.session?.user;
+  if (!user) return "Plywise account";
+  for (const key of ["full_name", "name", "user_name"]) {
+    const value = user.user_metadata[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return user.email || "Plywise account";
 }
 
 function gameDate(tags: Record<string, string>) {

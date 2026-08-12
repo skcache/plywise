@@ -145,13 +145,14 @@ export function MobileProgressView({ games, profile, onOpen, onSettings }: { gam
   </div>;
 }
 
-export function MobileSettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, onBack }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime?: RuntimeSettings | null; diagnostics?: Diagnostics | null; onBack: () => void }) {
+export function MobileSettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, accountLabel, onSignOut, onBack }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime?: RuntimeSettings | null; diagnostics?: Diagnostics | null; accountLabel: string; onSignOut: () => void; onBack: () => void }) {
   return <div className="mobile-route-view mobile-settings-view">
     <MobilePageHeader title="Settings" detail="How Plywise should behave." onBack={onBack}/>
     <div className="mobile-page-content">
       <section className="mobile-setting-section"><div className="mobile-section-heading"><div><span>Appearance</span><h2>Choose a workspace</h2></div></div><div className="mobile-setting-options" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="mobile-theme" checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div></section>
       <section className="mobile-setting-section"><div className="mobile-section-heading"><div><span>Review</span><h2>What opens first</h2></div></div><label className="mobile-setting-toggle"><span><strong>Show the engine line first</strong><small>Keep the summary first unless you want technical detail up front.</small></span><input type="checkbox" checked={engineLinesDefault} onChange={(event) => onEngineLines(event.target.checked)}/></label></section>
       <section className="mobile-setting-section"><div className="mobile-section-heading"><div><span>Browser analysis</span><h2>Choose a pass</h2></div></div><div className="mobile-engine-options">{browserEngineProfiles().map((item) => <label key={item.id} className={browserProfile === item.id ? "active" : ""}><input type="radio" name="mobile-browser-profile" checked={browserProfile === item.id} onChange={() => onBrowserProfile(item.id)}/><span><strong>{item.label}</strong><small>{item.description}</small></span></label>)}</div></section>
+      <section className="mobile-setting-section"><div className="mobile-section-heading"><div><span>Account</span><h2>{accountLabel}</h2></div></div><button className="mobile-signout" type="button" onClick={onSignOut}>Sign out</button></section>
     </div>
   </div>;
 }

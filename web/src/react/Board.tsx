@@ -63,12 +63,11 @@ export function EvaluationBar({ value }: { value?: number }) {
   const side = value === undefined ? "Even position" : value >= 0 ? `White advantage, ${label}` : `Black advantage, ${formatEval(Math.abs(value))}`;
   return <aside className="evaluation-column" aria-label={`Current engine evaluation: ${side}`}>
     <span className="evaluation-value">{label}</span>
-    <div className="evaluation-rail" role="img" aria-label={side}>
-      <span className="evaluation-rail-black" />
-      <span className="evaluation-rail-white" style={{ height: `${whiteShare}%` }} />
-      <span className="evaluation-rail-marker" style={{ bottom: `calc(${whiteShare}% - 2px)` }} />
-    </div>
-    <span className="evaluation-overlay" style={{ bottom: `calc(${whiteShare}% - 8px)` }}>{label}</span>
+    <svg className="evaluation-rail" viewBox="0 0 10 100" preserveAspectRatio="none" aria-hidden="true">
+      <rect className="evaluation-rail-black" x="0" y="0" width="10" height="100" />
+      <rect className="evaluation-rail-white" x="0" y={100 - whiteShare} width="10" height={whiteShare} />
+      <line className="evaluation-rail-marker" x1="0" x2="10" y1={100 - whiteShare} y2={100 - whiteShare} vectorEffect="non-scaling-stroke" />
+    </svg>
     <span className="evaluation-opposite">{formatEval(value === undefined ? undefined : -value)}</span>
   </aside>;
 }

@@ -14,6 +14,11 @@ export function routeForSession(route: Route, signedIn: boolean): Route {
   return route === "landing" || route === "sign-up" || route === "sign-in" ? route : "landing";
 }
 
+export function routeForAuthState(route: Route, signedIn: boolean, initializing: boolean): Route {
+  if (initializing && !signedIn) return route;
+  return routeForSession(route, signedIn);
+}
+
 export function isAccountEntryRoute(route: Route): route is "sign-up" | "sign-in" {
   return route === "sign-up" || route === "sign-in";
 }

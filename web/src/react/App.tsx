@@ -47,7 +47,7 @@ import { MobileExploreView, MobileHomeView, MobileProgressView, MobileRecentView
 import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
 import { AccountPrompt, PasswordResetPrompt } from "./AccountPrompt";
 import { betterMoveExplanation, humanMoveExplanation, needsBetterMove } from "../review-copy";
-import { isAccountEntryRoute, routeForSession, routeFromHash } from "../routes";
+import { isAccountEntryRoute, routeForAuthState, routeForSession, routeFromHash } from "../routes";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "moves" | "line" | "patterns" | "method";
@@ -237,11 +237,11 @@ export default function App() {
         setAccountPromptOpen(false);
       }
       void handleAuthenticatedSession();
-    } else {
+    } else if (!authInitializing) {
       setRoute((current) => routeForSession(current, false));
       setImportOpen(false);
     }
-  }, [authSnapshot.session?.access_token, handleAuthenticatedSession]);
+  }, [authInitializing, authSnapshot.session?.access_token, handleAuthenticatedSession]);
 
   // A signed-in user should never be left on an account-entry URL, including
   // when a hash changes after the session has already been restored.
@@ -269,7 +269,7 @@ export default function App() {
   useEffect(() => {
     const onHashChange = () => {
       const requested = routeFromHash(window.location.hash);
-      const next = routeForSession(requested, Boolean(authSnapshot.session));
+      const next = routeForAuthState(requested, Boolean(authSnapshot.session), authInitializing);
 
       if (!authSnapshot.session && isAccountEntryRoute(requested)) {
         accountFlowRequested.current = requested === "sign-up" ? "review" : "home";
@@ -287,7 +287,7 @@ export default function App() {
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, [authSnapshot.session]);
+  }, [authInitializing, authSnapshot.session]);
 
   useEffect(() => {
     if (!authSnapshot.session) return;

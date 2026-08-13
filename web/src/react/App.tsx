@@ -52,6 +52,7 @@ import { isAccountEntryRoute, routeForAuthState, routeForSession, routeFromHash 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "moves" | "line" | "patterns" | "method";
 type IdentityPromptState = { gameId: string; names: string[]; source: PlayerIdentity["source"] };
+type AnalysisIssue = { kind: "analysis" | "variation"; message: string };
 
 const initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 export default function App() {
@@ -92,6 +93,7 @@ export default function App() {
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState("");
   const [error, setError] = useState("");
+  const [analysisIssue, setAnalysisIssue] = useState<AnalysisIssue | null>(null);
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [accountPromptOpen, setAccountPromptOpen] = useState(false);
@@ -112,6 +114,17 @@ export default function App() {
   const selectedGame = useMemo(() => games.find((game) => game.game.id === selectedGameId) ?? null, [games, selectedGameId]);
   const selectedMove = selectedGame?.analysis?.moves[selectedPly];
   const selectedJob = useMemo(() => jobs.filter((job) => job.game_id === selectedGameId).sort((a, b) => b.id - a.id)[0] ?? null, [jobs, selectedGameId]);
+  const analysisInteractionActive = Boolean(
+    (browserAnalysisProgress?.gameId === selectedGameId && browserAnalysisProgress) ||
+    selectedJob?.status === "queued" ||
+    selectedJob?.status === "running"
+  );
+
+  useEffect(() => {
+    if (selectedJob?.status === "failed" && selectedGame?.analysis_status !== "complete") {
+      setAnalysisIssue((current) => current || { kind: "analysis", message: "The analysis service could not finish this review. Try again when you are ready." });
+    }
+  }, [selectedGame?.analysis_status, selectedJob?.id, selectedJob?.status]);
 
   const refreshGame = useCallback(async (gameId: string) => {
     const game = await loadGame(gameId);
@@ -354,6 +367,7 @@ export default function App() {
     setTrySource("");
     setMoveListExpanded(false);
     setOverviewOpen(false);
+    setAnalysisIssue(null);
     setRoute("analysis");
   }, [games]);
 
@@ -368,6 +382,17 @@ export default function App() {
     if (!game || !authSnapshot.session) return;
     openGame(gameId, 0);
     if (game.analysis_status === "complete") return;
+
+    setAnalysisIssue(null);
+    setOverviewOpen(false);
+    setMoreOpen(false);
+    setReviewMode("manual");
+    setHighlightedUci("");
+    setTrySource("");
+    setTryMessage("");
+    setVariation(null);
+    setVariationMessage("");
+    setVariationAnalysis(null);
 
     const abortController = new AbortController();
     const engine = createBrowserEngine();
@@ -400,30 +425,33 @@ export default function App() {
       await delay(450);
       try {
         await refreshGame(gameId);
+        setAnalysisIssue(null);
       } catch (refreshError) {
-        setError(refreshError instanceof Error ? refreshError.message : "Review is ready, but the game could not refresh yet.");
+        setAnalysisIssue({ kind: "analysis", message: "The review is ready, but this page could not refresh it yet. Try again in a moment." });
       }
     } catch (analysisError) {
+      if (analysisError instanceof BrowserEngineError && analysisError.code === "cancelled") {
+        setAnalysisIssue(null);
+        return;
+      }
       const fallback = isBrowserFallback(analysisError);
-      let message = analysisError instanceof BrowserEngineError && analysisError.code === "cancelled"
-        ? "Browser analysis cancelled. Nothing was changed."
-        : analysisError instanceof ApiError &&
+      let message = analysisError instanceof ApiError &&
           analysisError.code === "invalid_argument" &&
           analysisError.message.toLowerCase().includes("completed game")
           ? "Only completed games can be analyzed. Import a finished game to continue."
           : fallback
           ? "Browser analysis is unavailable here."
-            : analysisError instanceof Error ? analysisError.message : "Could not start analysis.";
+          : "Analysis stopped before the review was ready. Try again.";
       let fallbackStarted = false;
       if (fallback) {
         try {
           message = await startServerFallback(gameId);
           fallbackStarted = true;
-        } catch (fallbackError) {
-          message = fallbackError instanceof Error ? fallbackError.message : "Could not start analysis.";
+        } catch {
+          message = "Neither browser nor server analysis could start right now. Try again in a moment.";
         }
       }
-      if (!fallbackStarted) setError(message);
+      if (!fallbackStarted) setAnalysisIssue({ kind: "analysis", message });
     } finally {
       browserAnalysisAbort.current = null;
       browserEngineRef.current?.dispose();
@@ -436,6 +464,20 @@ export default function App() {
     browserAnalysisAbort.current?.abort();
     void browserEngineRef.current?.cancel();
   }, []);
+
+  const retryAnalysis = useCallback(async () => {
+    if (!selectedGame) return;
+    setAnalysisIssue(null);
+    if (selectedGame.analysis_status !== "complete") {
+      await analyzeGame(selectedGame.game.id);
+      return;
+    }
+    try {
+      await refreshGame(selectedGame.game.id);
+    } catch {
+      setAnalysisIssue({ kind: "analysis", message: "Plywise still could not refresh this review. Try again in a moment." });
+    }
+  }, [analyzeGame, refreshGame, selectedGame]);
 
   const refreshGames = useCallback(async () => {
     if (refreshBusy || !authSnapshot.session) return;
@@ -511,8 +553,11 @@ export default function App() {
   }, [reviewMode, selectedGame, selectedPly]);
 
   const startVariation = useCallback(async (rootPosition: "before" | "after") => {
-    if (!selectedGame) return;
+    if (!selectedGame || variationBusy) return;
     setVariationReturn({ mode: reviewMode, highlight: highlightedUci });
+    setMoreOpen(false);
+    setAnalysisIssue(null);
+    setVariationBusy(true);
     try {
       const saved = await listVariations(selectedGame.game.id);
       const next = [...saved].reverse().find((item) => item.root_ply === selectedPly && item.root_position === rootPosition)
@@ -523,16 +568,17 @@ export default function App() {
       setTrySource("");
       setVariationMessage(next.nodes.length > 1 ? "Saved branch restored." : "Variation started from the canonical position.");
       setVariationAnalysis(null);
-      setMoreOpen(false);
-    } catch (variationError) {
-      setVariationMessage(variationError instanceof Error ? variationError.message : "Could not start variation.");
+    } catch {
+      setAnalysisIssue({ kind: "variation", message: "Plywise could not open a variation from this position. Dismiss this message and try Explore again in a moment." });
+    } finally {
+      setVariationBusy(false);
     }
-  }, [highlightedUci, reviewMode, selectedGame, selectedPly]);
+  }, [highlightedUci, reviewMode, selectedGame, selectedPly, variationBusy]);
 
   const variationNode = useCallback((id: number | undefined) => variation?.nodes.find((node) => node.id === id), [variation]);
 
   const chooseSquare = useCallback(async (square: string) => {
-    if (reviewMode !== "try_move" && reviewMode !== "variation") return;
+    if ((reviewMode !== "try_move" && reviewMode !== "variation") || variationBusy) return;
     if (!trySource) {
       setTrySource(square);
       reviewMode === "variation" ? setVariationMessage(`Selected ${square}. Choose a destination.`) : setTryMessage(`Selected ${square}. Choose a destination.`);
@@ -549,6 +595,7 @@ export default function App() {
       }
     }
     if (reviewMode === "variation" && selectedGame && variation) {
+      setVariationBusy(true);
       try {
         const next = await extendVariation(selectedGame.game.id, variation.id, variation.current_node_id, uci);
         setVariation(next);
@@ -556,10 +603,12 @@ export default function App() {
         setVariationMessage(`${node?.san || node?.uci || uci} added to this branch.`);
         setVariationAnalysis(null);
       } catch (variationError) {
-        setVariationMessage(variationError instanceof ApiError && variationError.code === "illegal_move" ? "That move is illegal in this position." : variationError instanceof Error ? variationError.message : "Could not extend variation.");
+        setVariationMessage(variationError instanceof ApiError && variationError.code === "illegal_move" ? "That move is illegal in this position." : "Plywise could not add that move to the branch. Try again.");
+      } finally {
+        setVariationBusy(false);
       }
     }
-  }, [reviewMode, selectedGame, selectedPly, trySource, variation]);
+  }, [reviewMode, selectedGame, selectedPly, trySource, variation, variationBusy]);
 
   const submitRetry = useCallback(async (uci: string) => {
     if (!selectedGame) return;
@@ -572,9 +621,18 @@ export default function App() {
   }, [selectedGame, selectedPly]);
 
   const leaveVariation = useCallback(async (remove = false) => {
+    if (variationBusy) return;
     if (remove && variation && selectedGame) {
       if (!window.confirm("Delete this saved variation and all branches?")) return;
-      await deleteVariation(selectedGame.game.id, variation.id);
+      setVariationBusy(true);
+      try {
+        await deleteVariation(selectedGame.game.id, variation.id);
+      } catch {
+        setVariationMessage("Plywise could not delete this variation. The branch is still saved.");
+        return;
+      } finally {
+        setVariationBusy(false);
+      }
     }
     setVariation(null);
     setVariationAnalysis(null);
@@ -582,25 +640,39 @@ export default function App() {
     setReviewMode(variationReturn.mode);
     setHighlightedUci(variationReturn.highlight);
     setTrySource("");
-  }, [selectedGame, variation, variationReturn]);
+  }, [selectedGame, variation, variationBusy, variationReturn]);
 
   const resetActiveVariation = useCallback(async () => {
-    if (!selectedGame || !variation) return;
-    const next = await resetVariation(selectedGame.game.id, variation.id);
-    setVariation(next);
-    setVariationAnalysis(null);
-    setVariationMessage("Variation reset to its canonical root.");
-  }, [selectedGame, variation]);
+    if (!selectedGame || !variation || variationBusy) return;
+    setVariationBusy(true);
+    try {
+      const next = await resetVariation(selectedGame.game.id, variation.id);
+      setVariation(next);
+      setVariationAnalysis(null);
+      setVariationMessage("Variation reset to its canonical root.");
+    } catch {
+      setVariationMessage("Plywise could not reset this branch. Your current variation is unchanged.");
+    } finally {
+      setVariationBusy(false);
+    }
+  }, [selectedGame, variation, variationBusy]);
 
   const stepVariationBack = useCallback(async () => {
-    if (!selectedGame || !variation) return;
+    if (!selectedGame || !variation || variationBusy) return;
     const parentId = variationNode(variation.current_node_id)?.parent_id ?? -1;
     if (parentId < 0) return;
-    const next = await setVariationCursor(selectedGame.game.id, variation.id, parentId);
-    setVariation(next);
-    setVariationAnalysis(null);
-    setVariationMessage(parentId === 0 ? "Back at the variation root." : "Previous branch position restored.");
-  }, [selectedGame, variation, variationNode]);
+    setVariationBusy(true);
+    try {
+      const next = await setVariationCursor(selectedGame.game.id, variation.id, parentId);
+      setVariation(next);
+      setVariationAnalysis(null);
+      setVariationMessage(parentId === 0 ? "Back at the variation root." : "Previous branch position restored.");
+    } catch {
+      setVariationMessage("Plywise could not move back in this branch. Your current position is unchanged.");
+    } finally {
+      setVariationBusy(false);
+    }
+  }, [selectedGame, variation, variationBusy, variationNode]);
 
   const analyzeActiveVariation = useCallback(async () => {
     if (!selectedGame || !variation || variationBusy) return;
@@ -609,16 +681,16 @@ export default function App() {
     try {
       setVariationAnalysis(await analyzeVariation(selectedGame.game.id, variation.id));
       setVariationMessage("Branch evaluation ready. The canonical game is unchanged.");
-    } catch (variationError) {
-      setVariationMessage(variationError instanceof Error ? variationError.message : "Could not analyze variation.");
+    } catch {
+      setVariationMessage("Plywise could not analyze this branch right now. The variation is still saved.");
     } finally { setVariationBusy(false); }
   }, [selectedGame, variation, variationBusy]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (route !== "analysis" || event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select")) return;
+      if (route !== "analysis" || analysisInteractionActive || event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("button, a[href], input, textarea, select, summary, .action-menu, [role='dialog'], [contenteditable='true']")) return;
       if (event.key === "ArrowLeft") { event.preventDefault(); navigate("previous"); }
       if (event.key === "ArrowRight") { event.preventDefault(); navigate("next"); }
       if (event.key === "Home") { event.preventDefault(); navigate("first"); }
@@ -632,7 +704,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [leaveVariation, navigate, resetTransient, route, selectedMove, startVariation, togglePlayback, variation]);
+  }, [analysisInteractionActive, leaveVariation, navigate, resetTransient, route, selectedMove, startVariation, togglePlayback, variation]);
 
   const openAccountPrompt = useCallback((mode: AuthEntryMode = "sign-up") => {
     accountFlowRequested.current = mode === "sign-up" ? "review" : "home";
@@ -920,16 +992,16 @@ export default function App() {
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
-    header = <TopBar icon="analysis" title={gameName} detail={opening} meta={activeBrowserProgress ? undefined : selectedGame?.analysis ? `${selectedGame.analysis.accuracy.toFixed(1)} accuracy` : undefined} actions={<>
-      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton disabled={Boolean(activeBrowserProgress)} onClick={() => void analyzeGame(selectedGame.game.id)}>{activeBrowserProgress ? "Analyzing…" : selectedJob?.status === "running" ? "Analyzing…" : "Analyze"}</SoftButton>}
-      <SoftButton icon="overview" onClick={() => { setInspectorTab("summary"); setOverviewOpen((value) => !value); }}>Overview</SoftButton>
-      <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
+    header = <TopBar icon="analysis" title={gameName} detail={opening} meta={analysisInteractionActive || analysisIssue ? undefined : selectedGame?.analysis ? formatAccuracy(selectedGame.analysis.accuracy, 1, " accuracy") : undefined} actions={!analysisInteractionActive && !analysisIssue ? <>
+      {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>Analyze</SoftButton>}
+      <SoftButton icon="overview" aria-expanded={overviewOpen} aria-controls="analysis-overview" onClick={() => { setInspectorTab("summary"); setOverviewOpen((value) => !value); }}>Overview</SoftButton>
+      <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
         <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
         <button onClick={() => void startVariation("before")}><Icon name="branch"/>Explore variation</button>
         <button onClick={() => { setReviewMode("revealed_move"); setHighlightedUci(selectedMove?.best_uci ?? ""); setMoreOpen(false); }}><Icon name="star"/>Show best move</button>
         <button onClick={() => { setOrientation((value) => value === "white" ? "black" : "white"); setMoreOpen(false); }}><Icon name="flip"/>Flip board</button>
       </div>}</div>
-    </>}/>;
+    </> : undefined}/>;
     view = <AnalysisView
       {...shared}
       orientation={orientation}
@@ -946,7 +1018,8 @@ export default function App() {
       moveListExpanded={moveListExpanded}
       runtimeSettings={runtimeSettings}
       diagnostics={diagnostics}
-      error={error}
+      analysisActive={analysisInteractionActive}
+      analysisIssue={analysisIssue}
       browserProgress={activeBrowserProgress}
       onSelectPly={resetTransient}
       onNavigate={navigate}
@@ -972,6 +1045,8 @@ export default function App() {
       onShowBestMove={() => { setReviewMode("revealed_move"); setHighlightedUci(selectedMove?.best_uci ?? ""); setMoreOpen(false); }}
       onCancelJob={() => selectedJob && void cancelJob(selectedJob.id).then((job) => setJobs((current) => [...current.filter((item) => item.id !== job.id), job]))}
       onCancelBrowserAnalysis={cancelBrowserAnalysis}
+      onRetryAnalysis={() => void retryAnalysis()}
+      onDismissAnalysisError={() => setAnalysisIssue(null)}
     />;
   } else if (route === "explore") {
     const entries = buildExploreEntries(games);
@@ -1098,18 +1173,17 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
 type AnalysisProps = {
   games: StoredGame[]; profile: Profile | null; selectedGame: StoredGame | null; selectedPly: number; selectedMove?: MoveAssessment; jobs: Job[]; selectedJob: Job | null;
   orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; tryMessage: string; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
-  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; error: string; browserProgress: BrowserReviewProgress | null; moreOpen: boolean;
+  overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; analysisActive: boolean; analysisIssue: AnalysisIssue | null; browserProgress: BrowserReviewProgress | null; moreOpen: boolean;
   onSelectPly: (ply: number) => void; onNavigate: (action: "first" | "previous" | "next" | "last") => void; onTogglePlayback: () => void; onFlip: () => void; onSquare: (square: string) => void;
   onRetry: () => void; onRetrySubmit: (uci: string) => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
-  onToggleMoves: () => void; onCloseOverview: () => void; onOpenOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onToggleMore: () => void; onCloseMore: () => void; onBack: () => void; onShowBestMove: () => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void;
+  onToggleMoves: () => void; onCloseOverview: () => void; onOpenOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onToggleMore: () => void; onCloseMore: () => void; onBack: () => void; onShowBestMove: () => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void; onRetryAnalysis: () => void; onDismissAnalysisError: () => void;
 };
 
 function AnalysisView(props: AnalysisProps) {
   const { selectedGame: game, selectedMove: move, selectedPly, reviewMode, variation } = props;
   if (!game) return <section className="soft-surface analysis-empty"><Icon name="analysis"/><h1>Choose a game to analyze.</h1><p>Open a game from Recent Games. Its canonical moves remain unchanged while you review or branch.</p></section>;
   const ply = game.game.plies[selectedPly];
-  const jobActive = props.selectedJob?.status === "running" || props.selectedJob?.status === "queued";
-  const analysisActive = Boolean(props.browserProgress || jobActive);
+  const analysisActive = props.analysisActive;
   const livePlyIndex = props.browserProgress?.ply ?? selectedPly;
   const livePly = game.game.plies[livePlyIndex] ?? ply;
   const currentVariationNode = variation?.nodes.find((node) => node.id === variation.current_node_id);
@@ -1129,11 +1203,11 @@ function AnalysisView(props: AnalysisProps) {
     />}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
       <EvaluationBar value={analysisActive ? undefined : move?.evaluation_after}/>
-      <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={reviewMode === "try_move" || reviewMode === "variation"} showArrow={reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
+      <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={!analysisActive && !props.variationBusy && (reviewMode === "try_move" || reviewMode === "variation")} showArrow={!analysisActive && reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
     </section>
     <ReviewInspector {...props} analysisActive={analysisActive}/>
-    <Playback game={game} selectedPly={selectedPly} playing={isPlaying(reviewMode)} onNavigate={props.onNavigate} onPlay={props.onTogglePlayback} onFlip={props.onFlip}/>
-    {props.overviewOpen && (
+    {!analysisActive && !props.analysisIssue && <Playback game={game} selectedPly={selectedPly} playing={isPlaying(reviewMode)} onNavigate={props.onNavigate} onPlay={props.onTogglePlayback} onFlip={props.onFlip}/>}
+    {!analysisActive && !props.analysisIssue && props.overviewOpen && (
       <OverviewDrawer {...props}/>
     )}
     </div>
@@ -1145,12 +1219,12 @@ function MobileAnalysisView(props: AnalysisProps & { game: StoredGame; move?: Mo
   const tags = props.game.game.tags;
   const title = `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}`;
   const opening = props.game.analysis?.opening ?? "Game review";
-  const accuracy = props.game.analysis ? `${props.game.analysis.accuracy.toFixed(0)}% accuracy` : "Review in progress";
+  const accuracy = props.game.analysis ? formatAccuracy(props.game.analysis.accuracy, 0, "% accuracy") : "Review in progress";
   return <section className="mobile-analysis-view" aria-label="Mobile game review">
     <header className="mobile-analysis-header">
       <button className="mobile-back-button" aria-label="Back to recent games" onClick={props.onBack}><Icon name="previous"/></button>
       <div className="mobile-analysis-identity"><strong>{title}</strong><span>{opening} · {accuracy}</span></div>
-      <button className="mobile-more-button" aria-label="More analysis actions" aria-expanded={props.moreOpen} onClick={props.onToggleMore}><Icon name="more"/></button>
+      {props.analysisActive || props.analysisIssue ? <span aria-hidden="true"/> : <button className="mobile-more-button" aria-label="More analysis actions" aria-expanded={props.moreOpen} onClick={props.onToggleMore}><Icon name="more"/></button>}
     </header>
     {props.analysisActive ? <>
       <MobileAnalysisActivity {...props}/>
@@ -1158,13 +1232,15 @@ function MobileAnalysisView(props: AnalysisProps & { game: StoredGame; move?: Mo
       <p className="mobile-live-position">{mobilePositionLabel(props.game, props.browserProgress, props.livePly)}</p>
     </> : <>
       <MobileBoardSurface {...props} evaluation={props.move?.evaluation_after}/>
+      {props.analysisIssue ? <AnalysisErrorNotice issue={props.analysisIssue} onRetry={props.onRetryAnalysis} onDismiss={props.onDismissAnalysisError}/> : <>
       <MobilePlayback {...props}/>
       {props.reviewMode === "try_move" || props.reviewMode === "variation"
         ? <MobileReviewMode {...props}/>
         : <MobileReviewSummary {...props}/>}
       {props.overviewOpen && <MobileAnalysisDrawer {...props}/>}
+      </>}
     </>}
-    {props.moreOpen ? <MobileActionSheet {...props}/> : null}
+    {!props.analysisActive && !props.analysisIssue && props.moreOpen ? <MobileActionSheet {...props}/> : null}
   </section>;
 }
 
@@ -1178,18 +1254,18 @@ function MobileReviewMode(props: AnalysisProps & { game: StoredGame; move?: Move
     </section>;
   }
   return <section className="mobile-review-mode" aria-live="polite">
-    <header><div><span>Variation</span><strong>Explore a legal branch</strong></div><button onClick={props.onReturn}>Return</button></header>
+    <header><div><span>Variation</span><strong>Explore a legal branch</strong></div><button disabled={props.variationBusy} onClick={props.onReturn}>Return</button></header>
     <p>{props.variationMessage || "Choose a piece, then its destination."}</p>
     {props.variationAnalysis && <div className="mobile-variation-line"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}
-    <div className="mobile-mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div>
+    <div className="mobile-mode-actions"><button disabled={props.variationBusy} onClick={props.onVariationBack}>Back</button><button disabled={props.variationBusy} onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Working…" : "Analyze"}</button><button disabled={props.variationBusy} className="danger-text" onClick={props.onVariationDelete}>Delete</button></div>
   </section>;
 }
 
 function MobileBoardSurface(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean; evaluation?: number }) {
-  const interactive = props.reviewMode === "try_move" || props.reviewMode === "variation";
+  const interactive = !props.analysisActive && !props.variationBusy && (props.reviewMode === "try_move" || props.reviewMode === "variation");
   return <section className="mobile-board-surface" aria-label="Chess board and evaluation">
     <EvaluationBar value={props.evaluation}/>
-    <div className="mobile-board-holder"><ChessBoard fen={props.fen} orientation={props.orientation} activeUci={props.analysisActive ? "" : props.highlightedUci} sourceSquare={props.trySource} interactive={interactive} showArrow={props.reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
+    <div className="mobile-board-holder"><ChessBoard fen={props.fen} orientation={props.orientation} activeUci={props.analysisActive ? "" : props.highlightedUci} sourceSquare={props.trySource} interactive={interactive} showArrow={!props.analysisActive && props.reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
   </section>;
 }
 
@@ -1260,7 +1336,11 @@ function MobileDrawerReview(props: AnalysisProps & { game: StoredGame; move?: Mo
 
 function MobileDrawerMoves(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
   const assessments = props.game.analysis?.moves ?? [];
-  return <div className="mobile-full-move-list">{props.game.game.plies.map((ply, index) => { const assessment = assessments[index]; return <button key={index} className={index === props.selectedPly ? "current" : ""} onClick={() => { props.onSelectPly(index); props.onCloseOverview(); }}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{ply.san}</strong><em>{assessment?.classification || "Pending"}</em><i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`} aria-hidden="true"/></button>; })}</div>;
+  const selectedMoveRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    selectedMoveRef.current?.scrollIntoView({ block: "nearest" });
+  }, [props.selectedPly]);
+  return <div className="mobile-full-move-list">{props.game.game.plies.map((ply, index) => { const assessment = assessments[index]; const current = index === props.selectedPly; return <button ref={current ? selectedMoveRef : undefined} key={index} className={current ? "current" : ""} aria-current={current ? "step" : undefined} onClick={() => { props.onSelectPly(index); props.onCloseOverview(); }}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{ply.san}</strong><em>{assessment?.classification || "Pending"}</em><i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`} aria-hidden="true"/></button>; })}</div>;
 }
 
 function MobileDrawerLine(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean }) {
@@ -1330,6 +1410,13 @@ function analysisStageLabel(stage: BrowserReviewProgress["stage"] | undefined, s
   return status === "queued" ? "Queued for analysis" : "Analyzing your game";
 }
 
+function AnalysisErrorNotice({ issue, onRetry, onDismiss }: { issue: AnalysisIssue; onRetry: () => void; onDismiss: () => void }) {
+  return <section className="analysis-error-notice" role="alert">
+    <div><span>{issue.kind === "analysis" ? "Analysis stopped" : "Variation unavailable"}</span><strong>{issue.kind === "analysis" ? "The review is not ready yet." : "The branch did not open."}</strong><p>{issue.message}</p></div>
+    <div className="analysis-error-actions">{issue.kind === "analysis" && <button onClick={onRetry}>Try analysis again</button>}<button onClick={onDismiss}>Dismiss</button></div>
+  </section>;
+}
+
 function AnalysisActivity({ game, progress, job, onCancel }: { game: StoredGame; progress: BrowserReviewProgress | null; job: Job | null; onCancel: () => void }) {
   const complete = progress?.complete ?? job?.progress.complete ?? 0;
   const total = progress?.total ?? job?.progress.total ?? 0;
@@ -1359,13 +1446,13 @@ function ReviewInspector(props: AnalysisProps & { analysisActive: boolean }) {
   return <aside className={`review-rail ${props.analysisActive ? "review-rail-active" : ""}`}>
     <section className="inspector-surface">
       <header className="inspector-header"><div><span>{props.analysisActive ? "Analysis Inspector" : "Game review"}</span><strong>{props.analysisActive ? "Working through the game" : "What changed here"}</strong></div><small>{props.analysisActive ? "Live" : `${plies.length} plies`}</small></header>
-      {props.analysisActive ? <div className="inspector-analysis-state"><div className="inspector-state-icon"><Icon name="analysis"/></div><strong>{analysisStageLabel(props.browserProgress?.stage, props.selectedJob?.status)}</strong><p>{props.browserProgress?.message ?? props.selectedJob?.progress.message ?? "The review will appear here when the engine is done."}</p>{props.browserProgress && <dl><div><dt>Position</dt><dd>{props.browserProgress.ply + 1} · {props.browserProgress.position}</dd></div><div><dt>Depth</dt><dd>{props.browserProgress.depth ? `${props.browserProgress.depth}/${props.browserProgress.targetDepth ?? "—"}` : "Starting"}</dd></div><div><dt>Engine</dt><dd>{props.browserProgress.profile}</dd></div></dl>}</div> : <>
+      {props.analysisActive ? <div className="inspector-analysis-state"><div className="inspector-state-icon"><Icon name="analysis"/></div><strong>{analysisStageLabel(props.browserProgress?.stage, props.selectedJob?.status)}</strong><p>{props.browserProgress?.message ?? props.selectedJob?.progress.message ?? "The review will appear here when the engine is done."}</p>{props.browserProgress && <dl><div><dt>Position</dt><dd>{props.browserProgress.ply + 1} · {props.browserProgress.position}</dd></div><div><dt>Depth</dt><dd>{props.browserProgress.depth ? `${props.browserProgress.depth}/${props.browserProgress.targetDepth ?? "—"}` : "Starting"}</dd></div><div><dt>Engine</dt><dd>{props.browserProgress.profile}</dd></div></dl>}</div> : props.analysisIssue ? <AnalysisErrorNotice issue={props.analysisIssue} onRetry={props.onRetryAnalysis} onDismiss={props.onDismissAnalysisError}/> : <>
         <section className={`inspector-block inspector-current class-${classificationClass(move?.classification || "pending")}`}>
           <header><span>Current move</span><small>{move ? `${move.move_number}${move.side === "white" ? "." : "…"}` : "Not ready"}</small></header>
           {move ? <div className="inspector-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{humanMoveExplanation(move)}</p></div></div> : <p className="inspector-empty">Analysis appears here when the review is ready.</p>}
         </section>
-        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode"><header><span>Variation</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button onClick={props.onVariationBack}>Back</button><button onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Analyzing…" : "Analyze"}</button><button className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && needsBetterMove(move) && <section className="inspector-block inspector-best class-best"><header><span>Better move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Better</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>{betterMoveExplanation(move)}</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
-        <section className="inspector-block inspector-moves"><header><span>Move list</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((item, offset) => { const index = start + offset; const assessment = moves[index]; return <button ref={index === props.selectedPly ? selectedMoveRef : undefined} key={index} className={index === props.selectedPly ? "current" : ""} onClick={() => props.onSelectPly(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{item.san}</strong><em>{assessment?.classification || "Pending"}</em>{index === props.selectedPly && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>; })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={props.onToggleMoves}>{props.moveListExpanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>
+        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Variation</span><button disabled={props.variationBusy} onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button disabled={props.variationBusy} onClick={props.onVariationBack}>Back</button><button disabled={props.variationBusy} onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Working…" : "Analyze"}</button><button disabled={props.variationBusy} className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && needsBetterMove(move) && <section className="inspector-block inspector-best class-best"><header><span>Better move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Better</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>{betterMoveExplanation(move)}</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
+        <section className="inspector-block inspector-moves"><header><span>Move list</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((item, offset) => { const index = start + offset; const assessment = moves[index]; const current = index === props.selectedPly; return <button ref={current ? selectedMoveRef : undefined} key={index} className={current ? "current" : ""} aria-current={current ? "step" : undefined} onClick={() => props.onSelectPly(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{item.san}</strong><em>{assessment?.classification || "Pending"}</em>{current && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>; })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={props.onToggleMoves}>{props.moveListExpanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>
       </>}
     </section>
   </aside>;
@@ -1378,14 +1465,15 @@ function RetryForm({ message, onSubmit }: { message: string; onSubmit: (uci: str
 
 function Playback({ game, selectedPly, playing, onNavigate, onPlay, onFlip }: { game: StoredGame; selectedPly: number; playing: boolean; onNavigate: AnalysisProps["onNavigate"]; onPlay: () => void; onFlip: () => void }) {
   const selected = game.game.plies[selectedPly];
-  return <footer className="playback-bar"><div className="playback-buttons"><SoftButton icon="first" aria-label="First move" onClick={() => onNavigate("first")}/><SoftButton icon="previous" aria-label="Previous move" onClick={() => onNavigate("previous")}/><SoftButton className="primary-play" icon={playing ? "pause" : "play"} aria-label={playing ? "Pause review" : "Play review"} onClick={onPlay}/><SoftButton icon="next" aria-label="Next move" onClick={() => onNavigate("next")}/><SoftButton icon="last" aria-label="Last move" onClick={() => onNavigate("last")}/></div><button className="move-selector"><span>{selected ? `${Math.floor(selectedPly / 2) + 1}${selectedPly % 2 ? "…" : "."} ${selected.san}` : "Starting position"}</span><b>⌄</b></button><SoftButton className="playback-flip" icon="flip" onClick={onFlip}>Flip</SoftButton></footer>;
+  return <footer className="playback-bar"><div className="playback-buttons"><SoftButton icon="first" aria-label="First move" onClick={() => onNavigate("first")}/><SoftButton icon="previous" aria-label="Previous move" onClick={() => onNavigate("previous")}/><SoftButton className="primary-play" icon={playing ? "pause" : "play"} aria-label={playing ? "Pause review" : "Play review"} onClick={onPlay}/><SoftButton icon="next" aria-label="Next move" onClick={() => onNavigate("next")}/><SoftButton icon="last" aria-label="Last move" onClick={() => onNavigate("last")}/></div><div className="move-selector" role="status"><span>{selected ? `${Math.floor(selectedPly / 2) + 1}${selectedPly % 2 ? "…" : "."} ${selected.san}` : "Starting position"}</span></div><SoftButton className="playback-flip" icon="flip" onClick={onFlip}>Flip</SoftButton></footer>;
 }
 
 function OverviewDrawer(props: AnalysisProps) {
   const move = props.selectedMove;
   const analysis = props.selectedGame?.analysis;
-  return <aside className="overview-drawer"><header><div><span>Game Overview</span><strong>Evidence behind this review</strong></div><button aria-label="Close overview" onClick={props.onCloseOverview}><Icon name="close"/></button></header><nav>{(["summary", "line", "method"] as InspectorTab[]).map((tab) => <button key={tab} className={props.inspectorTab === tab ? "active" : ""} onClick={() => props.onInspectorTab(tab)}>{titleCase(tab)}</button>)}</nav><div className="drawer-body">
-    {props.inspectorTab === "summary" && <><div className="summary-hero"><strong>{analysis?.accuracy.toFixed(1) ?? "—"}</strong><span>review accuracy</span></div><dl className="evidence-list"><div><dt>Opening</dt><dd>{[analysis?.eco, analysis?.opening].filter(Boolean).join(" · ") || "Unclassified"}</dd></div><div><dt>Book depth</dt><dd>{analysis?.book_ply ?? 0} plies</dd></div><div><dt>Selected evaluation</dt><dd>{formatEval(move?.evaluation_after)}</dd></div><div><dt>Classification</dt><dd>{move?.classification || "Pending"}</dd></div></dl></>}
+  const dialogRef = useDialogFocus<HTMLElement>(props.onCloseOverview);
+  return <aside id="analysis-overview" ref={dialogRef} className="overview-drawer" role="dialog" aria-modal="true" aria-labelledby="analysis-overview-title"><header><div><span>Game Overview</span><strong id="analysis-overview-title">Evidence behind this review</strong></div><button aria-label="Close overview" onClick={props.onCloseOverview}><Icon name="close"/></button></header><nav aria-label="Overview sections">{(["summary", "line", "method"] as InspectorTab[]).map((tab) => <button key={tab} className={props.inspectorTab === tab ? "active" : ""} aria-current={props.inspectorTab === tab ? "page" : undefined} onClick={() => props.onInspectorTab(tab)}>{titleCase(tab)}</button>)}</nav><div className="drawer-body">
+    {props.inspectorTab === "summary" && <><div className="summary-hero"><strong>{formatAccuracy(analysis?.accuracy, 1)}</strong><span>review accuracy</span></div><dl className="evidence-list"><div><dt>Opening</dt><dd>{[analysis?.eco, analysis?.opening].filter(Boolean).join(" · ") || "Unclassified"}</dd></div><div><dt>Book depth</dt><dd>{analysis?.book_ply ?? 0} plies</dd></div><div><dt>Selected evaluation</dt><dd>{formatEval(move?.evaluation_after)}</dd></div><div><dt>Classification</dt><dd>{move?.classification || "Pending"}</dd></div></dl></>}
     {props.inspectorTab === "line" && <><div className="engine-line"><span>Principal variation</span><strong>{move?.best_san || move?.best_uci || "—"}</strong><code>{move?.principal_variation.join(" ") || "No line available"}</code></div><dl className="evidence-list"><div><dt>Depth</dt><dd>{move?.depth || "—"}</dd></div><div><dt>Nodes</dt><dd>{move?.nodes?.toLocaleString() || "—"}</dd></div><div><dt>Workers</dt><dd>{props.diagnostics?.engine_workers ?? "—"}</dd></div><div><dt>Deep target</dt><dd>{props.runtimeSettings?.deep_depth ?? "—"}</dd></div></dl></>}
     {props.inspectorTab === "method" && <div className="method-copy"><h3>Local, reproducible evidence</h3><p>C++ reconstructs each position, Stockfish evaluates candidates, and the versioned classification model assigns the displayed label. This panel exposes recorded evidence, not hidden reasoning.</p><dl className="evidence-list"><div><dt>Requested profile</dt><dd>{engineProfileLabel(analysis?.requested_engine_profile)}</dd></div><div><dt>Actual profile</dt><dd>{engineProfileLabel(analysis?.actual_engine_profile)}</dd></div><div><dt>Engine</dt><dd>{analysis?.engine_name || move?.engine_version || "Stockfish local"}</dd></div><div><dt>Source</dt><dd>{engineSourceLabel(analysis?.engine_source)}</dd></div><div><dt>Engine build</dt><dd>{move?.engine_version || "Not recorded"}</dd></div><div><dt>Classifier</dt><dd>{move?.classification_model_version || "Tutor model"}</dd></div></dl></div>}
   </div></aside>;
@@ -1552,6 +1640,9 @@ function needsAttention(classification: string) {
 
 function classificationClass(value: string) { return value.toLowerCase().replace(/[^a-z]+/g, "-"); }
 function titleCase(value: string) { return value.replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function formatAccuracy(value: number | undefined, digits: number, suffix = "") {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "—";
+}
 function engineProfileLabel(value?: string) {
   if (value === "quick") return "Quick";
   if (value === "balanced") return "Balanced";

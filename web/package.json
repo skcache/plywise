@@ -15,6 +15,7 @@
     "test:geometry": "tsc tests/chess-geometry.test.ts src/chess.ts --outDir /tmp/pct-web-geometry --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-geometry/tests/chess-geometry.test.js",
     "test:review": "tsc tests/review-state.test.ts src/review.ts src/types.ts --outDir /tmp/pct-web-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-review/tests/review-state.test.js",
     "test:review-copy": "tsc tests/review-copy.test.ts src/review-copy.ts src/types.ts --outDir /tmp/pct-web-review-copy --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-review-copy/tests/review-copy.test.js",
+    "test:retry-review": "tsc tests/retry-review.test.ts src/retry-review.ts --outDir /tmp/pct-web-retry-review --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-retry-review/tests/retry-review.test.js",
     "test:insights": "tsc tests/insights.test.ts src/insights.ts src/types.ts --outDir /tmp/pct-web-insights --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-insights/tests/insights.test.js",
     "test:auth": "tsc tests/auth-redirect.test.ts src/auth-redirect.ts --outDir /tmp/pct-web-auth --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-auth/tests/auth-redirect.test.js",
     "test:routes": "tsc tests/routes.test.ts src/routes.ts --outDir /tmp/pct-web-routes --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-routes/tests/routes.test.js",
@@ -23,7 +24,7 @@
     "test:api-auth": "tsc tests/api-auth-retry.test.ts src/api-auth-retry.ts --outDir /tmp/pct-web-api-auth --module commonjs --moduleResolution node --target ES2022 --skipLibCheck && node /tmp/pct-web-api-auth/tests/api-auth-retry.test.js",
     "test:public-env": "node tests/public-env.test.mjs",
     "test:vercel": "node tests/vercel-config.test.mjs",
-    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:review-copy && npm run test:insights && npm run test:auth && npm run test:routes && npm run test:engine && npm run test:browser-review && npm run test:api-auth && npm run test:public-env && npm run test:vercel"
+    "test": "npm run test:config && npm run test:geometry && npm run test:review && npm run test:review-copy && npm run test:retry-review && npm run test:insights && npm run test:auth && npm run test:routes && npm run test:engine && npm run test:browser-review && npm run test:api-auth && npm run test:public-env && npm run test:vercel"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

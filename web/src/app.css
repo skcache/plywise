@@ -591,7 +591,20 @@ svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.7; strok
 .retry-form { display: grid; grid-template-columns: 1fr auto; gap: 7px; margin-top: 12px; }
 .retry-form input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--text); background: var(--surface-low); }
 .retry-form button, .mode-actions button { min-height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-soft); background: var(--surface-high); cursor: pointer; }
-.retry-form small { grid-column: 1 / -1; color: var(--text-soft); line-height: 1.4; }
+.retry-form button:disabled { cursor: wait; opacity: .58; }
+.retry-feedback { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-low); }
+.retry-feedback > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.retry-feedback span { color: var(--text-soft); font-size: 10px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; }
+.retry-feedback code { color: var(--text); font: 600 11px ui-monospace, monospace; }
+.retry-feedback p { margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+.retry-correct { border-color: color-mix(in srgb, var(--class-best) 44%, var(--line)); }
+.retry-correct span { color: var(--class-best); }
+.retry-incorrect { border-color: color-mix(in srgb, var(--class-inaccuracy) 40%, var(--line)); }
+.retry-incorrect span { color: var(--class-inaccuracy); }
+.retry-illegal, .retry-error { border-color: color-mix(in srgb, var(--danger) 34%, var(--line)); }
+.retry-illegal span, .retry-error span { color: var(--danger); }
+.retry-feedback-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.retry-feedback-actions button { min-height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--surface-high); cursor: pointer; font-size: 11px; }
 .variation-eval { display: grid; gap: 5px; margin-top: 10px; padding: 10px; border-radius: 12px; background: var(--surface-low); }
 .variation-eval code { overflow: hidden; color: var(--text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .mode-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -1530,6 +1543,10 @@ button, a, input, textarea, select { accent-color: var(--focus); }
   .mobile-review-mode button:disabled, .mobile-mode-actions button:disabled { cursor: wait; opacity: .55; }
   .mobile-review-mode > p, .mobile-review-mode > small { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.45; }
   .mobile-review-mode > small { color: var(--text); }
+  .mobile-review-mode .retry-feedback { margin-top: 0; padding: 12px; }
+  .mobile-review-mode .retry-feedback p { font-size: 13px; }
+  .mobile-review-mode .retry-feedback-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mobile-review-mode .retry-feedback-actions button { min-height: 44px; padding-inline: 8px; font-size: 12px; }
   .mobile-variation-line { display: grid; gap: 5px; padding: 10px 0; border-block: 1px solid var(--line); }
   .mobile-variation-line code { overflow-wrap: anywhere; color: var(--text-soft); font-size: 11px; }
   .mobile-mode-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }

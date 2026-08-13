@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { moveOverlayGeometry, squaresFromFen, uciSquares, type BoardOrientation } from "../chess";
 
 const blackPieces = new Set(["♟", "♜", "♞", "♝", "♛", "♚"]);
@@ -20,6 +21,31 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
   const highlighted = uciSquares(activeUci);
   const squares = squaresFromFen(fen, orientation);
   const geometry = showArrow && activeUci ? moveOverlayGeometry(activeUci, orientation) : null;
+  const [focusIndex, setFocusIndex] = useState(0);
+  const squareRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  useEffect(() => {
+    if (!interactive) return;
+    const selectedIndex = squares.findIndex((square) => square.name === sourceSquare);
+    setFocusIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [interactive, orientation, sourceSquare]);
+
+  const moveFocus = (index: number, event: KeyboardEvent<HTMLButtonElement>) => {
+    const row = Math.floor(index / 8);
+    const column = index % 8;
+    let next = index;
+    if (event.key === "ArrowLeft") next = row * 8 + (column + 7) % 8;
+    else if (event.key === "ArrowRight") next = row * 8 + (column + 1) % 8;
+    else if (event.key === "ArrowUp") next = ((row + 7) % 8) * 8 + column;
+    else if (event.key === "ArrowDown") next = ((row + 1) % 8) * 8 + column;
+    else if (event.key === "Home") next = row * 8;
+    else if (event.key === "End") next = row * 8 + 7;
+    else return;
+    event.preventDefault();
+    setFocusIndex(next);
+    squareRefs.current[next]?.focus();
+  };
+
   return <div className={`chess-board ${compact ? "compact-board" : ""}`} role="grid" aria-label={compact ? "Position preview" : "Chess position"}>
     {squares.map((square, index) => {
       const light = (Math.floor(index / 8) + index) % 2 === 0;
@@ -39,9 +65,15 @@ export function ChessBoard({ fen, orientation, activeUci = "", sourceSquare = ""
       const label = interactive ? `Choose ${square.name}` : `${kind ? `${kind} on` : "empty"} ${square.name}`;
       return interactive ? <button
         type="button"
+        ref={(element) => { squareRefs.current[index] = element; }}
         key={`${square.name}-${index}`}
         className={className}
+        role="gridcell"
         aria-label={label}
+        aria-selected={selected}
+        tabIndex={index === focusIndex ? 0 : -1}
+        onFocus={() => setFocusIndex(index)}
+        onKeyDown={(event) => moveFocus(index, event)}
         onClick={() => onSquare?.(square.name)}
       >{squareContent}</button> : <div
         key={`${square.name}-${index}`}

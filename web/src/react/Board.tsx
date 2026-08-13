@@ -100,7 +100,6 @@ export function EvaluationBar({ value }: { value?: number }) {
       <rect className="evaluation-rail-white" x="0" y={100 - whiteShare} width="10" height={whiteShare} />
       <line className="evaluation-rail-marker" x1="0" x2="10" y1={100 - whiteShare} y2={100 - whiteShare} vectorEffect="non-scaling-stroke" />
     </svg>
-    <span className="evaluation-opposite">{formatEval(value === undefined ? undefined : -value)}</span>
   </aside>;
 }
 

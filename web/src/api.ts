@@ -59,7 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   );
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    throw new Error("Plywise service is unavailable. Start the C++ service on port 8787, or check the hosted API origin.");
+    throw new Error("Plywise could not reach the chess service. Try again in a moment.");
   }
   const body = (await response.json()) as T & Partial<ApiFailure>;
   if (!response.ok) {

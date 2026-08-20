@@ -48,6 +48,7 @@ import { AppShell, SoftButton, TopBar, type Route } from "./Shell";
 import { AccountPrompt, PasswordResetPrompt } from "./AccountPrompt";
 import { betterMoveExplanation, humanMoveExplanation, needsBetterMove } from "../review-copy";
 import { isAccountEntryRoute, routeForAuthState, routeForSession, routeFromHash } from "../routes";
+import { checkingRetryFeedback, completedRetryFeedback, emptyRetryFeedback, failedRetryFeedback, type RetryFeedback } from "../retry-review";
 
 type Theme = "system" | "light" | "dark";
 type InspectorTab = "summary" | "moves" | "line" | "patterns" | "method";
@@ -71,7 +72,7 @@ export default function App() {
   const [reviewMode, setReviewMode] = useState<ReviewMode>("manual");
   const [highlightedUci, setHighlightedUci] = useState("");
   const [trySource, setTrySource] = useState("");
-  const [tryMessage, setTryMessage] = useState("");
+  const [retryFeedback, setRetryFeedback] = useState<RetryFeedback>(emptyRetryFeedback);
   const [variation, setVariation] = useState<Variation | null>(null);
   const [variationMessage, setVariationMessage] = useState("");
   const [variationAnalysis, setVariationAnalysis] = useState<VariationAnalysis | null>(null);
@@ -347,7 +348,7 @@ export default function App() {
     setReviewMode(pauseForSelectedMove(selectedGame?.analysis?.moves[ply]));
     setHighlightedUci("");
     setTrySource("");
-    setTryMessage("");
+    setRetryFeedback(emptyRetryFeedback);
     setVariation(null);
     setVariationMessage("");
     setVariationAnalysis(null);
@@ -389,7 +390,7 @@ export default function App() {
     setReviewMode("manual");
     setHighlightedUci("");
     setTrySource("");
-    setTryMessage("");
+    setRetryFeedback(emptyRetryFeedback);
     setVariation(null);
     setVariationMessage("");
     setVariationAnalysis(null);
@@ -577,22 +578,35 @@ export default function App() {
 
   const variationNode = useCallback((id: number | undefined) => variation?.nodes.find((node) => node.id === id), [variation]);
 
+  const recordRetryAttempt = useCallback(async (uci: string) => {
+    if (!selectedGame || retryFeedback.status === "checking") return;
+    const canonical = uci.trim().toLowerCase();
+    setTrySource("");
+    setHighlightedUci("");
+    setRetryFeedback(checkingRetryFeedback(canonical));
+    try {
+      const result = await submitReviewAttempt(selectedGame.game.id, selectedPly, canonical);
+      setHighlightedUci(canonical);
+      setRetryFeedback(completedRetryFeedback(canonical, result.accepted));
+    } catch (attemptError) {
+      const illegal = attemptError instanceof ApiError && attemptError.code === "illegal_move";
+      setRetryFeedback(failedRetryFeedback(illegal));
+    }
+  }, [retryFeedback.status, selectedGame, selectedPly]);
+
   const chooseSquare = useCallback(async (square: string) => {
     if ((reviewMode !== "try_move" && reviewMode !== "variation") || variationBusy) return;
     if (!trySource) {
       setTrySource(square);
-      reviewMode === "variation" ? setVariationMessage(`Selected ${square}. Choose a destination.`) : setTryMessage(`Selected ${square}. Choose a destination.`);
+      reviewMode === "variation"
+        ? setVariationMessage(`Selected ${square}. Choose a destination.`)
+        : setRetryFeedback({ status: "idle", uci: "", message: `Selected ${square}. Choose a destination.` });
       return;
     }
     const uci = `${trySource}${square}`.toLowerCase();
     setTrySource("");
     if (reviewMode === "try_move" && selectedGame) {
-      try {
-        const result = await submitReviewAttempt(selectedGame.game.id, selectedPly, uci);
-        setTryMessage(result.accepted ? "Correct. That move matches the review." : "Legal, but another move changes the forcing sequence more precisely.");
-      } catch (attemptError) {
-        setTryMessage(attemptError instanceof ApiError && attemptError.code === "illegal_move" ? "That move is illegal in this position." : attemptError instanceof Error ? attemptError.message : "Could not validate the move.");
-      }
+      await recordRetryAttempt(uci);
     }
     if (reviewMode === "variation" && selectedGame && variation) {
       setVariationBusy(true);
@@ -608,17 +622,11 @@ export default function App() {
         setVariationBusy(false);
       }
     }
-  }, [reviewMode, selectedGame, selectedPly, trySource, variation, variationBusy]);
+  }, [recordRetryAttempt, reviewMode, selectedGame, trySource, variation, variationBusy]);
 
   const submitRetry = useCallback(async (uci: string) => {
-    if (!selectedGame) return;
-    try {
-      const result = await submitReviewAttempt(selectedGame.game.id, selectedPly, uci.trim().toLowerCase());
-      setTryMessage(result.accepted ? "Correct. That move matches the review." : "Legal, but another move changes the forcing sequence more precisely.");
-    } catch (attemptError) {
-      setTryMessage(attemptError instanceof ApiError && attemptError.code === "illegal_move" ? "That move is illegal in this position." : attemptError instanceof Error ? attemptError.message : "Could not validate the move.");
-    }
-  }, [selectedGame, selectedPly]);
+    await recordRetryAttempt(uci);
+  }, [recordRetryAttempt]);
 
   const leaveVariation = useCallback(async (remove = false) => {
     if (variationBusy) return;
@@ -697,7 +705,7 @@ export default function App() {
       if (event.key === "End") { event.preventDefault(); navigate("last"); }
       if (event.key === " ") { event.preventDefault(); togglePlayback(); }
       if (event.key.toLowerCase() === "f") setOrientation((value) => value === "white" ? "black" : "white");
-      if (event.key.toLowerCase() === "r" && selectedMove) { setReviewMode("try_move"); setHighlightedUci(""); }
+      if (event.key.toLowerCase() === "r" && selectedMove) { setReviewMode("try_move"); setHighlightedUci(""); setTrySource(""); setRetryFeedback(emptyRetryFeedback); }
       if (event.key.toLowerCase() === "v" && selectedMove) void startVariation("before");
       if (event.key.toLowerCase() === "b" && selectedMove) { setReviewMode("revealed_move"); setHighlightedUci(selectedMove.best_uci); }
       if (event.key === "Escape") { if (variation) void leaveVariation(); else resetTransient(); }
@@ -996,7 +1004,7 @@ export default function App() {
       {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>Analyze</SoftButton>}
       <SoftButton icon="overview" aria-expanded={overviewOpen} aria-controls="analysis-overview" onClick={() => { setInspectorTab("summary"); setOverviewOpen((value) => !value); }}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
-        <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
+        <button onClick={() => { setReviewMode("try_move"); setHighlightedUci(""); setTrySource(""); setRetryFeedback(emptyRetryFeedback); setMoreOpen(false); }}><Icon name="retry"/>Retry this move</button>
         <button onClick={() => void startVariation("before")}><Icon name="branch"/>Explore variation</button>
         <button onClick={() => { setReviewMode("revealed_move"); setHighlightedUci(selectedMove?.best_uci ?? ""); setMoreOpen(false); }}><Icon name="star"/>Show best move</button>
         <button onClick={() => { setOrientation((value) => value === "white" ? "black" : "white"); setMoreOpen(false); }}><Icon name="flip"/>Flip board</button>
@@ -1008,7 +1016,7 @@ export default function App() {
       reviewMode={reviewMode}
       highlightedUci={highlightedUci}
       trySource={trySource}
-      tryMessage={tryMessage}
+      retryFeedback={retryFeedback}
       variation={variation}
       variationMessage={variationMessage}
       variationAnalysis={variationAnalysis}
@@ -1026,8 +1034,11 @@ export default function App() {
       onTogglePlayback={togglePlayback}
       onFlip={() => setOrientation((value) => value === "white" ? "black" : "white")}
       onSquare={(square) => void chooseSquare(square)}
-      onRetry={() => { setReviewMode("try_move"); setHighlightedUci(""); setTryMessage(""); }}
+      onRetry={() => { setReviewMode("try_move"); setHighlightedUci(""); setTrySource(""); setRetryFeedback(emptyRetryFeedback); }}
       onRetrySubmit={(uci) => void submitRetry(uci)}
+      onRetryAgain={() => { setHighlightedUci(""); setTrySource(""); setRetryFeedback(emptyRetryFeedback); }}
+      onRevealRetry={() => { setReviewMode("revealed_move"); setHighlightedUci(selectedMove?.best_uci ?? ""); setTrySource(""); setRetryFeedback(emptyRetryFeedback); }}
+      onContinueRetry={() => navigate("next")}
       onVariation={() => void startVariation("before")}
       onReturn={() => variation ? void leaveVariation() : resetTransient()}
       onVariationBack={() => void stepVariationBack()}
@@ -1172,10 +1183,10 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
 
 type AnalysisProps = {
   games: StoredGame[]; profile: Profile | null; selectedGame: StoredGame | null; selectedPly: number; selectedMove?: MoveAssessment; jobs: Job[]; selectedJob: Job | null;
-  orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; tryMessage: string; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
+  orientation: BoardOrientation; reviewMode: ReviewMode; highlightedUci: string; trySource: string; retryFeedback: RetryFeedback; variation: Variation | null; variationMessage: string; variationAnalysis: VariationAnalysis | null; variationBusy: boolean;
   overviewOpen: boolean; inspectorTab: InspectorTab; moveListExpanded: boolean; runtimeSettings: RuntimeSettings | null; diagnostics: Diagnostics | null; analysisActive: boolean; analysisIssue: AnalysisIssue | null; browserProgress: BrowserReviewProgress | null; moreOpen: boolean;
   onSelectPly: (ply: number) => void; onNavigate: (action: "first" | "previous" | "next" | "last") => void; onTogglePlayback: () => void; onFlip: () => void; onSquare: (square: string) => void;
-  onRetry: () => void; onRetrySubmit: (uci: string) => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
+  onRetry: () => void; onRetrySubmit: (uci: string) => void; onRetryAgain: () => void; onRevealRetry: () => void; onContinueRetry: () => void; onVariation: () => void; onReturn: () => void; onVariationBack: () => void; onVariationReset: () => void; onVariationAnalyze: () => void; onVariationDelete: () => void;
   onToggleMoves: () => void; onCloseOverview: () => void; onOpenOverview: () => void; onInspectorTab: (tab: InspectorTab) => void; onToggleMore: () => void; onCloseMore: () => void; onBack: () => void; onShowBestMove: () => void; onCancelJob: () => void; onCancelBrowserAnalysis: () => void; onRetryAnalysis: () => void; onDismissAnalysisError: () => void;
 };
 
@@ -1188,8 +1199,11 @@ function AnalysisView(props: AnalysisProps) {
   const livePly = game.game.plies[livePlyIndex] ?? ply;
   const currentVariationNode = variation?.nodes.find((node) => node.id === variation.current_node_id);
   const fen = analysisActive ? (props.browserProgress?.position === "before" ? livePly?.fen_before : livePly?.fen_after) ?? livePly?.fen_after ?? initialFen : reviewMode === "variation" ? currentVariationNode?.fen ?? variation?.root_fen ?? initialFen : reviewMode === "try_move" || reviewMode === "revealed_move" ? move?.fen_before ?? ply?.fen_before ?? initialFen : ply?.fen_after ?? initialFen;
-  const activeUci = analysisActive || reviewMode === "try_move"
+  const retryResolved = props.retryFeedback.status === "correct" || props.retryFeedback.status === "incorrect";
+  const activeUci = analysisActive
     ? ""
+    : reviewMode === "try_move"
+      ? props.retryFeedback.uci
     : reviewMode === "variation"
       ? currentVariationNode?.uci ?? ""
       : props.highlightedUci || ply?.uci || "";
@@ -1203,7 +1217,7 @@ function AnalysisView(props: AnalysisProps) {
     />}
     <section className={`board-surface ${reviewMode === "variation" ? "variation-active" : ""}`}>
       <EvaluationBar value={analysisActive ? undefined : move?.evaluation_after}/>
-      <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={!analysisActive && !props.variationBusy && (reviewMode === "try_move" || reviewMode === "variation")} showArrow={!analysisActive && reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
+      <div className="board-holder"><ChessBoard fen={fen} orientation={props.orientation} activeUci={activeUci} sourceSquare={props.trySource} interactive={!analysisActive && !props.variationBusy && (reviewMode === "variation" || (reviewMode === "try_move" && !retryResolved && props.retryFeedback.status !== "checking"))} showArrow={!analysisActive && (reviewMode === "revealed_move" || (reviewMode === "try_move" && props.retryFeedback.status === "correct"))} onSquare={props.onSquare}/></div>
     </section>
     <ReviewInspector {...props} analysisActive={analysisActive}/>
     {!analysisActive && !props.analysisIssue && <Playback game={game} selectedPly={selectedPly} playing={isPlaying(reviewMode)} onNavigate={props.onNavigate} onPlay={props.onTogglePlayback} onFlip={props.onFlip}/>}
@@ -1250,7 +1264,8 @@ function MobileReviewMode(props: AnalysisProps & { game: StoredGame; move?: Move
     return <section className="mobile-review-mode" aria-live="polite">
       <header><div><span>Retry move</span><strong>Find a stronger continuation</strong></div><button onClick={props.onReturn}>Return</button></header>
       <p>The board is restored before {move?.move_number}{move?.side === "black" ? "…" : "."} {move?.played_san || move?.san || "this move"}. Choose a piece, then its destination.</p>
-      {props.tryMessage && <small role="status">{props.tryMessage}</small>}
+      {props.retryFeedback.status !== "correct" && props.retryFeedback.status !== "incorrect" && <RetryForm feedback={props.retryFeedback} onSubmit={props.onRetrySubmit}/>}
+      <RetryFeedbackPanel feedback={props.retryFeedback} onRetryAgain={props.onRetryAgain} onReveal={props.onRevealRetry} onContinue={props.onContinueRetry}/>
     </section>;
   }
   return <section className="mobile-review-mode" aria-live="polite">
@@ -1262,10 +1277,11 @@ function MobileReviewMode(props: AnalysisProps & { game: StoredGame; move?: Move
 }
 
 function MobileBoardSurface(props: AnalysisProps & { game: StoredGame; move?: MoveAssessment; fen: string; livePly: number; analysisActive: boolean; evaluation?: number }) {
-  const interactive = !props.analysisActive && !props.variationBusy && (props.reviewMode === "try_move" || props.reviewMode === "variation");
+  const retryResolved = props.retryFeedback.status === "correct" || props.retryFeedback.status === "incorrect";
+  const interactive = !props.analysisActive && !props.variationBusy && (props.reviewMode === "variation" || (props.reviewMode === "try_move" && !retryResolved && props.retryFeedback.status !== "checking"));
   return <section className="mobile-board-surface" aria-label="Chess board and evaluation">
     <EvaluationBar value={props.evaluation}/>
-    <div className="mobile-board-holder"><ChessBoard fen={props.fen} orientation={props.orientation} activeUci={props.analysisActive ? "" : props.highlightedUci} sourceSquare={props.trySource} interactive={interactive} showArrow={!props.analysisActive && props.reviewMode === "revealed_move"} onSquare={props.onSquare}/></div>
+    <div className="mobile-board-holder"><ChessBoard fen={props.fen} orientation={props.orientation} activeUci={props.analysisActive ? "" : props.reviewMode === "try_move" ? props.retryFeedback.uci : props.highlightedUci} sourceSquare={props.trySource} interactive={interactive} showArrow={!props.analysisActive && (props.reviewMode === "revealed_move" || (props.reviewMode === "try_move" && props.retryFeedback.status === "correct"))} onSquare={props.onSquare}/></div>
   </section>;
 }
 
@@ -1451,16 +1467,27 @@ function ReviewInspector(props: AnalysisProps & { analysisActive: boolean }) {
           <header><span>Current move</span><small>{move ? `${move.move_number}${move.side === "white" ? "." : "…"}` : "Not ready"}</small></header>
           {move ? <div className="inspector-reading"><span className="class-orb"><Icon name={needsAttention(move.classification) ? "warning" : "check"}/></span><div><b>{move.classification}</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.played_san || move.san}</strong><p>{humanMoveExplanation(move)}</p></div></div> : <p className="inspector-empty">Analysis appears here when the review is ready.</p>}
         </section>
-        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}.</p><RetryForm message={props.tryMessage} onSubmit={props.onRetrySubmit}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Variation</span><button disabled={props.variationBusy} onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button disabled={props.variationBusy} onClick={props.onVariationBack}>Back</button><button disabled={props.variationBusy} onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Working…" : "Analyze"}</button><button disabled={props.variationBusy} className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && needsBetterMove(move) && <section className="inspector-block inspector-best class-best"><header><span>Better move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Better</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>{betterMoveExplanation(move)}</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
+        {props.reviewMode === "try_move" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Retry move</span><button onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Find a stronger move</h3><p>The board is restored before {move.played_san || move.san}. Move on the board or enter UCI.</p>{props.retryFeedback.status !== "correct" && props.retryFeedback.status !== "incorrect" && <RetryForm feedback={props.retryFeedback} onSubmit={props.onRetrySubmit}/>}<RetryFeedbackPanel feedback={props.retryFeedback} onRetryAgain={props.onRetryAgain} onReveal={props.onRevealRetry} onContinue={props.onContinueRetry}/></div></section> : props.reviewMode === "variation" && move ? <section className="inspector-block inspector-mode" aria-live="polite"><header><span>Variation</span><button disabled={props.variationBusy} onClick={props.onReturn}>Return</button></header><div className="mode-content"><h3>Explore this branch</h3><p>{props.variationMessage || "Choose a source and destination on the board."}</p>{props.variationAnalysis && <div className="variation-eval"><strong>{props.variationAnalysis.best_move || "—"}</strong><code>{props.variationAnalysis.lines[0]?.moves.join(" ")}</code></div>}<div className="mode-actions"><button disabled={props.variationBusy} onClick={props.onVariationBack}>Back</button><button disabled={props.variationBusy} onClick={props.onVariationReset}>Reset</button><button disabled={props.variationBusy} onClick={props.onVariationAnalyze}>{props.variationBusy ? "Working…" : "Analyze"}</button><button disabled={props.variationBusy} className="danger-text" onClick={props.onVariationDelete}>Delete</button></div></div></section> : move && needsBetterMove(move) && <section className="inspector-block inspector-best class-best"><header><span>Better move</span><small>{formatEval(move.evaluation_after_best)}</small></header><div className="inspector-reading"><span className="class-orb"><Icon name="star"/></span><div><b>Better</b><strong>{move.move_number}{move.side === "white" ? "." : "…"} {move.best_san || move.best_uci}</strong><p>{betterMoveExplanation(move)}</p><div className="quiet-actions"><button onClick={props.onRetry}><Icon name="retry"/>Retry</button><button onClick={props.onVariation}><Icon name="branch"/>Explore</button></div></div></div></section>}
         <section className="inspector-block inspector-moves"><header><span>Move list</span><small>{plies.length} plies</small></header><div className="move-ledger">{plies.slice(start, end).map((item, offset) => { const index = start + offset; const assessment = moves[index]; const current = index === props.selectedPly; return <button ref={current ? selectedMoveRef : undefined} key={index} className={current ? "current" : ""} aria-current={current ? "step" : undefined} onClick={() => props.onSelectPly(index)}><span>{Math.floor(index / 2) + 1}{index % 2 ? "…" : "."}</span><strong>{item.san}</strong><em>{assessment?.classification || "Pending"}</em>{current && <i className={`mini-class class-${classificationClass(assessment?.classification || "pending")}`}>{needsAttention(assessment?.classification ?? "") ? "!" : ""}</i>}</button>; })}</div>{plies.length > 7 && <button className="ledger-toggle" onClick={props.onToggleMoves}>{props.moveListExpanded ? "Show nearby moves" : "Show all moves"}<span>⌄</span></button>}</section>
       </>}
     </section>
   </aside>;
 }
 
-function RetryForm({ message, onSubmit }: { message: string; onSubmit: (uci: string) => void }) {
+function RetryForm({ feedback, onSubmit }: { feedback: RetryFeedback; onSubmit: (uci: string) => void }) {
   const [value, setValue] = useState("");
-  return <form className="retry-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value); }}><label><span className="sr-only">Move in UCI</span><input value={value} onChange={(event) => setValue(event.target.value)} pattern="[a-h][1-8][a-h][1-8][qrbn]?" placeholder="e2e4" required/></label><button>Check</button>{message && <small role="status">{message}</small>}</form>;
+  const busy = feedback.status === "checking";
+  return <form className="retry-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value); }}><label><span className="sr-only">Move in UCI</span><input value={value} onChange={(event) => setValue(event.target.value)} pattern="[a-h][1-8][a-h][1-8][qrbn]?" placeholder="e2e4" autoComplete="off" disabled={busy} required/></label><button disabled={busy}>{busy ? "Checking…" : "Check"}</button></form>;
+}
+
+function RetryFeedbackPanel({ feedback, onRetryAgain, onReveal, onContinue }: { feedback: RetryFeedback; onRetryAgain: () => void; onReveal: () => void; onContinue: () => void }) {
+  if (!feedback.message) return null;
+  const resolved = feedback.status === "correct" || feedback.status === "incorrect";
+  return <div className={`retry-feedback retry-${feedback.status}`} role={feedback.status === "error" || feedback.status === "illegal" ? "alert" : "status"}>
+    <div><span>{feedback.status === "correct" ? "Nice find" : feedback.status === "incorrect" ? "Legal move" : feedback.status === "checking" ? "Checking" : "Try again"}</span>{feedback.uci && <code>{feedback.uci}</code>}</div>
+    <p>{feedback.message}</p>
+    {resolved && <div className="retry-feedback-actions">{feedback.status === "correct" ? <button onClick={onContinue}>Continue review</button> : <button onClick={onRetryAgain}>Try another</button>}<button onClick={onReveal}>Show better move</button></div>}
+  </div>;
 }
 
 function Playback({ game, selectedPly, playing, onNavigate, onPlay, onFlip }: { game: StoredGame; selectedPly: number; playing: boolean; onNavigate: AnalysisProps["onNavigate"]; onPlay: () => void; onFlip: () => void }) {

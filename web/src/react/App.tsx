@@ -929,7 +929,7 @@ export default function App() {
 
   if (route === "home") {
     const greeting = dayGreeting(new Date());
-    const libraryMessage = refreshMessage || (games.length ? `${games.length} game${games.length === 1 ? "" : "s"} available locally` : "Your local chess intelligence console");
+    const libraryMessage = refreshMessage || (games.length ? `${games.length} saved game${games.length === 1 ? "" : "s"}` : "Bring in a completed game to begin");
     header = <TopBar
       icon="home"
       title={greeting}
@@ -967,7 +967,7 @@ export default function App() {
       />
     </>;
   } else if (route === "recent") {
-    header = <TopBar title="Recent Games" detail={`${games.length} local game${games.length === 1 ? "" : "s"}`} icon="recent"/>;
+    header = <TopBar title="Recent Games" detail={`${games.length} saved game${games.length === 1 ? "" : "s"}`} icon="recent"/>;
     view = <>
       <div className="desktop-route-view"><RecentView
         games={games}
@@ -1000,7 +1000,7 @@ export default function App() {
     const gameName = selectedGame ? `${tags.White ?? "White"} vs. ${tags.Black ?? "Black"}` : "No game selected";
     const opening = selectedGame?.analysis ? `${selectedGame.analysis.opening} · ${selectedGame.analysis.eco}` : "Choose a recent game";
     const activeBrowserProgress = selectedGame && browserAnalysisProgress?.gameId === selectedGame.game.id ? browserAnalysisProgress : null;
-    header = <TopBar icon="analysis" title={gameName} detail={opening} meta={analysisInteractionActive || analysisIssue ? undefined : selectedGame?.analysis ? formatAccuracy(selectedGame.analysis.accuracy, 1, " accuracy") : undefined} actions={!analysisInteractionActive && !analysisIssue ? <>
+    header = <TopBar icon="analysis" title={gameName} detail={opening} meta={analysisInteractionActive || analysisIssue ? undefined : selectedGame?.analysis ? formatAccuracy(selectedGame.analysis.accuracy, 1, " accuracy") : undefined} actions={selectedGame && !analysisInteractionActive && !analysisIssue ? <>
       {selectedGame && selectedGame.analysis_status !== "complete" && <SoftButton onClick={() => void analyzeGame(selectedGame.game.id)}>Analyze</SoftButton>}
       <SoftButton icon="overview" aria-expanded={overviewOpen} aria-controls="analysis-overview" onClick={() => { setInspectorTab("summary"); setOverviewOpen((value) => !value); }}>Overview</SoftButton>
       <div className="more-wrap"><SoftButton icon="more" aria-label="More analysis actions" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}/>{moreOpen && <div className="action-menu">
@@ -1064,17 +1064,17 @@ export default function App() {
     header = <TopBar title="Explore" detail="Your position library" meta={`${entries.length} concepts`} icon="explore"/>;
     view = <>
       <div className="desktop-route-view"><ExploreView games={games} section={exploreSection} selectedId={selectedExploreId} onSection={setExploreSection} onSelect={setSelectedExploreId} onOpen={openGame}/></div>
-      <MobileExploreView games={games} profile={profile} section={exploreSection} onSection={setExploreSection} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
+      <MobileExploreView games={games} profile={profile} onSection={setExploreSection} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
     </>;
   } else if (route === "progress") {
     const player = inferPlayerName(profile, games);
-    header = <TopBar title="Progress" detail={player || "Local player profile"} meta={`${profile?.games_analyzed ?? games.filter((game) => game.analysis).length} analyzed`} icon="progress"/>;
+    header = <TopBar title="Progress" detail={player || "Your chess profile"} meta={`${profile?.games_analyzed ?? games.filter((game) => game.analysis).length} analyzed`} icon="progress"/>;
     view = <>
       <div className="desktop-route-view"><ProgressView games={games} profile={profile} onOpen={openGame}/></div>
       <MobileProgressView games={games} profile={profile} onOpen={openGame} onSettings={() => setAppRoute("settings")}/>
     </>;
   } else {
-    header = <TopBar title="Settings" detail="Local preferences" icon="settings"/>;
+    header = <TopBar title="Settings" detail="Preferences" icon="settings"/>;
     const updateEngineLines = (value: boolean) => { setEngineLinesDefault(value); setInspectorTab(value ? "line" : "summary"); localStorage.setItem("pct-engine-lines-default", String(value)); };
     view = <>
       <div className="desktop-route-view"><SettingsView theme={theme} onTheme={setTheme} engineLinesDefault={engineLinesDefault} onEngineLines={updateEngineLines} browserProfile={browserProfile} onBrowserProfile={setBrowserProfile} runtime={runtimeSettings} diagnostics={diagnostics} accountLabel={accountDisplayName(authSnapshot)} onSignOut={() => void handleSignOut()}/></div>
@@ -1128,6 +1128,7 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
   onImport: () => void;
 }) {
   const [filter, setFilter] = useState<RecentFilter>("all");
+  const [selecting, setSelecting] = useState(false);
   const player = inferPlayerName(profile, games).toLowerCase();
   const rows: RecentGameRow[] = games.map((stored) => {
     const tags = stored.game.tags;
@@ -1159,14 +1160,15 @@ function RecentView({ games, jobs, profile, selected, onSelect, onClear, onOpen,
   });
   const filteredRows = rows.filter((row) => filter === "all" || (filter === "reviewed" ? row.reviewed : !row.reviewed));
   const reviewedCount = rows.filter((row) => row.reviewed).length;
+  const leaveSelection = () => { setSelecting(false); onClear(); };
   return <section className="soft-surface recent-surface">
-    <header className="recent-header"><div><span>Game library</span><h1>Your recent games.</h1><p>Every game you bring in stays here until you decide what to review next.</p></div><div className="recent-header-actions"><small>{games.length} imported · {reviewedCount} reviewed</small><SoftButton icon="import" onClick={onImport}>Import game</SoftButton></div></header>
+    <header className="recent-header"><div><span>Game library</span><h1>Your recent games.</h1><p>Every game you bring in stays here until you decide what to review next.</p></div><div className="recent-header-actions"><small>{games.length} imported · {reviewedCount} reviewed</small>{games.length > 0 && <button className="row-button" type="button" onClick={() => selecting ? leaveSelection() : setSelecting(true)}>{selecting ? "Done selecting" : "Select games"}</button>}<SoftButton icon="import" onClick={onImport}>Import game</SoftButton></div></header>
     <div className="recent-toolbar"><div className="recent-filters" role="group" aria-label="Filter games">
       {(["all", "needs-review", "reviewed"] as const).map((item) => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item === "all" ? "All games" : item === "needs-review" ? "Needs review" : "Reviewed"}</button>)}
-    </div>{selected.size > 0 ? <div className="selection-actions"><strong>{selected.size} selected</strong><button onClick={onAnalyzeSelected}>Analyze selected</button><button onClick={onClear}>Clear</button></div> : <span className="recent-toolbar-note">Select games to queue a batch review.</span>}</div>
+    </div>{selecting ? <div className="selection-actions"><strong>{selected.size} selected</strong><button disabled={!selected.size} onClick={() => { setSelecting(false); onAnalyzeSelected(); }}>Analyze selected</button><button onClick={leaveSelection}>Done</button></div> : <span className="recent-toolbar-note">Open a game or choose Select games for a batch review.</span>}</div>
     <div className="recent-game-list" role="list" aria-label="Recent games">
-      {filteredRows.map((row) => <article key={row.stored.game.id} className={`recent-game-card ${selected.has(row.stored.game.id) ? "selected" : ""}`} role="listitem">
-        <label className="recent-select"><input type="checkbox" aria-label={`Select ${row.opponent}`} checked={selected.has(row.stored.game.id)} onChange={() => onSelect(row.stored.game.id)}/><span aria-hidden="true" /></label>
+      {filteredRows.map((row) => <article key={row.stored.game.id} className={`recent-game-card ${selecting ? "selecting" : ""} ${selected.has(row.stored.game.id) ? "selected" : ""}`} role="listitem">
+        {selecting && <label className="recent-select"><input type="checkbox" aria-label={`Select ${row.opponent}`} checked={selected.has(row.stored.game.id)} onChange={() => onSelect(row.stored.game.id)}/><span aria-hidden="true" /></label>}
         <button className="recent-game-main" onClick={() => onOpen(row.stored.game.id, reviewLandingPly(row.stored))}>
           <span className="recent-result" aria-label={`Result ${row.stored.game.tags.Result ?? "unknown"}`}>{row.stored.game.tags.Result ?? "*"}</span>
           <span className="recent-game-copy"><strong>{row.opponent}</strong><span>{row.opening}</span><small>{row.date} · {row.timeControl}</small></span>
@@ -1192,7 +1194,7 @@ type AnalysisProps = {
 
 function AnalysisView(props: AnalysisProps) {
   const { selectedGame: game, selectedMove: move, selectedPly, reviewMode, variation } = props;
-  if (!game) return <section className="soft-surface analysis-empty"><Icon name="analysis"/><h1>Choose a game to analyze.</h1><p>Open a game from Recent Games. Its canonical moves remain unchanged while you review or branch.</p></section>;
+  if (!game) return <section className="soft-surface analysis-empty"><Icon name="analysis"/><h1>Choose a game to analyze.</h1><p>Open a completed game from Recent. Analysis begins only when you choose it.</p><SoftButton icon="recent" onClick={props.onBack}>Open Recent games</SoftButton></section>;
   const ply = game.game.plies[selectedPly];
   const analysisActive = props.analysisActive;
   const livePlyIndex = props.browserProgress?.ply ?? selectedPly;
@@ -1518,12 +1520,14 @@ function ProgressView({ games, profile, onOpen }: { games: StoredGame[]; profile
   const ratings = ratingHistory(games, player);
   const delta = ratingDelta(ratings);
   const latest = ratings[ratings.length - 1];
+  const displayedRating = latest?.rating ?? (profile?.latest_rating ? profile.latest_rating : "—");
+  const retryAccuracy = profile?.drill_attempts ? `${Math.round(profile.drill_accuracy * 100)}%` : "—";
   const arc = reviewArc(games);
   const min = ratings.length ? Math.min(...ratings.map((point) => point.rating)) : 0;
   const max = ratings.length ? Math.max(...ratings.map((point) => point.rating)) : 1;
   const range = Math.max(1, max - min);
   const line = ratings.map((point, index) => `${ratings.length === 1 ? 50 : index / (ratings.length - 1) * 100},${42 - (point.rating - min) / range * 32}`).join(" ");
-  return <section className="soft-surface progress-surface"><header className="progress-heading"><div><span>Rating profile</span><strong>{latest?.rating ?? profile?.latest_rating ?? "—"}</strong><small>{delta === null ? "More dated games needed for a 30-day change" : `${delta >= 0 ? "+" : ""}${delta} over the latest 30-day window`}</small></div><div className="rating-chart">{ratings.length > 1 ? <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-label="Rating history"><path d="M0 42H100"/><polyline points={line}/>{ratings.map((point, index) => <circle key={point.gameId} cx={index / (ratings.length - 1) * 100} cy={42 - (point.rating - min) / range * 32} r="1.3"/>)}</svg> : <p>Import dated games with rating tags to build this history.</p>}</div></header><div className="progress-grid"><section className="profile-block"><span>Review evidence</span><div className="metric-row"><div><strong>{profile?.games_analyzed ?? games.filter((game) => game.analysis).length}</strong><small>analyzed games</small></div><div><strong>{profile?.total_positions ?? games.flatMap((game) => game.analysis?.moves ?? []).length}</strong><small>classified positions</small></div><div><strong>{profile ? Math.round(profile.drill_accuracy * 100) : "—"}%</strong><small>retry accuracy</small></div></div></section><section className="profile-block weaknesses"><span>Recurring weaknesses</span>{profile?.weaknesses.slice(0, 4).map((item) => <div key={item.category}><strong>{item.category}</strong><small>{item.occurrences} occurrences · {item.average_loss_cp.toFixed(0)} average CP loss</small><em>{Math.round(item.recurrence_rate * 100)}%</em></div>) ?? <p>Analyze multiple games to reveal repeated evidence.</p>}</section><section className="profile-block learning-positions"><span>Positions worth revisiting</span>{arc.slice(0, 5).map((item) => <button key={item.gameId} onClick={() => onOpen(item.gameId, item.largestSwingPly)}><div><strong>{item.title}</strong><small>{item.opening}</small></div><em>{(item.largestSwing * 100).toFixed(1)}% swing</em></button>)}</section></div></section>;
+  return <section className="soft-surface progress-surface"><header className="progress-heading"><div><span>Rating profile</span><strong>{displayedRating}</strong><small>{delta === null ? "More dated games needed for a 30-day change" : `${delta >= 0 ? "+" : ""}${delta} over the latest 30-day window`}</small></div><div className="rating-chart">{ratings.length > 1 ? <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-label="Rating history"><path d="M0 42H100"/><polyline points={line}/>{ratings.map((point, index) => <circle key={point.gameId} cx={index / (ratings.length - 1) * 100} cy={42 - (point.rating - min) / range * 32} r="1.3"/>)}</svg> : <p>Import dated games with rating tags to build this history.</p>}</div></header><div className="progress-grid"><section className="profile-block"><span>Review evidence</span><div className="metric-row"><div><strong>{profile?.games_analyzed ?? games.filter((game) => game.analysis).length}</strong><small>analyzed games</small></div><div><strong>{profile?.total_positions ?? games.flatMap((game) => game.analysis?.moves ?? []).length}</strong><small>classified positions</small></div><div><strong>{retryAccuracy}</strong><small>retry accuracy</small></div></div></section><section className="profile-block weaknesses"><span>Recurring weaknesses</span>{profile?.weaknesses.slice(0, 4).map((item) => <div key={item.category}><strong>{item.category}</strong><small>{item.occurrences} occurrences · {item.average_loss_cp.toFixed(0)} average CP loss</small><em>{Math.round(item.recurrence_rate * 100)}%</em></div>) ?? <p>Analyze multiple games to reveal repeated evidence.</p>}</section><section className="profile-block learning-positions"><span>Positions worth revisiting</span>{arc.slice(0, 5).map((item) => <button key={item.gameId} onClick={() => onOpen(item.gameId, item.largestSwingPly)}><div><strong>{item.title}</strong><small>{item.opening}</small></div><em>{(item.largestSwing * 100).toFixed(1)}% swing</em></button>)}</section></div></section>;
 }
 
 function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, browserProfile, onBrowserProfile, runtime, diagnostics, accountLabel, onSignOut }: { theme: Theme; onTheme: (theme: Theme) => void; engineLinesDefault: boolean; onEngineLines: (value: boolean) => void; browserProfile: BrowserEngineProfile; onBrowserProfile: (profile: BrowserEngineProfile) => void; runtime: RuntimeSettings | null; diagnostics: Diagnostics | null; accountLabel: string; onSignOut: () => void }) {
@@ -1531,7 +1535,7 @@ function SettingsView({ theme, onTheme, engineLinesDefault, onEngineLines, brows
     <header className="surface-heading"><div><span>Preferences</span><h1>Shape the workstation, not the chess truth.</h1></div></header>
     <div className="settings-list">
       <section>
-        <div><h2>Appearance</h2><p>Follow macOS or keep a deliberate light or dark workspace.</p></div>
+        <div><h2>Appearance</h2><p>Follow your device or keep a deliberate light or dark workspace.</p></div>
         <div className="segmented-control" role="radiogroup" aria-label="Theme">{(["system", "light", "dark"] as Theme[]).map((item) => <label key={item} className={theme === item ? "active" : ""}><input type="radio" name="theme" value={item} checked={theme === item} onChange={() => onTheme(item)}/><span>{titleCase(item)}</span></label>)}</div>
       </section>
       <section>
@@ -1628,13 +1632,13 @@ function ServiceUnavailableView({ message, onRetry, onSignOut }: {
   return <main className="service-unavailable" aria-labelledby="service-unavailable-title">
     <section className="service-unavailable-panel">
       <span className="service-unavailable-kicker">Plywise service</span>
-      <h1 id="service-unavailable-title">Your account is signed in, but the chess service is not reachable.</h1>
+      <h1 id="service-unavailable-title">Your account is ready. The chess service is taking a moment.</h1>
       <p>{message}</p>
       <div className="service-unavailable-actions">
         <button className="landing-primary" type="button" onClick={onRetry}>Try again</button>
         <button className="landing-secondary" type="button" onClick={onSignOut}>Sign out</button>
       </div>
-      <small>For local development, start the C++ service on port 8787. For a hosted build, check the public API origin.</small>
+      <small>Try again in a moment. If this keeps happening, sign out and back in.</small>
     </section>
   </main>;
 }

@@ -134,7 +134,7 @@ export function AccountPrompt({
     }
   }
 
-  const dialog = <section ref={dialogRef} className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-prompt-title" aria-describedby="account-prompt-description">
+  const dialog = <section ref={dialogRef} className="account-modal" role={presentation === "modal" ? "dialog" : undefined} aria-modal={presentation === "modal" ? "true" : undefined} aria-labelledby="account-prompt-title" aria-describedby="account-prompt-description">
     <header>
       <div>
         <span>{resetMode ? "Reset your password" : signUpMode ? "Create your account" : "Welcome back"}</span>

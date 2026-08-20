@@ -94,15 +94,14 @@ export function MobileRecentView({ games, jobs, profile, selected, onSelect, onC
   </div>;
 }
 
-export function MobileExploreView({ games, profile, section, onSection, onOpen, onSettings }: {
+export function MobileExploreView({ games, profile, onSection, onOpen, onSettings }: {
   games: StoredGame[];
   profile: Profile | null;
-  section: ExploreSection;
   onSection: (section: ExploreSection) => void;
   onOpen: (id: string, ply?: number) => void;
   onSettings: () => void;
 }) {
-  const [tab, setTab] = useState<MobileExploreTab>(sectionToTab(section));
+  const [tab, setTab] = useState<MobileExploreTab>("For You");
   const [selected, setSelected] = useState<ExploreEntry | null>(null);
   const entries = buildExploreEntries(games);
   const activeSection = tab === "Openings" ? "Openings" : tab === "Middlegame" ? "Middlegames" : tab === "Endgame" ? "Endgames" : null;
@@ -127,7 +126,7 @@ export function MobileProgressView({ games, profile, onOpen, onSettings }: { gam
   const player = inferPlayerName(profile, games);
   const ratings = ratingHistory(games, player);
   const delta = ratingDelta(ratings);
-  const latest = ratings.at(-1)?.rating ?? profile?.latest_rating ?? null;
+  const latest = ratings.at(-1)?.rating ?? (profile?.latest_rating ? profile.latest_rating : null);
   const opportunity = profile?.weaknesses.filter((item) => item.occurrences > 0).sort((a, b) => b.games - a.games || b.occurrences - a.occurrences)[0];
   const improving = profile?.weaknesses.filter((item) => item.occurrences_30_days > 0 && item.occurrences_7_days < item.occurrences_30_days).sort((a, b) => (a.occurrences_7_days / a.occurrences_30_days) - (b.occurrences_7_days / b.occurrences_30_days))[0];
   const revisit = reviewArc(games).slice(0, 3);
@@ -250,10 +249,6 @@ function reviewPly(game: StoredGame) {
 function reviewLabel(game: StoredGame | undefined, ply: number) {
   const move = game?.analysis?.moves.find((item) => item.ply === ply);
   return move ? `${move.classification} · move ${move.move_number}` : `Review · move ${Math.floor(ply / 2) + 1}`;
-}
-
-function sectionToTab(section: ExploreSection): MobileExploreTab {
-  return section === "Middlegames" ? "Middlegame" : section === "Endgames" ? "Endgame" : "Openings";
 }
 
 function explorePurpose(entry: ExploreEntry) {
